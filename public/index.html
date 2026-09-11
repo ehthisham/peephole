@@ -1,0 +1,184 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Peephole</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<style>
+  :root{
+    --bg:#FAF7F5; --surface:#FFFFFF; --surface-2:#F1ECE9;
+    --ink:#201A18; --ink-dim:#6B5F5B; --border:#E4DCD8;
+    --accent:#E30016; --accent-ink:#FFFFFF; --accent-wash:#FDEBEC;
+    --proposed:#B4740E; --proposed-bg:#FBF1DD;
+    --progress:#2A5DB0; --progress-bg:#E7EEFA;
+    --built:#1C7A4D; --built-bg:#E4F5EC;
+    --verified:#0F8C7C; --verified-bg:#E1F4F1;
+    --shipped:#145C33; --shipped-bg:#DDEFE3;
+    --closed:#6B6560; --closed-bg:#EDEAE7;
+    color-scheme: light;
+  }
+  *{box-sizing:border-box;}
+  body{margin:0; background:var(--bg); color:var(--ink); font-family:"IBM Plex Sans",system-ui,sans-serif; padding:0 20px 48px;}
+  .mono{font-family:"IBM Plex Mono",ui-monospace,monospace; font-variant-numeric:tabular-nums;}
+  a{color:var(--accent);}
+
+  header.top{display:flex; align-items:baseline; justify-content:space-between; gap:16px; flex-wrap:wrap; padding-block:22px 4px; max-width:1220px; margin:0 auto;}
+  .wordmark{display:flex; align-items:baseline; gap:10px; flex-wrap:wrap;}
+  .wordmark h1{margin:0; font-size:21px; font-weight:700; letter-spacing:-0.01em; color:var(--accent);}
+  .wordmark .project{font-size:13.5px; color:var(--ink-dim);}
+  .wordmark .branch{font-size:12px; color:var(--ink-dim);}
+  .remote-link{font-size:12px; color:var(--ink-dim); text-decoration:none;}
+
+  .statusbar{max-width:1220px; margin:0 auto 16px; display:flex; align-items:center; gap:10px; flex-wrap:wrap; font-size:13px; color:var(--ink-dim); padding-block:4px;}
+  button{font:inherit; cursor:pointer;}
+  button.primary{background:var(--accent); color:var(--accent-ink); border:none; border-radius:7px; padding:8px 14px; font-weight:600; font-size:13px;}
+  button.primary:hover{filter:brightness(1.08);}
+  button.primary:disabled{opacity:0.55; cursor:default;}
+  button.ghost{background:var(--surface); color:var(--ink-dim); border:1px solid var(--border); border-radius:7px; padding:7px 12px; font-size:12.5px; font-weight:500;}
+  button.ghost:hover{border-color:var(--ink-dim); color:var(--ink);}
+  button.ghost[aria-pressed="true"]{border-color:var(--built); color:var(--built); background:var(--built-bg);}
+  input.interval{width:44px; border:1px solid var(--border); border-radius:6px; padding:5px 6px; font:inherit; font-size:12.5px; text-align:center;}
+  .statusbar .spacer{flex:1;}
+  .hookstate{font-size:12px; color:var(--ink-dim);}
+  .hookstate b{color:var(--ink);}
+  button:focus-visible, input:focus-visible, a:focus-visible{outline:2px solid var(--accent); outline-offset:2px;}
+
+  .banner{max-width:1220px; margin:0 auto 14px; display:flex; align-items:center; gap:12px; font-size:13px; border-radius:8px; padding:10px 14px;}
+  .banner.warn{color:var(--proposed); background:var(--proposed-bg); border:1px solid var(--proposed);}
+  .banner.push{color:var(--progress); background:var(--progress-bg); border:1px solid var(--progress);}
+  .banner ul{margin:4px 0 0; padding-left:18px;}
+  .banner .fixbtn{margin-left:auto;}
+
+  .insights{max-width:1220px; margin:0 auto 16px;}
+  .insights-head{margin-bottom:8px;}
+  .insights-toggle{
+    background:none; border:none; padding:4px 2px; font:inherit; font-size:12px; font-weight:600;
+    text-transform:uppercase; letter-spacing:0.05em; color:var(--ink-dim); cursor:pointer;
+    display:flex; align-items:center; gap:6px;
+  }
+  .insights-toggle:hover{color:var(--ink);}
+  .chevron{display:inline-block; transition:transform .15s ease; font-size:10px;}
+  .insights-toggle[aria-expanded="false"] .chevron{transform:rotate(-90deg);}
+  .stat-row{display:flex; gap:10px; flex-wrap:wrap; margin-bottom:10px;}
+  .stat-tile{background:var(--surface); border:1px solid var(--border); border-radius:8px; padding:10px 14px; flex:1 1 120px; min-width:110px;}
+  .stat-tile .value{font-size:19px; font-weight:700; color:var(--accent); font-variant-numeric:tabular-nums;}
+  .stat-tile .label{font-size:11px; color:var(--ink-dim); text-transform:uppercase; letter-spacing:0.04em; margin-top:2px;}
+  .stat-tile .sub{font-size:11px; color:var(--ink-dim); margin-top:3px;}
+  .langs{background:var(--surface); border:1px solid var(--border); border-radius:8px; padding:12px 14px;}
+  .langs h3{margin:0 0 8px; font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:0.05em; color:var(--ink-dim);}
+  .lang-row{display:flex; align-items:center; gap:8px; font-size:12.5px; margin-bottom:5px;}
+  .lang-row .name{width:90px; flex:none; color:var(--ink-dim);}
+  .lang-row .bar-track{flex:1; background:var(--surface-2); border-radius:4px; height:8px; overflow:hidden;}
+  .lang-row .bar-fill{height:100%; background:var(--accent); border-radius:4px;}
+  .lang-row .amount{width:110px; flex:none; text-align:right; color:var(--ink-dim); font-size:11.5px;}
+
+  .layout{max-width:1220px; margin:0 auto; display:flex; gap:20px; align-items:flex-start;}
+  .board{flex:1; display:flex; gap:14px; align-items:flex-start; overflow-x:auto;}
+  .lane{background:var(--surface-2); border-radius:10px; padding:12px; flex:1 1 200px; min-width:200px; display:flex; flex-direction:column; gap:10px;}
+  .lane header{display:flex; align-items:baseline; justify-content:space-between; padding:2px 4px;}
+  .lane header h2{margin:0; font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:0.06em; color:var(--ink-dim);}
+  .lane header .count{font-size:11px; color:var(--ink-dim);}
+  .lane-body{display:flex; flex-direction:column; gap:8px; min-height:36px;}
+  .lane-empty{font-size:11.5px; color:var(--ink-dim); padding:8px 4px; font-style:italic;}
+
+  .card{background:var(--surface); border:1px solid var(--border); border-radius:8px; padding:10px 11px; display:flex; flex-direction:column; gap:6px;}
+  .card-top{display:flex; align-items:center; gap:5px; flex-wrap:wrap;}
+  .project-tag{font-size:10.5px; font-weight:600; color:var(--ink-dim); background:var(--bg); border:1px solid var(--border); border-radius:5px; padding:2px 6px;}
+  .badge{font-size:10.5px; font-weight:600; border-radius:5px; padding:2px 6px; white-space:nowrap;}
+  .badge.risk{color:var(--accent); background:var(--accent-wash);}
+  .badge.blocked{color:var(--closed); background:var(--closed-bg);}
+  .badge.owner{color:var(--progress); background:var(--progress-bg);}
+  .intent{margin:0; font-size:13px; line-height:1.4; font-weight:500;}
+  .card-foot{display:flex; align-items:center; justify-content:space-between; gap:6px;}
+  .card-foot .id{font-size:10.5px; color:var(--ink-dim);}
+  .controls{display:flex; gap:4px; flex-wrap:wrap;}
+  .ctl{border:1px solid var(--border); background:var(--bg); color:var(--ink-dim); border-radius:5px; padding:3px 7px; font-size:10.5px; font-weight:600;}
+  .ctl[aria-pressed="true"]{border-color:var(--ink); color:var(--ink); background:var(--surface-2);}
+  .ctl.pause[aria-pressed="true"]{border-color:var(--proposed); color:var(--proposed); background:var(--proposed-bg);}
+  .ctl.skip[aria-pressed="true"]{border-color:var(--closed); color:var(--closed); background:var(--closed-bg);}
+  .ctl.restart[aria-pressed="true"]{border-color:var(--accent); color:var(--accent); background:var(--accent-wash);}
+  .ctl.run[aria-pressed="true"]{border-color:var(--built); color:var(--built); background:var(--built-bg);}
+
+  .sidebar{width:250px; flex:none; background:var(--surface); border:1px solid var(--border); border-radius:10px; padding:14px;}
+  .sidebar h2{margin:0 0 10px; font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:0.06em; color:var(--ink-dim);}
+  .agent{border-top:1px solid var(--border); padding:9px 0; font-size:12.5px;}
+  .agent:first-of-type{border-top:none; padding-top:0;}
+  .agent .who{font-weight:600;}
+  .agent .status{font-size:11px; padding:1px 6px; border-radius:5px; margin-left:6px;}
+  .agent .status.working{color:var(--progress); background:var(--progress-bg);}
+  .agent .status.idle{color:var(--ink-dim); background:var(--surface-2);}
+  .agent .status.paused{color:var(--proposed); background:var(--proposed-bg);}
+  .agent .status.stale{color:var(--closed); background:var(--closed-bg);}
+  .agent .ticket{color:var(--ink-dim); font-size:11.5px; margin-top:2px;}
+  .agent .since{color:var(--ink-dim); font-size:11px; margin-top:2px;}
+  .empty-note{font-size:12px; color:var(--ink-dim); font-style:italic;}
+
+  [hidden]{display:none!important;}
+  @media (max-width:900px){
+    .layout{flex-direction:column;}
+    .sidebar{width:100%;}
+  }
+  @media (max-width:720px){
+    .board{flex-direction:column; overflow-x:visible;}
+    .lane{max-width:100%;}
+  }
+</style>
+</head>
+<body>
+  <header class="top">
+    <div class="wordmark">
+      <h1>Peephole</h1>
+      <span class="project mono" id="projectName">—</span>
+      <a class="remote-link mono" id="remoteLink" href="#" target="_blank" rel="noopener"></a>
+      <span class="branch mono" id="branchName"></span>
+    </div>
+  </header>
+
+  <div class="statusbar">
+    <button class="primary" id="pullBtn" type="button">Pull latest</button>
+    <button class="ghost" id="autoFetchToggle" type="button" aria-pressed="false">Auto-fetch</button>
+    <span>every</span>
+    <input class="interval mono" id="intervalInput" type="number" min="1" max="180" value="5">
+    <span>min</span>
+    <span class="spacer"></span>
+    <span class="hookstate" id="hookState">Hook: not configured — checking…</span>
+    <span class="mono" id="lastUpdated"></span>
+  </div>
+
+  <div class="banner warn" id="issuesBanner" hidden>
+    <div>
+      <b id="issuesTitle">Issues</b>
+      <ul id="issuesList"></ul>
+    </div>
+    <button class="primary fixbtn" id="fixBtn" type="button">Fix it</button>
+  </div>
+
+  <div class="banner push" id="pushBanner" hidden>
+    <span id="pushText"></span>
+    <button class="primary fixbtn" id="pushBtn" type="button">Push to remote</button>
+  </div>
+
+  <section class="insights" id="insights">
+    <div class="insights-head">
+      <button class="insights-toggle" id="insightsToggle" type="button" aria-expanded="true" aria-controls="insightsBody">
+        <span class="chevron">▾</span> Insights
+      </button>
+    </div>
+    <div class="insights-body" id="insightsBody">
+      <div class="stat-row" id="statRow"></div>
+      <div class="langs" id="langs"></div>
+    </div>
+  </section>
+
+  <div class="layout">
+    <div class="board" id="board"></div>
+    <aside class="sidebar">
+      <h2>Agents</h2>
+      <div id="agentList"><p class="empty-note">No live sessions.</p></div>
+    </aside>
+  </div>
+
+  <script src="/app.js"></script>
+</body>
+</html>
