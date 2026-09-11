@@ -57,7 +57,10 @@
       return " " + (codeSpans.length - 1) + " ";
     });
     var withLinks = withoutCode.replace(/\[([^\]]+)\]\(([^)]+)\)/g, function (_, text, url) {
-      return '<a href="' + url + '" target="_blank" rel="noopener">' + text + "</a>";
+      // Only allow schemes that can't execute script (a ticket body's URL isn't necessarily
+      // ours — anything writing .peephole/tickets/*.md controls what lands here).
+      var safe = /^(https?:\/\/|mailto:|\/|#)/i.test(url) ? url : "#";
+      return '<a href="' + safe + '" target="_blank" rel="noopener noreferrer">' + text + "</a>";
     });
     var withBold = withLinks.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
     return withBold.replace(/ (\d+) /g, function (_, i) {
