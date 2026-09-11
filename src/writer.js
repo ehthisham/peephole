@@ -178,9 +178,50 @@ export async function setControl(repoRoot, remoteBranch, ticketId, control, acto
   return { committed: Boolean(sha), sha, unpushed, worktreePath, localBranch };
 }
 
+/** Moves a ticket's `state` — forward (proposed→...→shipped) or to `closed`, per the ledger rule
+ * (state only ever advances or closes, never drags backward, never deletes). Always its own commit:
+ * unlike `control` clicks this is a meaningful milestone, never rapid-fire. */
+export async function setState(repoRoot, remoteBranch, ticketId, state, actor = "peephole-ui") {
+  const { STATES, FORWARD_STATES, parseTicket } = await import("./schema.js");
+  if (!STATES.includes(state)) {
+    throw new Error(`invalid state "${state}" (expected one of ${STATES.join(", ")})`);
+  }
+  const { worktreePath, localBranch } = await prepWorktree(repoRoot, remoteBranch);
+  const file = path.join(worktreePath, ".peephole", "tickets", `${ticketId}.md`);
+  if (!(await fileExists(file))) throw new Error(`ticket "${ticketId}" not found`);
+  const raw = await fs.readFile(file, "utf8");
+
+  const parsed = parseTicket(raw, ticketId);
+  if (!parsed.ok) throw new Error(`Cannot update ${ticketId}: ${parsed.errors.join("; ")}`);
+  const ticket = parsed.ticket;
+
+  const fromIdx = FORWARD_STATES.indexOf(ticket.state);
+  const toIdx = FORWARD_STATES.indexOf(state);
+  const isForward = fromIdx !== -1 && toIdx !== -1 && toIdx > fromIdx;
+  const isClose = state === "closed";
+  if (!isForward && !isClose) {
+    throw new Error(`cannot move "${ticketId}" from ${ticket.state} to ${state} — state only ever advances forward or to closed`);
+  }
+
+  const from = ticket.state;
+  ticket.state = state;
+  ticket.updatedAt = new Date().toISOString();
+  ticket.history = Array.isArray(ticket.history) ? ticket.history : [];
+  ticket.history.push({ at: ticket.updatedAt, from, to: state, by: actor });
+
+  await fs.writeFile(file, serializeTicket(ticket), "utf8");
+  const sha = await git.commitAll(worktreePath, `peephole: ${ticketId} state -> ${state}`);
+  const unpushed = await git.unpushedCount(worktreePath, localBranch, remoteBranch);
+  return { committed: Boolean(sha), sha, unpushed, ticket };
+}
+
 /** Creates a new ticket file with a schema-correct frontmatter — the deterministic alternative to an agent hand-writing YAML. Always its own commit. */
-export async function createTicket(repoRoot, remoteBranch, { id, project, intent, acceptance = "", risk = "reversible", owner = null, actor = "agent" }) {
+export async function createTicket(repoRoot, remoteBranch, { id, project, intent, acceptance = "", body = "", risk = "reversible", owner = null, state: stateOverride, actor = "agent" }) {
   if (!project || !intent) throw new Error("project and intent are required");
+  const { STATES } = await import("./schema.js");
+  if (stateOverride && !STATES.includes(stateOverride)) {
+    throw new Error(`invalid state "${stateOverride}" (expected one of ${STATES.join(", ")})`);
+  }
   const { worktreePath, localBranch } = await prepWorktree(repoRoot, remoteBranch);
   const dir = path.join(worktreePath, ".peephole", "tickets");
   await ensureDir(dir);
@@ -188,9 +229,9 @@ export async function createTicket(repoRoot, remoteBranch, { id, project, intent
   if (await fileExists(file)) throw new Error(`ticket "${id}" already exists`);
 
   const now = new Date().toISOString();
-  const state = owner ? "in-progress" : "proposed";
+  const state = stateOverride || (owner ? "in-progress" : "proposed");
   const ticket = {
-    id, project, intent, acceptance, state, risk, blockedOn: "", control: "run", owner,
+    id, project, intent, acceptance, body, state, risk, blockedOn: "", control: "run", owner,
     branch: null, pr: null, estimate: null, createdAt: now, updatedAt: now,
     history: [{ at: now, from: null, to: state, by: actor }],
   };
@@ -228,7 +269,7 @@ export async function claimTicket(repoRoot, remoteBranch, ticketId, owner, actor
 }
 
 /** Upserts one session's heartbeat file. Rapid repeat calls (same session, still unpushed) amend, same as control writes. */
-export async function writeHeartbeat(repoRoot, remoteBranch, { sessionId, host, activeTicket, status }) {
+export async function writeHeartbeat(repoRoot, remoteBranch, { sessionId, host, activeTicket, status, tokens }) {
   const { worktreePath, localBranch } = await prepWorktree(repoRoot, remoteBranch);
   const dir = path.join(worktreePath, ".peephole", "agents");
   await ensureDir(dir);
@@ -250,6 +291,7 @@ export async function writeHeartbeat(repoRoot, remoteBranch, { sessionId, host, 
     lastSeenAt: now,
     activeTicket: activeTicket !== undefined ? activeTicket : (existing.activeTicket ?? null),
     status: status || existing.status || "working",
+    tokens: tokens ?? existing.tokens ?? null,
   };
   await fs.writeFile(file, JSON.stringify(agent, null, 2) + "\n", "utf8");
   const { sha, unpushed } = await commitOrAmend(

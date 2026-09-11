@@ -31,6 +31,8 @@
   var branchName = document.getElementById("branchName");
   var statRow = document.getElementById("statRow");
   var langs = document.getElementById("langs");
+  var tokenUsage = document.getElementById("tokenUsage");
+  var memberList = document.getElementById("memberList");
   var insightsToggle = document.getElementById("insightsToggle");
   var insightsBody = document.getElementById("insightsBody");
 
@@ -177,6 +179,46 @@
         '<span class="status ' + status + '">' + status + "</span>" +
         (a.activeTicket ? '<div class="ticket mono">#' + esc(a.activeTicket) + "</div>" : "") +
         '<div class="since">last seen ' + relTime(a.lastSeenAt) + "</div>" +
+        (a.tokens ? '<div class="tokens mono">' + fmtNum(a.tokens.totalTokens) + " tokens</div>" : "") +
+        "</div>"
+      );
+    }).join("");
+  }
+
+  /** Per-session token usage, sorted highest first. `a.tokens.totalTokens` is input +
+   *  output + cache-writes (see src/tokens.js) — cache-READ tokens are excluded from this
+   *  headline number since they're re-sent context, not new work. */
+  function renderTokenUsage(agents) {
+    var withTokens = (agents || []).filter(function (a) { return a.tokens && a.tokens.totalTokens > 0; });
+    if (withTokens.length === 0) {
+      tokenUsage.innerHTML = "";
+      return;
+    }
+    withTokens.sort(function (a, b) { return b.tokens.totalTokens - a.tokens.totalTokens; });
+    var max = withTokens[0].tokens.totalTokens;
+    tokenUsage.innerHTML =
+      "<h3>Tokens by session</h3>" +
+      withTokens.map(function (a) {
+        var pct = max > 0 ? Math.round((a.tokens.totalTokens / max) * 100) : 0;
+        return (
+          '<div class="token-row"><span class="name mono">' + esc(a.sessionId || "?") + '</span>' +
+          '<span class="bar-track"><span class="bar-fill" style="width:' + pct + '%"></span></span>' +
+          '<span class="amount mono">' + fmtNum(a.tokens.totalTokens) + "</span></div>"
+        );
+      }).join("");
+  }
+
+  /** Each contributor's name + commit count on the active branch — the "contribution" figure. */
+  function renderMembers(list) {
+    if (!list || list.length === 0) {
+      memberList.innerHTML = '<p class="empty-note">No commits yet.</p>';
+      return;
+    }
+    memberList.innerHTML = list.map(function (m) {
+      return (
+        '<div class="member">' +
+        '<span class="name">' + esc(m.name) + "</span>" +
+        '<span class="contribution mono">' + fmtNum(m.commits) + " commit" + (m.commits === 1 ? "" : "s") + "</span>" +
         "</div>"
       );
     }).join("");
@@ -218,6 +260,8 @@
     renderInsights(state.stats);
     renderBoard(state.tickets || []);
     renderAgents(state.agents || []);
+    renderTokenUsage(state.agents || []);
+    renderMembers((state.stats && state.stats.contributorList) || []);
   }
 
   pullBtn.addEventListener("click", async function () {

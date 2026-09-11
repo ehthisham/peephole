@@ -176,6 +176,20 @@ export async function contributorCount(repoRoot, ref) {
   return out.split("\n").filter((l) => l.trim()).length;
 }
 
+/** Per-author commit counts (the "contribution" the Members panel shows), sorted by
+ * `git shortlog`'s own descending order. Same command as contributorCount — one source. */
+export async function contributorStats(repoRoot, ref) {
+  const out = await run(repoRoot, ["shortlog", "-sn", "--no-merges", ref]);
+  return out
+    .split("\n")
+    .map((line) => {
+      const m = line.match(/^\s*(\d+)\t(.+)$/);
+      if (!m) return null;
+      return { name: m[2].trim(), commits: parseInt(m[1], 10) };
+    })
+    .filter(Boolean);
+}
+
 export async function lastCommitInfo(repoRoot, ref) {
   const out = await run(repoRoot, ["log", "-1", "--format=%an%x09%aI%x09%s", ref]);
   const [author, date, subject] = out.trim().split("\t");

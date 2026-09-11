@@ -6,6 +6,7 @@ import * as git from "./git.js";
 import { scan } from "./scan.js";
 import { repoStats } from "./repoStats.js";
 import * as writer from "./writer.js";
+import * as tokenUsage from "./tokens.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, "..", "public");
@@ -198,6 +199,13 @@ export async function startServer(repoRoot, { port = 4173, remote = "origin" } =
         await refresh({ doFetch: false });
         return sendJson(res, 200, { ...result, state: publicState() });
       }
+      const stateMatch = url.pathname.match(/^\/api\/tickets\/([^/]+)\/state$/);
+      if (req.method === "POST" && stateMatch) {
+        const body = await readJsonBody(req);
+        const result = await writer.setState(repoRoot, stateBranch, stateMatch[1], body.state, body.actor);
+        await refresh({ doFetch: false });
+        return sendJson(res, 200, { ...result, state: publicState() });
+      }
       const getTicketMatch = url.pathname.match(/^\/api\/tickets\/([^/]+)$/);
       if (req.method === "GET" && getTicketMatch) {
         const t = (cache.tickets || []).find((x) => x.id === getTicketMatch[1]);
@@ -210,8 +218,9 @@ export async function startServer(repoRoot, { port = 4173, remote = "origin" } =
       const heartbeatMatch = url.pathname.match(/^\/api\/agents\/([^/]+)\/heartbeat$/);
       if (req.method === "POST" && heartbeatMatch) {
         const body = await readJsonBody(req);
+        const tokens = await tokenUsage.sessionTokenUsage(body.transcriptPath).catch(() => null);
         const result = await writer.writeHeartbeat(repoRoot, stateBranch, {
-          sessionId: heartbeatMatch[1], host: body.host, activeTicket: body.activeTicket, status: body.status,
+          sessionId: heartbeatMatch[1], host: body.host, activeTicket: body.activeTicket, status: body.status, tokens,
         });
         await refresh({ doFetch: false });
         return sendJson(res, 200, { ...result, state: publicState() });
@@ -231,11 +240,15 @@ export async function startServer(repoRoot, { port = 4173, remote = "origin" } =
         if (now - lastWrite > HEARTBEAT_WRITE_INTERVAL_MS) {
           sessionLastHeartbeatWrite.set(sessionId, now);
           try {
+            // Transcript parsing only happens on this throttled (≤once/min) path, never on the
+            // hot per-tool-call check above it — a growing transcript must stay cheap to re-read.
+            const tokens = await tokenUsage.sessionTokenUsage(body.transcriptPath).catch(() => null);
             await writer.writeHeartbeat(repoRoot, stateBranch, {
               sessionId,
               host: body.host,
               activeTicket: owned[0]?.id ?? null,
               status: blockedTicket ? blockedTicket.control : "working",
+              tokens,
             });
             await refresh({ doFetch: false });
           } catch (e) {

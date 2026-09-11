@@ -26,7 +26,9 @@ async function main() {
     await fetch(`http://localhost:${PORT}/api/agents/${encodeURIComponent(sessionId)}/heartbeat`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ host: hostname(), status: "idle", activeTicket: null }),
+      body: JSON.stringify({
+        host: hostname(), status: "idle", activeTicket: null, transcriptPath: payload.transcript_path,
+      }),
       signal: AbortSignal.timeout(1500),
     });
   } catch {

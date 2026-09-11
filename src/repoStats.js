@@ -36,9 +36,10 @@ export async function repoStats(repoRoot, ref) {
     .sort((a, b) => b.linesApprox - a.linesApprox)
     .slice(0, 6);
 
-  const [commits, contributors, lastCommit] = await Promise.all([
+  const [commits, contributors, contributorList, lastCommit] = await Promise.all([
     git.commitCount(repoRoot, ref),
     git.contributorCount(repoRoot, ref),
+    git.contributorStats(repoRoot, ref),
     git.lastCommitInfo(repoRoot, ref),
   ]);
 
@@ -47,6 +48,7 @@ export async function repoStats(repoRoot, ref) {
     linesOfCodeApprox: Math.round(codeBytes / AVG_BYTES_PER_LINE),
     commits,
     contributors,
+    contributorList,
     lastCommit,
     topLanguages,
   };

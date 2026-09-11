@@ -87,6 +87,18 @@ async function cmdTicketClaim(argv) {
   console.log(`claimed "${id}" as ${args.owner} (${result.ticket.state})`);
 }
 
+async function cmdTicketAdvance(argv) {
+  const id = argv[0];
+  const args = parseArgs(argv.slice(1));
+  const port = requirePort(args);
+  if (!id || !args.state) {
+    console.error("usage: peephole ticket advance <id> --state <proposed|in-progress|built|verified|shipped|closed> [--port 4173]");
+    process.exit(1);
+  }
+  const result = await apiCall(port, "POST", `/api/tickets/${encodeURIComponent(id)}/state`, { state: args.state, actor: args.actor });
+  console.log(`"${id}" -> ${result.ticket.state}`);
+}
+
 async function cmdAgentHeartbeat(argv) {
   const args = parseArgs(argv);
   const port = requirePort(args);
@@ -128,6 +140,7 @@ async function main() {
   if (cmd === "serve") return cmdServe(argv.slice(1));
   if (cmd === "ticket" && argv[1] === "new") return cmdTicketNew(argv.slice(2));
   if (cmd === "ticket" && argv[1] === "claim") return cmdTicketClaim(argv.slice(2));
+  if (cmd === "ticket" && argv[1] === "advance") return cmdTicketAdvance(argv.slice(2));
   if (cmd === "agent" && argv[1] === "heartbeat") return cmdAgentHeartbeat(argv.slice(2));
   if (cmd === "control" && argv[1] === "check") return cmdControlCheck(argv.slice(2));
 
@@ -136,6 +149,7 @@ async function main() {
     "  peephole serve [--repo <path>] [--port 4173]\n" +
     '  peephole ticket new --project <p> --intent "<text>" [--id <id>] [--acceptance "<text>"] [--risk reversible|irreversible] [--owner <sessionId>]\n' +
     "  peephole ticket claim <id> --owner <sessionId>\n" +
+    "  peephole ticket advance <id> --state <proposed|in-progress|built|verified|shipped|closed>\n" +
     "  peephole agent heartbeat --session <id> [--ticket <id>] [--status working|idle|paused|stopped]\n" +
     "  peephole control check <id>\n",
   );

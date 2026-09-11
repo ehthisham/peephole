@@ -31,7 +31,7 @@ async function main() {
     res = await fetch(`http://localhost:${PORT}/api/sessions/${encodeURIComponent(sessionId)}/checkin`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ host: hostname() }),
+      body: JSON.stringify({ host: hostname(), transcriptPath: payload.transcript_path }),
       signal: AbortSignal.timeout(TIMEOUT_MS),
     });
   } catch {

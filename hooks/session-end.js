@@ -23,7 +23,7 @@ async function main() {
     await fetch(`http://localhost:${PORT}/api/agents/${encodeURIComponent(sessionId)}/heartbeat`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ status: "stopped" }),
+      body: JSON.stringify({ status: "stopped", transcriptPath: payload.transcript_path }),
       signal: AbortSignal.timeout(1500),
     });
   } catch {

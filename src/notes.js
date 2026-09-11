@@ -63,11 +63,17 @@ Before starting non-trivial work:
    than pushing through. (If \`.claude/settings.local.json\` has Peephole's hooks wired in, this is
    already checked automatically before every tool call — the manual command is the fallback for
    when it isn't.)
-4. Only ever move \`state\` forward (proposed → in-progress → built → verified → shipped) or to
-   \`closed\` — never backward, never delete a ticket file. If a ticket must be hand-edited
-   directly, keep every frontmatter field the CLI would have set (id, project, intent, acceptance,
-   state, risk, blockedOn, control, owner, branch, pr, estimate, createdAt, updatedAt, history) — a
-   missing field or an invalid state/risk/control value makes the dashboard reject the file.
+4. As the work actually progresses, advance \`state\` — never hand-edit it, use the CLI:
+   \`\`\`
+   ${cli} ticket advance <id> --state <in-progress|built|verified|shipped|closed> --port ${port}
+   \`\`\`
+   Only ever move forward (proposed → in-progress → built → verified → shipped) or to \`closed\` —
+   never backward, never delete a ticket file. Do this at real milestones (code merged → \`built\`;
+   tests/verification done → \`verified\`; live → \`shipped\`), not speculatively.
+5. If a ticket must be hand-edited directly, keep every frontmatter field the CLI would have set
+   (id, project, intent, acceptance, state, risk, blockedOn, control, owner, branch, pr, estimate,
+   createdAt, updatedAt, history) — a missing field or an invalid state/risk/control value makes
+   the dashboard reject the file.
 
 View the live board: \`${cli} serve --repo ${repoRoot} --port ${port}\``;
 }

@@ -72,6 +72,13 @@
   .lang-row .bar-track{flex:1; background:var(--surface-2); border-radius:4px; height:8px; overflow:hidden;}
   .lang-row .bar-fill{height:100%; background:var(--accent); border-radius:4px;}
   .lang-row .amount{width:110px; flex:none; text-align:right; color:var(--ink-dim); font-size:11.5px;}
+  .tokens{background:var(--surface); border:1px solid var(--border); border-radius:8px; padding:12px 14px; margin-top:10px;}
+  .tokens h3{margin:0 0 8px; font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:0.05em; color:var(--ink-dim);}
+  .token-row{display:flex; align-items:center; gap:8px; font-size:12.5px; margin-bottom:5px;}
+  .token-row .name{width:130px; flex:none; color:var(--ink-dim); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+  .token-row .bar-track{flex:1; background:var(--surface-2); border-radius:4px; height:8px; overflow:hidden;}
+  .token-row .bar-fill{height:100%; background:var(--accent); border-radius:4px;}
+  .token-row .amount{width:90px; flex:none; text-align:right; color:var(--ink-dim); font-size:11.5px;}
 
   .layout{max-width:1220px; margin:0 auto; display:flex; gap:20px; align-items:flex-start;}
   .board{flex:1; display:flex; gap:14px; align-items:flex-start; overflow-x:auto;}
@@ -112,6 +119,12 @@
   .agent .status.stale{color:var(--closed); background:var(--closed-bg);}
   .agent .ticket{color:var(--ink-dim); font-size:11.5px; margin-top:2px;}
   .agent .since{color:var(--ink-dim); font-size:11px; margin-top:2px;}
+  .agent .tokens{color:var(--ink-dim); font-size:11px; margin-top:2px;}
+  .members{margin-top:18px;}
+  .member{border-top:1px solid var(--border); padding:9px 0; font-size:12.5px; display:flex; align-items:baseline; justify-content:space-between; gap:8px;}
+  .member:first-of-type{border-top:none; padding-top:0;}
+  .member .name{font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+  .member .contribution{color:var(--ink-dim); font-size:11.5px; flex:none;}
   .empty-note{font-size:12px; color:var(--ink-dim); font-style:italic;}
 
   [hidden]{display:none!important;}
@@ -168,6 +181,7 @@
     <div class="insights-body" id="insightsBody">
       <div class="stat-row" id="statRow"></div>
       <div class="langs" id="langs"></div>
+      <div class="tokens" id="tokenUsage"></div>
     </div>
   </section>
 
@@ -176,6 +190,10 @@
     <aside class="sidebar">
       <h2>Agents</h2>
       <div id="agentList"><p class="empty-note">No live sessions.</p></div>
+      <div class="members">
+        <h2>Members</h2>
+        <div id="memberList"><p class="empty-note">No commits yet.</p></div>
+      </div>
     </aside>
   </div>
 
