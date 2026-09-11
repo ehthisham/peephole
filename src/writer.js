@@ -7,6 +7,21 @@ import { upsertMarkedSection, agentNoteBody, readmeNoteBody } from "./notes.js";
 
 const PEEPHOLE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
+const TICKET_ID_RE = /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/;
+
+function assertSafeTicketId(id, label = "ticket id") {
+  if (typeof id !== "string" || !TICKET_ID_RE.test(id)) {
+    throw new Error(`invalid ${label} "${id}"`);
+  }
+}
+
+function ticketPath(dir, id, label) {
+  assertSafeTicketId(id, label);
+  const file = path.join(dir, `${id}.md`);
+  if (path.dirname(file) !== path.resolve(dir)) throw new Error(`invalid ${label} "${id}"`);
+  return file;
+}
+
 async function prepWorktree(repoRoot, remoteBranch) {
   const { worktreePath, localBranch } = await git.ensureWorktree(repoRoot, remoteBranch);
   await git.syncWorktreeIfClean(worktreePath, localBranch, remoteBranch);
@@ -225,7 +240,7 @@ export async function createTicket(repoRoot, remoteBranch, { id, project, intent
   const { worktreePath, localBranch } = await prepWorktree(repoRoot, remoteBranch);
   const dir = path.join(worktreePath, ".peephole", "tickets");
   await ensureDir(dir);
-  const file = path.join(dir, `${id}.md`);
+  const file = ticketPath(dir, id, "ticket id");
   if (await fileExists(file)) throw new Error(`ticket "${id}" already exists`);
 
   const now = new Date().toISOString();
@@ -311,8 +326,8 @@ export async function writeHeartbeat(repoRoot, remoteBranch, { sessionId, host, 
 export async function renameTicket(repoRoot, remoteBranch, oldId, newId, actor = "peephole-ui", tags) {
   const { worktreePath, localBranch } = await prepWorktree(repoRoot, remoteBranch);
   const dir = path.join(worktreePath, ".peephole", "tickets");
-  const oldFile = path.join(dir, `${oldId}.md`);
-  const newFile = path.join(dir, `${newId}.md`);
+  const oldFile = ticketPath(dir, oldId, "old ticket id");
+  const newFile = ticketPath(dir, newId, "new ticket id");
   if (!(await fileExists(oldFile))) throw new Error(`ticket "${oldId}" not found`);
   if (await fileExists(newFile)) throw new Error(`ticket "${newId}" already exists`);
 
