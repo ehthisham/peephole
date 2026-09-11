@@ -216,7 +216,7 @@ export async function setState(repoRoot, remoteBranch, ticketId, state, actor = 
 }
 
 /** Creates a new ticket file with a schema-correct frontmatter — the deterministic alternative to an agent hand-writing YAML. Always its own commit. */
-export async function createTicket(repoRoot, remoteBranch, { id, project, intent, acceptance = "", body = "", risk = "reversible", owner = null, state: stateOverride, actor = "agent" }) {
+export async function createTicket(repoRoot, remoteBranch, { id, project, intent, acceptance = "", body = "", risk = "reversible", owner = null, tags = [], createdBy = null, state: stateOverride, actor }) {
   if (!project || !intent) throw new Error("project and intent are required");
   const { STATES } = await import("./schema.js");
   if (stateOverride && !STATES.includes(stateOverride)) {
@@ -230,10 +230,12 @@ export async function createTicket(repoRoot, remoteBranch, { id, project, intent
 
   const now = new Date().toISOString();
   const state = stateOverride || (owner ? "in-progress" : "proposed");
+  const who = actor || createdBy || "agent";
   const ticket = {
     id, project, intent, acceptance, body, state, risk, blockedOn: "", control: "run", owner,
+    tags: Array.isArray(tags) ? tags : [], createdBy,
     branch: null, pr: null, estimate: null, createdAt: now, updatedAt: now,
-    history: [{ at: now, from: null, to: state, by: actor }],
+    history: [{ at: now, from: null, to: state, by: who }],
   };
   await fs.writeFile(file, serializeTicket(ticket), "utf8");
   const sha = await git.commitAll(worktreePath, `peephole: new ticket ${id}`);
@@ -302,6 +304,34 @@ export async function writeHeartbeat(repoRoot, remoteBranch, { sessionId, host, 
     `peephole: heartbeat ${sessionId}`, `peephole: heartbeat ${sessionId}`,
   );
   return { committed: Boolean(sha), sha, unpushed, agent };
+}
+
+/** Renames a ticket's id (and its filename) — for fixing a bad id, never for hiding history: the
+ * old id is recorded in `history` so anything cross-referencing it can still be traced. */
+export async function renameTicket(repoRoot, remoteBranch, oldId, newId, actor = "peephole-ui", tags) {
+  const { worktreePath, localBranch } = await prepWorktree(repoRoot, remoteBranch);
+  const dir = path.join(worktreePath, ".peephole", "tickets");
+  const oldFile = path.join(dir, `${oldId}.md`);
+  const newFile = path.join(dir, `${newId}.md`);
+  if (!(await fileExists(oldFile))) throw new Error(`ticket "${oldId}" not found`);
+  if (await fileExists(newFile)) throw new Error(`ticket "${newId}" already exists`);
+
+  const raw = await fs.readFile(oldFile, "utf8");
+  const { parseTicket } = await import("./schema.js");
+  const parsed = parseTicket(raw, oldId);
+  if (!parsed.ok) throw new Error(`Cannot rename ${oldId}: ${parsed.errors.join("; ")}`);
+  const ticket = parsed.ticket;
+  ticket.id = newId;
+  if (Array.isArray(tags)) ticket.tags = tags;
+  ticket.updatedAt = new Date().toISOString();
+  ticket.history = Array.isArray(ticket.history) ? ticket.history : [];
+  ticket.history.push({ at: ticket.updatedAt, from: `id:${oldId}`, to: `id:${newId}`, by: actor });
+
+  await fs.writeFile(newFile, serializeTicket(ticket), "utf8");
+  await fs.unlink(oldFile);
+  const sha = await git.commitAll(worktreePath, `peephole: rename ticket ${oldId} -> ${newId}`);
+  const unpushed = await git.unpushedCount(worktreePath, localBranch, remoteBranch);
+  return { committed: Boolean(sha), sha, unpushed, oldId, newId };
 }
 
 export async function push(repoRoot, remoteBranch) {

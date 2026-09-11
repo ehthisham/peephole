@@ -32,6 +32,7 @@
   var statRow = document.getElementById("statRow");
   var langs = document.getElementById("langs");
   var tokenUsage = document.getElementById("tokenUsage");
+  var coverageModulesEl = document.getElementById("coverageModules");
   var memberList = document.getElementById("memberList");
   var insightsToggle = document.getElementById("insightsToggle");
   var insightsBody = document.getElementById("insightsBody");
@@ -41,6 +42,10 @@
   var ticketModalTitle = document.getElementById("ticketModalTitle");
   var ticketModalClose = document.getElementById("ticketModalClose");
   var ticketModalBody = document.getElementById("ticketModalBody");
+  var newTicketBtn = document.getElementById("newTicketBtn");
+  var newTicketBackdrop = document.getElementById("newTicketBackdrop");
+  var newTicketClose = document.getElementById("newTicketClose");
+  var newTicketForm = document.getElementById("newTicketForm");
 
   function esc(s) {
     return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) {
@@ -177,7 +182,7 @@
     return typeof n === "number" ? n.toLocaleString() : "—";
   }
 
-  function renderInsights(stats, coverage) {
+  function renderInsights(stats, coverage, agents) {
     if (!stats) {
       statRow.innerHTML = '<p class="empty-note">Insights unavailable.</p>';
       langs.innerHTML = "";
@@ -194,6 +199,14 @@
         sub: stats.lastCommit ? esc(stats.lastCommit.author) : "",
       },
     ];
+    // Grand total across every session, not just ones that matched a git-identity'd member —
+    // the same source renderTokenUsage sums per-session, so the two numbers can never disagree.
+    var totalTokens = (agents || []).reduce(function (sum, a) {
+      return sum + ((a.tokens && a.tokens.totalTokens) || 0);
+    }, 0);
+    if (totalTokens > 0) {
+      tiles.push({ value: fmtNum(totalTokens), label: "Total tokens", sub: "all sessions" });
+    }
     // Only shown when a coverage artifact was actually found (coverage.out / coverage-summary.json)
     // — absent means no test run yet, not zero coverage, so the tile is omitted rather than
     // showing a misleading "0%".
@@ -213,6 +226,8 @@
       );
     }).join("");
 
+    renderCoverageModules(coverage);
+
     var topLangs = stats.topLanguages || [];
     if (topLangs.length === 0) {
       langs.innerHTML = "";
@@ -229,6 +244,34 @@
           '<span class="amount mono">' + fmtNum(l.linesApprox) + " · " + l.files + " files</span></div>"
         );
       }).join("");
+  }
+
+  function coverageColor(pct) {
+    if (pct < 40) return "var(--accent)";
+    if (pct < 70) return "var(--proposed)";
+    return "var(--built)";
+  }
+
+  // Per-package breakdown ("how we developed tests" — module by module, worst-covered first),
+  // not just one aggregate percentage. Absent entirely when no coverage.out/-summary.json was
+  // found (no test run yet), same "omit, don't show a misleading 0%" rule as the tile above.
+  function renderCoverageModules(coverage) {
+    if (!coverage || !Array.isArray(coverage.modules) || coverage.modules.length === 0) {
+      coverageModulesEl.innerHTML = "";
+      return;
+    }
+    coverageModulesEl.innerHTML =
+      "<h3>Coverage by package (" + esc(coverage.tool === "go" ? "go test" : "istanbul") + ")</h3>" +
+      '<div class="cov-list">' +
+      coverage.modules.map(function (m) {
+        var pct = Math.max(0, Math.min(100, m.pct));
+        return (
+          '<div class="cov-row"><span class="name" title="' + esc(m.pkg) + '">' + esc(m.pkg) + "</span>" +
+          '<span class="bar-track"><span class="bar-fill" style="width:' + pct.toFixed(0) + "%;background:" + coverageColor(pct) + '"></span></span>' +
+          '<span class="amount">' + pct.toFixed(1) + "% · " + fmtNum(m.covered) + "/" + fmtNum(m.total) + "</span></div>"
+        );
+      }).join("") +
+      "</div>";
   }
 
   function toHttpUrl(remote) {
@@ -252,12 +295,24 @@
   // same case.
   var TERMINAL_STATES = new Set(["shipped", "closed"]);
 
+  // `writer.setState` (server-side) has always enforced forward-or-close-only; this is the
+  // client-side mirror so the button never even offers an invalid move. `closed` has no
+  // successor — nothing advances past it.
+  function nextStateOf(state) {
+    var idx = STATES.findIndex(function (s) { return s.key === state; });
+    if (idx === -1 || idx === STATES.length - 1) return null;
+    return STATES[idx + 1];
+  }
+
   function cardEl(t) {
     var card = document.createElement("article");
     card.className = "card";
     var risk = t.risk === "irreversible" ? '<span class="badge risk">⚠ irreversible</span>' : "";
     var blocked = t.blockedOn ? '<span class="badge blocked">⛓ ' + esc(t.blockedOn) + "</span>" : "";
     var owner = t.owner ? '<span class="badge owner">' + esc(t.owner) + "</span>" : "";
+    var tags = Array.isArray(t.tags) && t.tags.length
+      ? t.tags.map(function (tg) { return '<span class="badge tag">' + esc(tg) + "</span>"; }).join("")
+      : "";
     var isTerminal = TERMINAL_STATES.has(t.state);
     var controls = isTerminal ? "" : CONTROLS.map(function (c) {
       return (
@@ -265,11 +320,16 @@
         (t.control === c) + '" type="button">' + c + "</button>"
       );
     }).join("");
+    var next = nextStateOf(t.state);
+    var advance = next
+      ? '<button class="advance-btn" data-id="' + esc(t.id) + '" data-state="' + next.key + '" type="button">' +
+        esc(next.label) + " →</button>"
+      : "";
     card.innerHTML =
-      '<div class="card-top"><span class="project-tag">' + esc(t.project || "—") + "</span>" + risk + owner + "</div>" +
+      '<div class="card-top"><span class="project-tag">' + esc(t.project || "—") + "</span>" + tags + risk + owner + "</div>" +
       '<p class="intent">' + esc(t.intent) + "</p>" +
       (blocked ? "<div>" + blocked + "</div>" : "") +
-      '<div class="card-foot"><span class="id mono">#' + esc(t.id) + "</span></div>" +
+      '<div class="card-foot"><span class="id mono">#' + esc(t.id) + "</span>" + advance + "</div>" +
       (isTerminal ? "" : '<div class="controls">' + controls + "</div>");
     Array.prototype.forEach.call(card.querySelectorAll(".ctl"), function (btn) {
       btn.addEventListener("click", async function (ev) {
@@ -282,6 +342,20 @@
         }
       });
     });
+    var advanceBtn = card.querySelector(".advance-btn");
+    if (advanceBtn) {
+      advanceBtn.addEventListener("click", async function (ev) {
+        ev.stopPropagation(); // never also open the detail modal
+        advanceBtn.disabled = true;
+        try {
+          await apiPost("/api/tickets/" + encodeURIComponent(advanceBtn.dataset.id) + "/state", {
+            state: advanceBtn.dataset.state, actor: "peephole-ui",
+          });
+        } finally {
+          advanceBtn.disabled = false;
+        }
+      });
+    }
     card.addEventListener("click", function () { openTicketModal(t); });
     return card;
   }
@@ -293,7 +367,9 @@
     var rows = [
       ["State", esc(t.state || "—")],
       ["Risk", esc(t.risk || "—")],
+      ["Tags", Array.isArray(t.tags) && t.tags.length ? t.tags.map(esc).join(", ") : "—"],
       ["Owner", t.owner ? esc(t.owner) : "—"],
+      ["Created by", t.createdBy ? esc(t.createdBy) : "—"],
       ["Branch", t.branch ? '<span class="mono">' + esc(t.branch) + "</span>" : "—"],
       ["PR", t.pr ? esc(t.pr) : "—"],
       ["Estimate", t.estimate ? esc(t.estimate) : "—"],
@@ -328,6 +404,58 @@
   });
   document.addEventListener("keydown", function (ev) {
     if (ev.key === "Escape" && !ticketModalBackdrop.hidden) closeTicketModal();
+    if (ev.key === "Escape" && !newTicketBackdrop.hidden) closeNewTicketModal();
+  });
+
+  // "Created by" defaults to this machine's git identity (server-resolved, see state.gitUser) —
+  // the same identity every commit peephole makes already goes out under. A one-time manual
+  // override is remembered locally so re-opening the form doesn't reset it.
+  var CREATED_BY_KEY = "peephole.createdBy";
+  function openNewTicketModal() {
+    newTicketForm.reset();
+    var state = latestState || {};
+    newTicketForm.project.value = state.project || "";
+    var savedCreatedBy = null;
+    try { savedCreatedBy = localStorage.getItem(CREATED_BY_KEY); } catch (e) {}
+    var gitUser = state.gitUser || {};
+    newTicketForm.createdBy.value = savedCreatedBy || gitUser.name || gitUser.email || "";
+    newTicketBackdrop.hidden = false;
+    newTicketForm.intent.focus();
+  }
+  function closeNewTicketModal() {
+    newTicketBackdrop.hidden = true;
+  }
+  newTicketBtn.addEventListener("click", openNewTicketModal);
+  newTicketClose.addEventListener("click", closeNewTicketModal);
+  newTicketBackdrop.addEventListener("click", function (ev) {
+    if (ev.target === newTicketBackdrop) closeNewTicketModal();
+  });
+  newTicketForm.addEventListener("submit", async function (ev) {
+    ev.preventDefault();
+    var submitBtn = newTicketForm.querySelector('button[type="submit"]');
+    var createdBy = newTicketForm.createdBy.value.trim();
+    try {
+      localStorage.setItem(CREATED_BY_KEY, createdBy);
+    } catch (e) {}
+    submitBtn.disabled = true;
+    submitBtn.textContent = "Creating…";
+    try {
+      var res = await apiPost("/api/tickets", {
+        project: newTicketForm.project.value.trim(),
+        intent: newTicketForm.intent.value.trim(),
+        acceptance: newTicketForm.acceptance.value.trim(),
+        risk: newTicketForm.risk.value,
+        createdBy: createdBy || null,
+      });
+      if (res && res.error) {
+        alert("Could not create ticket: " + res.error);
+        return;
+      }
+      closeNewTicketModal();
+    } finally {
+      submitBtn.disabled = false;
+      submitBtn.textContent = "Create ticket";
+    }
   });
 
   function renderBoard(tickets) {
@@ -393,27 +521,37 @@
       }).join("");
   }
 
-  /** Each contributor's name, commit count, and (when any Claude Code session reported a
-   *  matching git identity — see hooks/identity.js) their token usage — joined server-side by
-   *  mailmap-resolved name so "ehthisham" and "Ehthisham <other-email>" land on one row. */
+  /** The user matrix — one row per contributor, one column per metric. Commit count and token
+   *  usage are joined server-side by mailmap-resolved name (see hooks/identity.js) so
+   *  "ehthisham" and "Ehthisham <other-email>" land on one row. Sorted by tokens first (the
+   *  more AI-era-relevant figure when present), falling back to commits — never by name, which
+   *  would bury whoever's actually doing the most right now at the bottom of an alphabetical list. */
   function renderMembers(list) {
     if (!list || list.length === 0) {
       memberList.innerHTML = '<p class="empty-note">No commits yet.</p>';
       return;
     }
-    memberList.innerHTML = list.map(function (m) {
-      return (
-        '<div class="member">' +
-        '<span class="name">' + esc(m.name) + "</span>" +
-        '<span class="contribution mono">' + fmtNum(m.commits) + " commit" + (m.commits === 1 ? "" : "s") +
-        (m.tokens ? " · " + fmtNum(m.tokens) + " tokens" : "") +
-        "</span>" +
-        "</div>"
-      );
-    }).join("");
+    var rows = list.slice().sort(function (a, b) {
+      return (b.tokens || 0) - (a.tokens || 0) || b.commits - a.commits;
+    });
+    memberList.innerHTML =
+      "<table class=\"matrix\"><thead><tr>" +
+      "<th>Member</th><th>Commits</th><th>Tokens</th>" +
+      "</tr></thead><tbody>" +
+      rows.map(function (m) {
+        return (
+          "<tr><td>" + esc(m.name) + "</td>" +
+          '<td class="mono">' + fmtNum(m.commits) + "</td>" +
+          '<td class="mono">' + (m.tokens ? fmtNum(m.tokens) : "—") + "</td></tr>"
+        );
+      }).join("") +
+      "</tbody></table>";
   }
 
+  var latestState = null;
+
   function render(state) {
+    latestState = state;
     projectName.textContent = state.project || "—";
     remoteLink.textContent = state.remoteUrl || "";
     remoteLink.href = toHttpUrl(state.remoteUrl);
@@ -446,7 +584,7 @@
       pushBanner.hidden = true;
     }
 
-    renderInsights(state.stats, state.coverage);
+    renderInsights(state.stats, state.coverage, state.agents);
     renderBoard(state.tickets || []);
     renderAgents(state.agents || []);
     renderTokenUsage(state.agents || []);

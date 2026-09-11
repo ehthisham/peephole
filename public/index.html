@@ -78,6 +78,14 @@
   .token-row .name{width:130px; flex:none; color:var(--ink-dim); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
   .token-row .bar-track{flex:1; background:var(--surface-2); border-radius:4px; height:8px; overflow:hidden;}
   .token-row .bar-fill{display:block; height:100%; background:var(--accent); border-radius:4px;}
+
+  .coverage-modules h3{margin:16px 0 8px; font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:0.05em; color:var(--ink-dim);}
+  .coverage-modules .cov-list{max-height:260px; overflow-y:auto; padding-right:4px;}
+  .cov-row{display:flex; align-items:center; gap:8px; font-size:12px; margin-bottom:4px;}
+  .cov-row .name{width:160px; flex:none; color:var(--ink-dim); font-family:"IBM Plex Mono",ui-monospace,monospace; font-size:11.5px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+  .cov-row .bar-track{flex:1; background:var(--surface-2); border-radius:4px; height:8px; overflow:hidden;}
+  .cov-row .bar-fill{display:block; height:100%; border-radius:4px;}
+  .cov-row .amount{width:100px; flex:none; text-align:right; color:var(--ink-dim); font-size:11px; white-space:nowrap; font-variant-numeric:tabular-nums;}
   .token-row .amount{width:90px; flex:none; text-align:right; color:var(--ink-dim); font-size:11.5px;}
 
   .layout{max-width:1220px; margin:0 auto; display:flex; gap:20px; align-items:flex-start;}
@@ -96,9 +104,13 @@
   .badge.risk{color:var(--accent); background:var(--accent-wash);}
   .badge.blocked{color:var(--closed); background:var(--closed-bg);}
   .badge.owner{color:var(--progress); background:var(--progress-bg);}
+  .badge.tag{color:var(--ink-dim); background:var(--surface-2); border:1px solid var(--border);}
   .intent{margin:0; font-size:13px; line-height:1.4; font-weight:500;}
   .card-foot{display:flex; align-items:center; justify-content:space-between; gap:6px;}
   .card-foot .id{font-size:10.5px; color:var(--ink-dim);}
+  .advance-btn{border:1px solid var(--accent); background:var(--accent-wash); color:var(--accent); border-radius:5px; padding:3px 8px; font-size:10.5px; font-weight:700; white-space:nowrap;}
+  .advance-btn:hover{background:var(--accent); color:var(--accent-ink);}
+  .advance-btn:disabled{opacity:0.5; cursor:default;}
   .controls{display:flex; gap:4px; flex-wrap:wrap;}
   .ctl{border:1px solid var(--border); background:var(--bg); color:var(--ink-dim); border-radius:5px; padding:3px 7px; font-size:10.5px; font-weight:600;}
   .ctl[aria-pressed="true"]{border-color:var(--ink); color:var(--ink); background:var(--surface-2);}
@@ -121,10 +133,12 @@
   .agent .ticket{color:var(--ink-dim); font-size:11.5px; margin-top:2px;}
   .agent .since{color:var(--ink-dim); font-size:11px; margin-top:2px;}
   .agent .tokens{color:var(--ink-dim); font-size:11px; margin-top:2px;}
-  .member{border-top:1px solid var(--border); padding:9px 0; font-size:12.5px; display:flex; align-items:baseline; justify-content:space-between; gap:8px;}
-  .member:first-of-type{border-top:none; padding-top:0;}
-  .member .name{font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
-  .member .contribution{color:var(--ink-dim); font-size:11.5px; flex:none;}
+  table.matrix{width:100%; border-collapse:collapse; font-size:12.5px;}
+  table.matrix th{text-align:left; font-size:10.5px; font-weight:600; text-transform:uppercase; letter-spacing:0.04em; color:var(--ink-dim); padding:0 8px 6px 0; border-bottom:1px solid var(--border);}
+  table.matrix td{padding:7px 8px 7px 0; border-top:1px solid var(--border);}
+  table.matrix tr:first-child td{border-top:none;}
+  table.matrix th:not(:first-child), table.matrix td:not(:first-child){text-align:right;}
+  table.matrix td:first-child{font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:0;}
   .empty-note{font-size:12px; color:var(--ink-dim); font-style:italic;}
 
   .card{cursor:pointer;}
@@ -173,6 +187,17 @@
   .modal-body a{color:var(--accent);}
   .modal-history .by{color:var(--ink); font-weight:600;}
 
+  #newTicketForm .field{margin-bottom:14px;}
+  #newTicketForm label{display:block; font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:0.04em; color:var(--ink-dim); margin-bottom:5px;}
+  #newTicketForm input, #newTicketForm textarea, #newTicketForm select{
+    width:100%; font:inherit; font-size:13.5px; padding:8px 10px; border:1px solid var(--border);
+    border-radius:6px; background:var(--bg); color:var(--ink); resize:vertical;
+  }
+  #newTicketForm input:focus, #newTicketForm textarea:focus, #newTicketForm select:focus{
+    outline:2px solid var(--accent); outline-offset:1px;
+  }
+  #newTicketForm .field-actions{display:flex; justify-content:flex-end; margin-top:4px;}
+
   [hidden]{display:none!important;}
   @media (max-width:720px){
     .board{flex-direction:column; overflow-x:visible;}
@@ -192,6 +217,7 @@
   </header>
 
   <div class="statusbar">
+    <button class="primary" id="newTicketBtn" type="button">+ New ticket</button>
     <button class="primary" id="pullBtn" type="button">Pull latest</button>
     <button class="ghost" id="autoFetchToggle" type="button" aria-pressed="false">Auto-fetch</button>
     <span>every</span>
@@ -225,6 +251,7 @@
       <div class="stat-row" id="statRow"></div>
       <div class="langs" id="langs"></div>
       <div class="tokens" id="tokenUsage"></div>
+      <div class="coverage-modules" id="coverageModules"></div>
     </div>
   </section>
 
@@ -259,6 +286,45 @@
         <button class="modal-close" id="ticketModalClose" type="button" aria-label="Close">✕</button>
       </div>
       <div class="modal-body" id="ticketModalBody"></div>
+    </div>
+  </div>
+
+  <div class="modal-backdrop" id="newTicketBackdrop" hidden>
+    <div class="modal" id="newTicketModal" role="dialog" aria-modal="true" aria-labelledby="newTicketTitle">
+      <div class="modal-head">
+        <h2 id="newTicketTitle">New ticket</h2>
+        <button class="modal-close" id="newTicketClose" type="button" aria-label="Close">✕</button>
+      </div>
+      <div class="modal-body">
+        <form id="newTicketForm">
+          <div class="field">
+            <label for="nt-project">Project</label>
+            <input id="nt-project" name="project" required>
+          </div>
+          <div class="field">
+            <label for="nt-intent">Intent — one sentence, the why</label>
+            <textarea id="nt-intent" name="intent" rows="2" required></textarea>
+          </div>
+          <div class="field">
+            <label for="nt-acceptance">Acceptance criteria</label>
+            <textarea id="nt-acceptance" name="acceptance" rows="3"></textarea>
+          </div>
+          <div class="field">
+            <label for="nt-risk">Risk</label>
+            <select id="nt-risk" name="risk">
+              <option value="reversible" selected>Reversible</option>
+              <option value="irreversible">Irreversible</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="nt-createdby">Created by</label>
+            <input id="nt-createdby" name="createdBy">
+          </div>
+          <div class="field-actions">
+            <button class="primary" type="submit">Create ticket</button>
+          </div>
+        </form>
+      </div>
     </div>
   </div>
 

@@ -29,6 +29,21 @@ export async function remoteUrl(repoRoot, remote = "origin") {
   }
 }
 
+/** The git identity already configured for this repo — the same one every commit peephole
+ * makes goes out under. Used as the default "created by" for a UI-created ticket; nothing new
+ * to configure. */
+export async function gitUser(repoRoot) {
+  const get = async (key) => {
+    try {
+      return (await run(repoRoot, ["config", key])).trim() || null;
+    } catch {
+      return null;
+    }
+  };
+  const [name, email] = await Promise.all([get("user.name"), get("user.email")]);
+  return { name, email };
+}
+
 export async function currentBranch(repoRoot) {
   return (await run(repoRoot, ["rev-parse", "--abbrev-ref", "HEAD"])).trim();
 }

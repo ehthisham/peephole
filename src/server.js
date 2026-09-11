@@ -26,6 +26,12 @@ export async function startServer(repoRoot, { port = 4173, remote = "origin" } =
   const stateBranch = await git.defaultRemoteBranch(repoRoot, remote);
   const remoteUrl = await git.remoteUrl(repoRoot, remote);
   const { worktreePath, localBranch } = await git.ensureWorktree(repoRoot, stateBranch, remote);
+  // The identity a UI-created ticket's "created by" defaults to — this machine's configured git
+  // identity, resolved through .mailmap so it matches the Members panel's naming.
+  const rawGitUser = await git.gitUser(repoRoot);
+  const gitUser = rawGitUser.name && rawGitUser.email
+    ? await git.checkMailmap(repoRoot, rawGitUser.name, rawGitUser.email)
+    : rawGitUser;
 
   let cache = { config: null, tickets: [], agents: [], issues: [], lastFetchedAt: null, unpushed: 0, coverage: null };
   let autoFetch = { enabled: false, intervalMinutes: 5 };
@@ -74,6 +80,7 @@ export async function startServer(repoRoot, { port = 4173, remote = "origin" } =
       remoteUrl,
       remote,
       stateBranch,
+      gitUser,
       hookConfigured: hookConfigured(),
       autoFetch,
       ...cache,
@@ -233,6 +240,13 @@ export async function startServer(repoRoot, { port = 4173, remote = "origin" } =
       if (req.method === "POST" && stateMatch) {
         const body = await readJsonBody(req);
         const result = await writer.setState(repoRoot, stateBranch, stateMatch[1], body.state, body.actor);
+        await refresh({ doFetch: false });
+        return sendJson(res, 200, { ...result, state: publicState() });
+      }
+      const renameMatch = url.pathname.match(/^\/api\/tickets\/([^/]+)\/rename$/);
+      if (req.method === "POST" && renameMatch) {
+        const body = await readJsonBody(req);
+        const result = await writer.renameTicket(repoRoot, stateBranch, renameMatch[1], body.newId, body.actor, body.tags);
         await refresh({ doFetch: false });
         return sendJson(res, 200, { ...result, state: publicState() });
       }
