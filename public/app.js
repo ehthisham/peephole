@@ -48,6 +48,118 @@
     });
   }
 
+  // Inline markdown within one already-escaped line: **bold**, `code`, [text](url). Order matters —
+  // code spans are pulled out first so bold/link markers inside them are never touched.
+  function mdInline(escapedLine) {
+    var codeSpans = [];
+    var withoutCode = escapedLine.replace(/`([^`]+)`/g, function (_, code) {
+      codeSpans.push(code);
+      return " " + (codeSpans.length - 1) + " ";
+    });
+    var withLinks = withoutCode.replace(/\[([^\]]+)\]\(([^)]+)\)/g, function (_, text, url) {
+      return '<a href="' + url + '" target="_blank" rel="noopener">' + text + "</a>";
+    });
+    var withBold = withLinks.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+    return withBold.replace(/ (\d+) /g, function (_, i) {
+      return "<code>" + codeSpans[Number(i)] + "</code>";
+    });
+  }
+
+  // A small, deliberately non-general markdown renderer: handles exactly the subset Peephole's own
+  // ticket bodies use (##/### headers, fenced ``` code blocks, **bold**, `code`, [links](url),
+  // "- " bullet lists, "1. " numbered lists, "| a | b |" tables, blank-line-separated paragraphs).
+  // Not a CommonMark implementation — just enough to make a ticket body readable instead of one
+  // whitespace-collapsed blob.
+  function renderMarkdown(md) {
+    var lines = String(md || "").replace(/\r\n/g, "\n").split("\n");
+    var html = [];
+    var i = 0;
+    var para = [];
+    function flushPara() {
+      if (para.length) {
+        // Source lines are hard-wrapped for git-diff friendliness, not intentional line breaks —
+        // join with a space (markdown's own soft-wrap rule), not <br>.
+        html.push("<p>" + mdInline(esc(para.join(" "))) + "</p>");
+        para = [];
+      }
+    }
+    while (i < lines.length) {
+      var line = lines[i];
+
+      if (/^```/.test(line)) {
+        flushPara();
+        var lang = line.replace(/^```/, "").trim();
+        var codeLines = [];
+        i++;
+        while (i < lines.length && !/^```/.test(lines[i])) {
+          codeLines.push(lines[i]);
+          i++;
+        }
+        i++; // skip closing fence
+        html.push('<pre class="md-code"><code class="lang-' + esc(lang || "text") + '">' + esc(codeLines.join("\n")) + "</code></pre>");
+        continue;
+      }
+
+      var h = line.match(/^(#{2,4})\s+(.*)$/);
+      if (h) {
+        flushPara();
+        var level = Math.min(h[1].length + 2, 6); // ## -> h4, ### -> h5
+        html.push("<h" + level + ' class="md-h">' + mdInline(esc(h[2])) + "</h" + level + ">");
+        i++;
+        continue;
+      }
+
+      if (/^\s*[-*]\s+/.test(line)) {
+        flushPara();
+        var items = [];
+        while (i < lines.length && /^\s*[-*]\s+/.test(lines[i])) {
+          items.push(mdInline(esc(lines[i].replace(/^\s*[-*]\s+/, ""))));
+          i++;
+        }
+        html.push("<ul>" + items.map(function (it) { return "<li>" + it + "</li>"; }).join("") + "</ul>");
+        continue;
+      }
+
+      if (/^\s*\d+\.\s+/.test(line)) {
+        flushPara();
+        var oitems = [];
+        while (i < lines.length && /^\s*\d+\.\s+/.test(lines[i])) {
+          oitems.push(mdInline(esc(lines[i].replace(/^\s*\d+\.\s+/, ""))));
+          i++;
+        }
+        html.push("<ol>" + oitems.map(function (it) { return "<li>" + it + "</li>"; }).join("") + "</ol>");
+        continue;
+      }
+
+      if (/^\s*\|.*\|\s*$/.test(line) && i + 1 < lines.length && /^\s*\|[\s:|-]+\|\s*$/.test(lines[i + 1])) {
+        flushPara();
+        var headCells = line.split("|").slice(1, -1).map(function (c) { return mdInline(esc(c.trim())); });
+        i += 2; // header + separator
+        var bodyRows = [];
+        while (i < lines.length && /^\s*\|.*\|\s*$/.test(lines[i])) {
+          bodyRows.push(lines[i].split("|").slice(1, -1).map(function (c) { return mdInline(esc(c.trim())); }));
+          i++;
+        }
+        html.push(
+          "<table><thead><tr>" + headCells.map(function (c) { return "<th>" + c + "</th>"; }).join("") + "</tr></thead>" +
+          "<tbody>" + bodyRows.map(function (r) { return "<tr>" + r.map(function (c) { return "<td>" + c + "</td>"; }).join("") + "</tr>"; }).join("") + "</tbody></table>"
+        );
+        continue;
+      }
+
+      if (line.trim() === "") {
+        flushPara();
+        i++;
+        continue;
+      }
+
+      para.push(line);
+      i++;
+    }
+    flushPara();
+    return html.join("\n");
+  }
+
   function relTime(iso) {
     if (!iso) return "never";
     var diff = (Date.now() - Date.parse(iso)) / 1000;
@@ -199,8 +311,8 @@
     ticketModalBody.innerHTML =
       rowsHtml +
       "<h3>Intent</h3><p>" + esc(t.intent || "—") + "</p>" +
-      (t.acceptance ? "<h3>Acceptance</h3><p>" + esc(t.acceptance) + "</p>" : "") +
-      (t.body ? "<h3>Notes</h3><p>" + esc(t.body) + "</p>" : "") +
+      (t.acceptance ? "<h3>Acceptance</h3>" + renderMarkdown(t.acceptance) : "") +
+      (t.body ? "<h3>Notes</h3>" + renderMarkdown(t.body) : "") +
       "<h3>History</h3>" + historyHtml;
     ticketModalBackdrop.hidden = false;
   }
