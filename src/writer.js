@@ -269,7 +269,7 @@ export async function claimTicket(repoRoot, remoteBranch, ticketId, owner, actor
 }
 
 /** Upserts one session's heartbeat file. Rapid repeat calls (same session, still unpushed) amend, same as control writes. */
-export async function writeHeartbeat(repoRoot, remoteBranch, { sessionId, host, activeTicket, status, tokens }) {
+export async function writeHeartbeat(repoRoot, remoteBranch, { sessionId, host, activeTicket, status, tokens, author }) {
   const { worktreePath, localBranch } = await prepWorktree(repoRoot, remoteBranch);
   const dir = path.join(worktreePath, ".peephole", "agents");
   await ensureDir(dir);
@@ -292,6 +292,9 @@ export async function writeHeartbeat(repoRoot, remoteBranch, { sessionId, host, 
     activeTicket: activeTicket !== undefined ? activeTicket : (existing.activeTicket ?? null),
     status: status || existing.status || "working",
     tokens: tokens ?? existing.tokens ?? null,
+    // Set once at SessionStart (the machine's global git identity) and preserved on every
+    // later heartbeat — PreToolUse's throttled checkin path never sends one, by design.
+    author: author ?? existing.author ?? null,
   };
   await fs.writeFile(file, JSON.stringify(agent, null, 2) + "\n", "utf8");
   const { sha, unpushed } = await commitOrAmend(

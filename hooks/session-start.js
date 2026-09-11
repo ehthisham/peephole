@@ -3,6 +3,7 @@
 // no ticket claimed yet) so it shows up in the Agents panel even before the first tool call.
 // Side-effect only: SessionStart has no blocking mechanism, and none is needed here.
 import { hostname } from "node:os";
+import { gitIdentity } from "./identity.js";
 
 const PORT = process.env.PEEPHOLE_PORT || 4173;
 
@@ -23,11 +24,12 @@ async function main() {
   if (!sessionId) process.exit(0);
 
   try {
+    const author = await gitIdentity();
     await fetch(`http://localhost:${PORT}/api/agents/${encodeURIComponent(sessionId)}/heartbeat`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        host: hostname(), status: "idle", activeTicket: null, transcriptPath: payload.transcript_path,
+        host: hostname(), status: "idle", activeTicket: null, transcriptPath: payload.transcript_path, author,
       }),
       signal: AbortSignal.timeout(1500),
     });

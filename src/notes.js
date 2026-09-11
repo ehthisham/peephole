@@ -74,6 +74,12 @@ Before starting non-trivial work:
    (id, project, intent, acceptance, state, risk, blockedOn, control, owner, branch, pr, estimate,
    createdAt, updatedAt, history) — a missing field or an invalid state/risk/control value makes
    the dashboard reject the file.
+6. Write the ticket body as **What it does** + **Acceptance criteria** — two clear sections, plain
+   readable prose, nothing else. For a shipped feature, "what it does" is the mechanism (a real code
+   snippet or a permalink to the file, not just a citation in prose) and "acceptance criteria" is
+   what proves it works (tests, verified behavior). Never narrate the edit itself — no "Enriched
+   on...", "Corrected 2026-...", "Found by the audit", "this ticket now...". If something changed,
+   say what's true now; the *that it changed* belongs in \`history\`, not the body.
 
 View the live board: \`${cli} serve --repo ${repoRoot} --port ${port}\``;
 }

@@ -7,6 +7,7 @@ import { scan } from "./scan.js";
 import { repoStats } from "./repoStats.js";
 import * as writer from "./writer.js";
 import * as tokenUsage from "./tokens.js";
+import { detectCoverage } from "./coverage.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, "..", "public");
@@ -26,7 +27,7 @@ export async function startServer(repoRoot, { port = 4173, remote = "origin" } =
   const remoteUrl = await git.remoteUrl(repoRoot, remote);
   const { worktreePath, localBranch } = await git.ensureWorktree(repoRoot, stateBranch, remote);
 
-  let cache = { config: null, tickets: [], agents: [], issues: [], lastFetchedAt: null, unpushed: 0 };
+  let cache = { config: null, tickets: [], agents: [], issues: [], lastFetchedAt: null, unpushed: 0, coverage: null };
   let autoFetch = { enabled: false, intervalMinutes: 5 };
   let autoFetchTimer = null;
   const sseClients = new Set();
@@ -37,6 +38,22 @@ export async function startServer(repoRoot, { port = 4173, remote = "origin" } =
   const sessionLastHeartbeatWrite = new Map();
   const HEARTBEAT_WRITE_INTERVAL_MS = 60 * 1000;
   const HOOK_LIVE_WINDOW_MS = 10 * 60 * 1000;
+
+  /** Joins each agent's token usage onto the Members list by (mailmap-resolved) author name —
+   *  the piece that was missing: token tracking existed per SESSION, but a session has no
+   *  visible link to a person until this. An agent with no `author` (an older heartbeat, or a
+   *  machine with no global git identity set) simply contributes nothing here; it still shows
+   *  in the Agents panel and the per-session "Tokens by session" list, just not per-member. */
+  async function withMemberTokens(agents, contributorList) {
+    if (!contributorList) return contributorList;
+    const totals = new Map();
+    for (const a of agents || []) {
+      if (!a.author || !a.tokens || !a.tokens.totalTokens) continue;
+      const resolved = await git.checkMailmap(repoRoot, a.author.name, a.author.email);
+      totals.set(resolved.name, (totals.get(resolved.name) || 0) + a.tokens.totalTokens);
+    }
+    return contributorList.map((c) => ({ ...c, tokens: totals.get(c.name) || 0 }));
+  }
 
   function broadcast() {
     const payload = JSON.stringify({ type: "state", payload: publicState() });
@@ -76,7 +93,20 @@ export async function startServer(repoRoot, { port = 4173, remote = "origin" } =
       }),
     ]);
     const unpushed = await git.unpushedCount(worktreePath, localBranch, stateBranch, remote).catch(() => 0);
-    cache = { ...state, stats, lastFetchedAt: new Date().toISOString(), unpushed };
+    const enrichedStats = stats
+      ? { ...stats, contributorList: await withMemberTokens(state.agents, stats.contributorList) }
+      : stats;
+    // Coverage is a live-filesystem check (a test-run artifact, not committed — see
+    // coverage.js), and `go tool cover` shells out, so it's only recomputed on a real
+    // fetch cycle (Pull latest / auto-fetch), never on the heartbeat/ticket-write refreshes
+    // that fire as often as once a minute per session — those just carry the last value forward.
+    const coverage = doFetch
+      ? await detectCoverage(repoRoot).catch((e) => {
+          console.error("coverage detection failed:", e.message);
+          return cache.coverage ?? null;
+        })
+      : cache.coverage ?? null;
+    cache = { ...state, stats: enrichedStats, coverage, lastFetchedAt: new Date().toISOString(), unpushed };
     broadcast();
     return cache;
   }
@@ -220,7 +250,8 @@ export async function startServer(repoRoot, { port = 4173, remote = "origin" } =
         const body = await readJsonBody(req);
         const tokens = await tokenUsage.sessionTokenUsage(body.transcriptPath).catch(() => null);
         const result = await writer.writeHeartbeat(repoRoot, stateBranch, {
-          sessionId: heartbeatMatch[1], host: body.host, activeTicket: body.activeTicket, status: body.status, tokens,
+          sessionId: heartbeatMatch[1], host: body.host, activeTicket: body.activeTicket, status: body.status,
+          tokens, author: body.author,
         });
         await refresh({ doFetch: false });
         return sendJson(res, 200, { ...result, state: publicState() });

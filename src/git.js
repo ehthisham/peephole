@@ -190,6 +190,21 @@ export async function contributorStats(repoRoot, ref) {
     .filter(Boolean);
 }
 
+/** Resolves a name/email pair through the repo's `.mailmap` (if any) to the same canonical
+ *  identity `contributorStats`' `git shortlog` already displays — so a hook-reported author
+ *  (the machine's raw global git identity) lines up with the Members panel's commit rows even
+ *  when someone commits under two email addresses (see `.mailmap`). Falls back to the input
+ *  unchanged if there's no mailmap entry, `git` errors, or a bad output shape. */
+export async function checkMailmap(repoRoot, name, email) {
+  try {
+    const out = await run(repoRoot, ["check-mailmap", `${name} <${email}>`]);
+    const m = out.trim().match(/^(.*?)\s*<([^>]*)>$/);
+    return m ? { name: m[1], email: m[2] } : { name, email };
+  } catch {
+    return { name, email };
+  }
+}
+
 export async function lastCommitInfo(repoRoot, ref) {
   const out = await run(repoRoot, ["log", "-1", "--format=%an%x09%aI%x09%s", ref]);
   const [author, date, subject] = out.trim().split("\t");

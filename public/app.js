@@ -35,6 +35,12 @@
   var memberList = document.getElementById("memberList");
   var insightsToggle = document.getElementById("insightsToggle");
   var insightsBody = document.getElementById("insightsBody");
+  var agentsToggle = document.getElementById("agentsToggle");
+  var agentsBody = document.getElementById("agentsBody");
+  var ticketModalBackdrop = document.getElementById("ticketModalBackdrop");
+  var ticketModalTitle = document.getElementById("ticketModalTitle");
+  var ticketModalClose = document.getElementById("ticketModalClose");
+  var ticketModalBody = document.getElementById("ticketModalBody");
 
   function esc(s) {
     return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) {
@@ -56,7 +62,7 @@
     return typeof n === "number" ? n.toLocaleString() : "—";
   }
 
-  function renderInsights(stats) {
+  function renderInsights(stats, coverage) {
     if (!stats) {
       statRow.innerHTML = '<p class="empty-note">Insights unavailable.</p>';
       langs.innerHTML = "";
@@ -73,6 +79,16 @@
         sub: stats.lastCommit ? esc(stats.lastCommit.author) : "",
       },
     ];
+    // Only shown when a coverage artifact was actually found (coverage.out / coverage-summary.json)
+    // — absent means no test run yet, not zero coverage, so the tile is omitted rather than
+    // showing a misleading "0%".
+    if (coverage && typeof coverage.pct === "number") {
+      tiles.push({
+        value: coverage.pct.toFixed(1) + "%",
+        label: "Coverage",
+        sub: coverage.tool === "go" ? "go test" : "istanbul",
+      });
+    }
     statRow.innerHTML = tiles.map(function (t) {
       return (
         '<div class="stat-tile"><div class="value mono">' + t.value + "</div>" +
@@ -116,13 +132,19 @@
     return res.json();
   }
 
+  // Once a ticket has shipped, Run/Pause/Skip/Restart no longer mean anything — the work is
+  // done, there's nothing left to control. "closed" (shipped's own successor state) is the
+  // same case.
+  var TERMINAL_STATES = new Set(["shipped", "closed"]);
+
   function cardEl(t) {
     var card = document.createElement("article");
     card.className = "card";
     var risk = t.risk === "irreversible" ? '<span class="badge risk">⚠ irreversible</span>' : "";
     var blocked = t.blockedOn ? '<span class="badge blocked">⛓ ' + esc(t.blockedOn) + "</span>" : "";
     var owner = t.owner ? '<span class="badge owner">' + esc(t.owner) + "</span>" : "";
-    var controls = CONTROLS.map(function (c) {
+    var isTerminal = TERMINAL_STATES.has(t.state);
+    var controls = isTerminal ? "" : CONTROLS.map(function (c) {
       return (
         '<button class="ctl ' + c + '" data-ctl="' + c + '" data-id="' + esc(t.id) + '" aria-pressed="' +
         (t.control === c) + '" type="button">' + c + "</button>"
@@ -133,9 +155,10 @@
       '<p class="intent">' + esc(t.intent) + "</p>" +
       (blocked ? "<div>" + blocked + "</div>" : "") +
       '<div class="card-foot"><span class="id mono">#' + esc(t.id) + "</span></div>" +
-      '<div class="controls">' + controls + "</div>";
+      (isTerminal ? "" : '<div class="controls">' + controls + "</div>");
     Array.prototype.forEach.call(card.querySelectorAll(".ctl"), function (btn) {
-      btn.addEventListener("click", async function () {
+      btn.addEventListener("click", async function (ev) {
+        ev.stopPropagation(); // a control click must not also open the detail modal
         Array.prototype.forEach.call(card.querySelectorAll(".ctl"), function (b) { b.disabled = true; });
         try {
           await apiPost("/api/tickets/" + encodeURIComponent(btn.dataset.id) + "/control", { control: btn.dataset.ctl });
@@ -144,8 +167,53 @@
         }
       });
     });
+    card.addEventListener("click", function () { openTicketModal(t); });
     return card;
   }
+
+  /** Detail popup for one ticket — everything the compact card leaves out, including the
+   *  branch it was (or is being) built on, if the ticket ever recorded one. */
+  function openTicketModal(t) {
+    ticketModalTitle.textContent = "#" + t.id;
+    var rows = [
+      ["State", esc(t.state || "—")],
+      ["Risk", esc(t.risk || "—")],
+      ["Owner", t.owner ? esc(t.owner) : "—"],
+      ["Branch", t.branch ? '<span class="mono">' + esc(t.branch) + "</span>" : "—"],
+      ["PR", t.pr ? esc(t.pr) : "—"],
+      ["Estimate", t.estimate ? esc(t.estimate) : "—"],
+      ["Blocked on", t.blockedOn ? esc(t.blockedOn) : "—"],
+    ];
+    var rowsHtml = rows.map(function (r) {
+      return '<div class="modal-row"><span class="k">' + r[0] + '</span><span class="v">' + r[1] + "</span></div>";
+    }).join("");
+    var history = Array.isArray(t.history) ? t.history.slice().reverse() : [];
+    var historyHtml = history.length
+      ? '<ul class="modal-history">' + history.map(function (h) {
+          return (
+            "<li>" + relTime(h.at) + " — " + esc(h.from || "—") + " → " + esc(h.to || "—") +
+            ' <span class="by">' + esc(h.by || "") + "</span></li>"
+          );
+        }).join("") + "</ul>"
+      : '<p class="empty-note">No history yet.</p>';
+    ticketModalBody.innerHTML =
+      rowsHtml +
+      "<h3>Intent</h3><p>" + esc(t.intent || "—") + "</p>" +
+      (t.acceptance ? "<h3>Acceptance</h3><p>" + esc(t.acceptance) + "</p>" : "") +
+      (t.body ? "<h3>Notes</h3><p>" + esc(t.body) + "</p>" : "") +
+      "<h3>History</h3>" + historyHtml;
+    ticketModalBackdrop.hidden = false;
+  }
+  function closeTicketModal() {
+    ticketModalBackdrop.hidden = true;
+  }
+  ticketModalClose.addEventListener("click", closeTicketModal);
+  ticketModalBackdrop.addEventListener("click", function (ev) {
+    if (ev.target === ticketModalBackdrop) closeTicketModal();
+  });
+  document.addEventListener("keydown", function (ev) {
+    if (ev.key === "Escape" && !ticketModalBackdrop.hidden) closeTicketModal();
+  });
 
   function renderBoard(tickets) {
     board.innerHTML = "";
@@ -192,8 +260,10 @@
     var withTokens = (agents || []).filter(function (a) { return a.tokens && a.tokens.totalTokens > 0; });
     if (withTokens.length === 0) {
       tokenUsage.innerHTML = "";
+      tokenUsage.hidden = true;
       return;
     }
+    tokenUsage.hidden = false;
     withTokens.sort(function (a, b) { return b.tokens.totalTokens - a.tokens.totalTokens; });
     var max = withTokens[0].tokens.totalTokens;
     tokenUsage.innerHTML =
@@ -208,7 +278,9 @@
       }).join("");
   }
 
-  /** Each contributor's name + commit count on the active branch — the "contribution" figure. */
+  /** Each contributor's name, commit count, and (when any Claude Code session reported a
+   *  matching git identity — see hooks/identity.js) their token usage — joined server-side by
+   *  mailmap-resolved name so "ehthisham" and "Ehthisham <other-email>" land on one row. */
   function renderMembers(list) {
     if (!list || list.length === 0) {
       memberList.innerHTML = '<p class="empty-note">No commits yet.</p>';
@@ -218,7 +290,9 @@
       return (
         '<div class="member">' +
         '<span class="name">' + esc(m.name) + "</span>" +
-        '<span class="contribution mono">' + fmtNum(m.commits) + " commit" + (m.commits === 1 ? "" : "s") + "</span>" +
+        '<span class="contribution mono">' + fmtNum(m.commits) + " commit" + (m.commits === 1 ? "" : "s") +
+        (m.tokens ? " · " + fmtNum(m.tokens) + " tokens" : "") +
+        "</span>" +
         "</div>"
       );
     }).join("");
@@ -257,7 +331,7 @@
       pushBanner.hidden = true;
     }
 
-    renderInsights(state.stats);
+    renderInsights(state.stats, state.coverage);
     renderBoard(state.tickets || []);
     renderAgents(state.agents || []);
     renderTokenUsage(state.agents || []);
@@ -316,6 +390,18 @@
   var storedExpanded = true;
   try { storedExpanded = localStorage.getItem("peephole.insightsExpanded") !== "0"; } catch (e) {}
   setInsightsExpanded(storedExpanded);
+
+  function setAgentsExpanded(expanded) {
+    agentsBody.hidden = !expanded;
+    agentsToggle.setAttribute("aria-expanded", String(expanded));
+    try { localStorage.setItem("peephole.agentsExpanded", expanded ? "1" : "0"); } catch (e) {}
+  }
+  agentsToggle.addEventListener("click", function () {
+    setAgentsExpanded(agentsToggle.getAttribute("aria-expanded") !== "true");
+  });
+  var storedAgentsExpanded = true;
+  try { storedAgentsExpanded = localStorage.getItem("peephole.agentsExpanded") !== "0"; } catch (e) {}
+  setAgentsExpanded(storedAgentsExpanded);
 
   fetch("/api/state").then(function (r) { return r.json(); }).then(render).catch(function () {});
 

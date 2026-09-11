@@ -69,15 +69,15 @@
   .langs h3{margin:0 0 8px; font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:0.05em; color:var(--ink-dim);}
   .lang-row{display:flex; align-items:center; gap:8px; font-size:12.5px; margin-bottom:5px;}
   .lang-row .name{width:90px; flex:none; color:var(--ink-dim);}
-  .lang-row .bar-track{flex:1; background:var(--surface-2); border-radius:4px; height:8px; overflow:hidden;}
-  .lang-row .bar-fill{height:100%; background:var(--accent); border-radius:4px;}
-  .lang-row .amount{width:110px; flex:none; text-align:right; color:var(--ink-dim); font-size:11.5px;}
+  .lang-row .bar-track{flex:1; max-width:160px; background:var(--surface-2); border-radius:4px; height:8px; overflow:hidden;}
+  .lang-row .bar-fill{display:block; height:100%; background:var(--accent); border-radius:4px;}
+  .lang-row .amount{width:150px; flex:none; text-align:right; color:var(--ink-dim); font-size:11.5px; white-space:nowrap;}
   .tokens{background:var(--surface); border:1px solid var(--border); border-radius:8px; padding:12px 14px; margin-top:10px;}
   .tokens h3{margin:0 0 8px; font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:0.05em; color:var(--ink-dim);}
   .token-row{display:flex; align-items:center; gap:8px; font-size:12.5px; margin-bottom:5px;}
   .token-row .name{width:130px; flex:none; color:var(--ink-dim); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
   .token-row .bar-track{flex:1; background:var(--surface-2); border-radius:4px; height:8px; overflow:hidden;}
-  .token-row .bar-fill{height:100%; background:var(--accent); border-radius:4px;}
+  .token-row .bar-fill{display:block; height:100%; background:var(--accent); border-radius:4px;}
   .token-row .amount{width:90px; flex:none; text-align:right; color:var(--ink-dim); font-size:11.5px;}
 
   .layout{max-width:1220px; margin:0 auto; display:flex; gap:20px; align-items:flex-start;}
@@ -107,8 +107,9 @@
   .ctl.restart[aria-pressed="true"]{border-color:var(--accent); color:var(--accent); background:var(--accent-wash);}
   .ctl.run[aria-pressed="true"]{border-color:var(--built); color:var(--built); background:var(--built-bg);}
 
-  .sidebar{width:250px; flex:none; background:var(--surface); border:1px solid var(--border); border-radius:10px; padding:14px;}
-  .sidebar h2{margin:0 0 10px; font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:0.06em; color:var(--ink-dim);}
+  .agents-columns{display:flex; gap:16px; flex-wrap:wrap;}
+  .agents-col{background:var(--surface); border:1px solid var(--border); border-radius:8px; padding:12px 14px; flex:1 1 220px; min-width:200px;}
+  .agents-col h3{margin:0 0 8px; font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:0.05em; color:var(--ink-dim);}
   .agent{border-top:1px solid var(--border); padding:9px 0; font-size:12.5px;}
   .agent:first-of-type{border-top:none; padding-top:0;}
   .agent .who{font-weight:600;}
@@ -120,21 +121,39 @@
   .agent .ticket{color:var(--ink-dim); font-size:11.5px; margin-top:2px;}
   .agent .since{color:var(--ink-dim); font-size:11px; margin-top:2px;}
   .agent .tokens{color:var(--ink-dim); font-size:11px; margin-top:2px;}
-  .members{margin-top:18px;}
   .member{border-top:1px solid var(--border); padding:9px 0; font-size:12.5px; display:flex; align-items:baseline; justify-content:space-between; gap:8px;}
   .member:first-of-type{border-top:none; padding-top:0;}
   .member .name{font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
   .member .contribution{color:var(--ink-dim); font-size:11.5px; flex:none;}
   .empty-note{font-size:12px; color:var(--ink-dim); font-style:italic;}
 
+  .card{cursor:pointer;}
+  .card:hover{border-color:var(--ink-dim);}
+  .intent{overflow-wrap:break-word; word-break:break-word;}
+
+  .modal-backdrop{position:fixed; inset:0; background:rgba(32,26,24,0.45); display:flex; align-items:flex-start; justify-content:center; padding:40px 20px; z-index:1000; overflow-y:auto;}
+  .modal{background:var(--surface); border-radius:12px; max-width:640px; width:100%; box-shadow:0 20px 60px rgba(0,0,0,0.25);}
+  .modal-head{display:flex; align-items:center; justify-content:space-between; padding:16px 18px; border-bottom:1px solid var(--border);}
+  .modal-head h2{margin:0; font-size:15px; font-weight:700;}
+  .modal-close{background:none; border:none; font-size:16px; color:var(--ink-dim); padding:4px 6px; border-radius:6px; line-height:1;}
+  .modal-close:hover{background:var(--surface-2); color:var(--ink);}
+  .modal-body{padding:16px 18px; max-height:70vh; overflow-y:auto; overflow-wrap:break-word; word-break:break-word;}
+  .modal-row{display:flex; gap:10px; font-size:13px; padding:6px 0; border-top:1px solid var(--border);}
+  .modal-row:first-child{border-top:none;}
+  .modal-row .k{width:110px; flex:none; color:var(--ink-dim); font-size:11.5px; text-transform:uppercase; letter-spacing:0.04em; padding-top:2px;}
+  .modal-row .v{flex:1; overflow-wrap:break-word; word-break:break-word;}
+  .modal-body h3{margin:16px 0 8px; font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:0.05em; color:var(--ink-dim);}
+  .modal-body h3:first-child{margin-top:0;}
+  .modal-history{list-style:none; margin:0; padding:0; font-size:12px;}
+  .modal-history li{border-top:1px solid var(--border); padding:6px 0; color:var(--ink-dim);}
+  .modal-history li:first-child{border-top:none;}
+  .modal-history .by{color:var(--ink); font-weight:600;}
+
   [hidden]{display:none!important;}
-  @media (max-width:900px){
-    .layout{flex-direction:column;}
-    .sidebar{width:100%;}
-  }
   @media (max-width:720px){
     .board{flex-direction:column; overflow-x:visible;}
     .lane{max-width:100%;}
+    .agents-columns{flex-direction:column;}
   }
 </style>
 </head>
@@ -185,16 +204,38 @@
     </div>
   </section>
 
+  <section class="insights" id="agentsPanel">
+    <div class="insights-head">
+      <button class="insights-toggle" id="agentsToggle" type="button" aria-expanded="true" aria-controls="agentsBody">
+        <span class="chevron">▾</span> Agents &amp; Members
+      </button>
+    </div>
+    <div class="insights-body" id="agentsBody">
+      <div class="agents-columns">
+        <div class="agents-col">
+          <h3>Agents</h3>
+          <div id="agentList"><p class="empty-note">No live sessions.</p></div>
+        </div>
+        <div class="agents-col">
+          <h3>Members</h3>
+          <div id="memberList"><p class="empty-note">No commits yet.</p></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
   <div class="layout">
     <div class="board" id="board"></div>
-    <aside class="sidebar">
-      <h2>Agents</h2>
-      <div id="agentList"><p class="empty-note">No live sessions.</p></div>
-      <div class="members">
-        <h2>Members</h2>
-        <div id="memberList"><p class="empty-note">No commits yet.</p></div>
+  </div>
+
+  <div class="modal-backdrop" id="ticketModalBackdrop" hidden>
+    <div class="modal" id="ticketModal" role="dialog" aria-modal="true" aria-labelledby="ticketModalTitle">
+      <div class="modal-head">
+        <h2 id="ticketModalTitle">Ticket</h2>
+        <button class="modal-close" id="ticketModalClose" type="button" aria-label="Close">✕</button>
       </div>
-    </aside>
+      <div class="modal-body" id="ticketModalBody"></div>
+    </div>
   </div>
 
   <script src="/app.js"></script>
