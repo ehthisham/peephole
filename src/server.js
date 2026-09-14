@@ -61,6 +61,30 @@ export async function startServer(repoRoot, { port = 4173, remote = "origin" } =
     return contributorList.map((c) => ({ ...c, tokens: totals.get(c.name) || 0 }));
   }
 
+  /** The git identity a session already reported through its heartbeat, so a CLI call that didn't
+   *  pass --author still resolves to a person. Null when that session has never checked in. */
+  function agentAuthor(sessionId) {
+    const agent = (cache.agents || []).find((a) => a.sessionId === sessionId);
+    return agent && agent.author ? agent.author : null;
+  }
+
+  /** Turns a ticket-write request body into the {sessionId, transcriptPath, tokens} a ticket file
+   *  can carry — the durable link from a ticket back to the actual chat effort (transcript +
+   *  tokens) that produced it, so "who/what session did this" doesn't require hunting the
+   *  separate, overwritable agents/*.json heartbeat. Callers pass whichever id field the route
+   *  already treats as the acting session (owner for claim, actor for state, etc). Null if
+   *  nothing to link (no session id at all — e.g. a human clicking the UI). */
+  async function sessionFromBody(body, sessionId) {
+    if (!sessionId) return null;
+    const tokens = body.transcriptPath ? await tokenUsage.sessionTokenUsage(body.transcriptPath).catch(() => null) : null;
+    return {
+      sessionId, transcriptPath: body.transcriptPath || null, tokens: tokens?.totalTokens ?? null,
+      // Git identity of whoever is claiming — the same {name,email} the SessionStart hook reports.
+      // It is what an `assignee` is matched against, and what the board shows instead of a UUID.
+      author: body.author || (sessionId ? agentAuthor(sessionId) : null),
+    };
+  }
+
   function broadcast() {
     const payload = JSON.stringify({ type: "state", payload: publicState() });
     for (const res of sseClients) res.write(`data: ${payload}\n\n`);
@@ -173,6 +197,10 @@ export async function startServer(repoRoot, { port = 4173, remote = "origin" } =
       if (req.method === "GET" && url.pathname === "/api/state") {
         return sendJson(res, 200, publicState());
       }
+      if (req.method === "GET" && url.pathname === "/api/standards") {
+        const content = await git.showFile(repoRoot, localBranch, "ENGINEERING-STANDARDS-GO.md");
+        return sendJson(res, 200, { content });
+      }
       if (req.method === "GET" && url.pathname === "/api/events") {
         res.writeHead(200, {
           "Content-Type": "text/event-stream",
@@ -225,21 +253,38 @@ export async function startServer(repoRoot, { port = 4173, remote = "origin" } =
       if (req.method === "POST" && url.pathname === "/api/tickets") {
         const body = await readJsonBody(req);
         const id = body.id || slugify(body.intent || "ticket");
-        const result = await writer.createTicket(repoRoot, stateBranch, { ...body, id });
+        const session = await sessionFromBody(body, body.owner || body.createdBy || body.actor);
+        const result = await writer.createTicket(repoRoot, stateBranch, { ...body, id, session });
         await refresh({ doFetch: false });
         return sendJson(res, 200, { ...result, state: publicState() });
       }
       const claimMatch = url.pathname.match(/^\/api\/tickets\/([^/]+)\/claim$/);
       if (req.method === "POST" && claimMatch) {
         const body = await readJsonBody(req);
-        const result = await writer.claimTicket(repoRoot, stateBranch, claimMatch[1], body.owner, body.actor);
+        const session = await sessionFromBody(body, body.owner);
+        const result = await writer.claimTicket(repoRoot, stateBranch, claimMatch[1], body.owner, body.actor, session);
+        await refresh({ doFetch: false });
+        return sendJson(res, 200, { ...result, state: publicState() });
+      }
+      const unclaimMatch = url.pathname.match(/^\/api\/tickets\/([^/]+)\/unclaim$/);
+      if (req.method === "POST" && unclaimMatch) {
+        const body = await readJsonBody(req);
+        const result = await writer.unclaimTicket(repoRoot, stateBranch, unclaimMatch[1], body.actor);
+        await refresh({ doFetch: false });
+        return sendJson(res, 200, { ...result, state: publicState() });
+      }
+      const assignMatch = url.pathname.match(/^\/api\/tickets\/([^/]+)\/assign$/);
+      if (req.method === "POST" && assignMatch) {
+        const body = await readJsonBody(req);
+        const result = await writer.assignTicket(repoRoot, stateBranch, assignMatch[1], body.assignee ?? null, body.actor);
         await refresh({ doFetch: false });
         return sendJson(res, 200, { ...result, state: publicState() });
       }
       const stateMatch = url.pathname.match(/^\/api\/tickets\/([^/]+)\/state$/);
       if (req.method === "POST" && stateMatch) {
         const body = await readJsonBody(req);
-        const result = await writer.setState(repoRoot, stateBranch, stateMatch[1], body.state, body.actor);
+        const session = await sessionFromBody(body, body.sessionId || body.actor);
+        const result = await writer.setState(repoRoot, stateBranch, stateMatch[1], body.state, body.actor, session);
         await refresh({ doFetch: false });
         return sendJson(res, 200, { ...result, state: publicState() });
       }
@@ -295,6 +340,17 @@ export async function startServer(repoRoot, { port = 4173, remote = "origin" } =
               status: blockedTicket ? blockedTicket.control : "working",
               tokens,
             });
+            // The same running total, written onto the ticket this session owns, so per-ticket
+            // cost reflects the work as it happens instead of the gap between two ticket writes.
+            // One owned ticket at a time is the model (ownership is exclusive); if a session
+            // somehow owns several, only the first is charged rather than charging each of them
+            // the same tokens.
+            if (owned[0]) {
+              await writer.touchTicketSession(repoRoot, stateBranch, owned[0].id, {
+                sessionId, transcriptPath: body.transcriptPath, tokens: tokens?.totalTokens ?? null,
+                author: agentAuthor(sessionId),
+              });
+            }
             await refresh({ doFetch: false });
           } catch (e) {
             console.error("heartbeat write failed:", e.message);

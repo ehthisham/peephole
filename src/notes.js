@@ -46,15 +46,26 @@ commands below to work — start it once in the background if it isn't already:
 Before starting non-trivial work:
 
 1. Check \`.peephole/tickets/*.md\` for a ticket matching the task. If none exists, create one —
-   don't hand-write the YAML, use the CLI so the schema is always valid:
+   **before** starting the work, not after — don't hand-write the YAML, use the CLI so the schema
+   is always valid:
    \`\`\`
-   ${cli} ticket new --project "<this project>" --intent "<one sentence, the why>" --port ${port}
+   ${cli} ticket new --project "<this project>" --intent "<one sentence, the why>" --transcript <your transcript_path> --port ${port}
    \`\`\`
    Add \`--risk irreversible\` if the change is hard to undo. This prints the ticket id it chose.
 2. Claim it before you start work — sets state to in-progress and records you as owner:
    \`\`\`
-   ${cli} ticket claim <id> --owner <your session id> --port ${port}
+   ${cli} ticket claim <id> --owner <your session id> --transcript <your transcript_path> --port ${port}
    \`\`\`
+   A ticket can be reserved for one person (\`assignee\` in its frontmatter, set from the board or
+   with \`${cli} ticket assign <id> --to "<person>"\`). If it is, this claim is REFUSED for anyone
+   else — the CLI sends your machine's git identity automatically and the server matches it
+   against the assignee. Don't work a ticket whose claim was refused; pick another.
+
+   Always pass \`--transcript\` (your own \`transcript_path\`, visible in your session context/hook
+   payloads) on both of the above and on \`ticket advance\`. It's the only thing that links a ticket
+   back to the actual chat that did the work — token usage is computed from it automatically and
+   stored on the ticket (\`ticket.sessions[]\`). Skip it and the ticket is provenance-free: a record
+   that work happened, with no way to trace which conversation produced it or what it cost.
 3. Before continuing work on a claimed ticket, check whether you've been told to stop:
    \`\`\`
    ${cli} control check <id> --port ${port}
@@ -65,7 +76,7 @@ Before starting non-trivial work:
    when it isn't.)
 4. As the work actually progresses, advance \`state\` — never hand-edit it, use the CLI:
    \`\`\`
-   ${cli} ticket advance <id> --state <in-progress|built|verified|shipped|closed> --port ${port}
+   ${cli} ticket advance <id> --state <in-progress|built|verified|shipped|closed> --transcript <your transcript_path> --port ${port}
    \`\`\`
    Only ever move forward (proposed → in-progress → built → verified → shipped) or to \`closed\` —
    never backward, never delete a ticket file. Do this at real milestones (code merged → \`built\`;

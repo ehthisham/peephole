@@ -37,8 +37,13 @@
   // The states that show as a badge because they are not their lane's headline state.
   var PHASE_STATES = new Set(["built", "verified", "closed"]);
 
-  var CONTROLS = ["run", "pause", "skip", "restart"];
-  var CONTROL_ICON = { run: "▶", pause: "⏸", skip: "⏭", restart: "↻" };
+  // No `restart`: it cleared `owner` in the same write that set the blocking value, so the deny
+  // could never reach the session it was aimed at, and it left a stale control that denied the
+  // NEXT claimer instead. Everything it could actually do is covered — pause stops, skip releases,
+  // and the back button returns a ticket to proposed for a fresh attempt. `schema.CONTROLS` still
+  // accepts "restart" so tickets already carrying it keep parsing.
+  var CONTROLS = ["run", "pause", "skip"];
+  var CONTROL_ICON = { run: "▶", pause: "⏸", skip: "⏭" };
   // Stroked SVG rather than a text glyph: an arrow driven into a bar ("send to the next lane")
   // has no Unicode equivalent that renders the same across fonts, and `currentColor` lets one
   // markup string pick up whichever target-state tint the button carries.
@@ -103,9 +108,13 @@
   // code spans are pulled out first so bold/link markers inside them are never touched.
   function mdInline(escapedLine) {
     var codeSpans = [];
+    // The placeholder is wrapped in U+0000, not spaces: a bare " 3 " also matches any ordinary
+    // number in the prose, so a body reading "a 403 response" had its "403" swapped for
+    // codeSpans[403] — i.e. the literal text "undefined". A NUL can never appear in a ticket
+    // file's text, so the round-trip is now unambiguous.
     var withoutCode = escapedLine.replace(/`([^`]+)`/g, function (_, code) {
       codeSpans.push(code);
-      return " " + (codeSpans.length - 1) + " ";
+      return "\u0000" + (codeSpans.length - 1) + "\u0000";
     });
     var withLinks = withoutCode.replace(/\[([^\]]+)\]\(([^)]+)\)/g, function (_, text, url) {
       // Only allow schemes that can't execute script (a ticket body's URL isn't necessarily
@@ -114,7 +123,7 @@
       return '<a href="' + safe + '" target="_blank" rel="noopener noreferrer">' + text + "</a>";
     });
     var withBold = withLinks.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
-    return withBold.replace(/ (\d+) /g, function (_, i) {
+    return withBold.replace(/\u0000(\d+)\u0000/g, function (_, i) {
       return "<code>" + codeSpans[Number(i)] + "</code>";
     });
   }
@@ -282,7 +291,7 @@
       return sum + ((a.tokens && a.tokens.totalTokens) || 0);
     }, 0);
     if (totalTokens > 0) {
-      tiles.push({ value: fmtNum(totalTokens), label: "Total tokens", sub: "all sessions" });
+      tiles.push({ value: fmtNum(totalTokens), label: "Total tokens", sub: "all sessions, excl. cached reads" });
     }
     // Only shown when a coverage artifact was actually found (coverage.out / coverage-summary.json)
     // — absent means no test run yet, not zero coverage, so the tile is omitted rather than
@@ -455,25 +464,47 @@
   // read as the same agent — plus its first block. Full value stays in the tooltip either way.
   var SESSION_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-/i;
 
+  // sessionId -> git author name, harvested from the agents/*.json heartbeats (the SessionStart
+  // hook posts the machine's global git identity). Lets a ticket whose `owner` predates
+  // `ownerName` still show a human name, as long as that session is still in the heartbeat set.
+  var authorBySession = {};
+
+  /** The human behind a ticket: the name recorded on the ticket at claim time, else the live
+   *  heartbeat's author, else null — in which case the caller falls back to the raw session id. */
+  function ownerNameOf(t) {
+    if (t.ownerName) return t.ownerName;
+    var a = t.owner ? authorBySession[t.owner] : null;
+    return a || null;
+  }
+
   function hueOf(s) {
     var h = 0;
     for (var i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0;
     return h % 360;
   }
 
-  function ownerChip(owner) {
-    if (!owner) return "";
-    if (!SESSION_ID_RE.test(owner)) {
-      return '<span class="owner-chip" title="owner: ' + esc(owner) + '">' +
-        '<span class="owner-dot human" aria-hidden="true"></span>' +
-        '<span class="owner-name">' + esc(owner) + "</span></span>";
+  function ownerChip(t) {
+    var owner = t.owner;
+    var assignee = t.assignee;
+    // Unclaimed but assigned: show who it is waiting for, so nobody else's session takes it.
+    if (!owner) {
+      return assignee
+        ? '<span class="owner-chip assigned" title="assigned to ' + esc(assignee) + ' — only their session can claim it">' +
+          '<span class="owner-dot assigned" aria-hidden="true"></span>' +
+          '<span class="owner-name">' + esc(assignee) + "</span></span>"
+        : "";
     }
-    // The label stays short (one id block) because a 200px lane has no room for more; the dot's
-    // hue is what actually tells two agent sessions apart at a glance, and the tooltip carries
-    // the full session id for anyone who needs to match it against the Agents tab.
-    return '<span class="owner-chip agent" title="agent session ' + esc(owner) + '">' +
-      '<span class="owner-dot" aria-hidden="true" style="background:hsl(' + hueOf(owner) + ' 58% 45%)"></span>' +
-      '<span class="owner-name">' + esc(owner.slice(0, 6)) + "</span></span>";
+    var name = ownerNameOf(t);
+    // A person's name is what a board is read for; the session id is machine detail and lives in
+    // the detail modal. The dot's hue is still derived from the session id, so two people (or two
+    // sessions of one person) stay distinguishable at a glance even at chip size.
+    var hue = SESSION_ID_RE.test(owner) ? hueOf(owner) : null;
+    var label = name || (SESSION_ID_RE.test(owner) ? owner.slice(0, 6) : owner);
+    var title = name ? name + " — session " + owner : "agent session " + owner;
+    return '<span class="owner-chip' + (name ? "" : " agent") + '" title="' + esc(title) + '">' +
+      '<span class="owner-dot' + (hue == null ? " human" : "") + '" aria-hidden="true"' +
+      (hue == null ? "" : ' style="background:hsl(' + hue + ' 58% 45%)"') + "></span>" +
+      '<span class="owner-name">' + esc(label) + "</span></span>";
   }
 
   function cardEl(t) {
@@ -484,7 +515,7 @@
     // The owner used to ride in `.card-top` alongside the project tag, the risk badge and every
     // ticket tag — four competing chips in one wrapping row. It now sits alone on the footer's
     // left, opposite the state-move buttons, so it can never crowd the tag row again.
-    var owner = ownerChip(t.owner);
+    var owner = ownerChip(t);
     // A card sitting in a state that is not its lane's headline state says so on its own face —
     // "Built"/"Verified" inside the In progress lane, "Closed" inside Shipped — tinted with that
     // state's palette entry, so the lane stays coarse while the card stays exact.
@@ -582,6 +613,32 @@
     return card;
   }
 
+  /** Everyone a ticket can be reserved for: the repo's commit authors (the Members panel's own
+   *  mailmap-resolved list), plus whoever is already assigned or currently checked in — so a
+   *  teammate who has a live session but no commits here yet is still assignable. */
+  function knownPeople(t) {
+    var names = ((latestState && latestState.stats && latestState.stats.contributorList) || [])
+      .map(function (c) { return c.name; });
+    Object.keys(authorBySession).forEach(function (sid) { names.push(authorBySession[sid]); });
+    if (t && t.assignee) names.push(t.assignee);
+    return names.filter(function (n, i) { return n && names.indexOf(n) === i; }).sort();
+  }
+
+  /** Assignment is a claim-time gate, not a label (writer.claimTicket refuses a mismatched
+   *  claimant), so it is edited here in the detail view rather than on the card — reserving work
+   *  for a person is a deliberate act, unlike the one-click state moves. */
+  function assignControl(t) {
+    var people = knownPeople(t);
+    return (
+      '<select class="assign-select" data-id="' + esc(t.id) + '" aria-label="Assign this ticket">' +
+      '<option value=""' + (t.assignee ? "" : " selected") + ">Unassigned</option>" +
+      people.map(function (n) {
+        return '<option value="' + esc(n) + '"' + (t.assignee === n ? " selected" : "") + ">" + esc(n) + "</option>";
+      }).join("") +
+      "</select>"
+    );
+  }
+
   /** Detail popup for one ticket — everything the compact card leaves out, including the
    *  branch it was (or is being) built on, if the ticket ever recorded one. */
   function openTicketModal(t) {
@@ -591,7 +648,12 @@
       ["State", esc(t.state || "—")],
       ["Risk", esc(t.risk || "—")],
       ["Tags", Array.isArray(t.tags) && t.tags.length ? t.tags.map(esc).join(", ") : "—"],
-      ["Owner", t.owner ? esc(t.owner) : "—"],
+      // Owner is the human; the session id that did the work is machine detail — useful for
+      // matching against the Agents tab and the transcript, so it keeps a row of its own here
+      // instead of taking the card's only chip.
+      ["Owner", t.owner ? esc(ownerNameOf(t) || "unknown") : "—"],
+      ["Assignee", assignControl(t)],
+      ["Session", t.owner ? '<span class="mono">' + esc(t.owner) + "</span>" : "—"],
       ["Created by", t.createdBy ? esc(t.createdBy) : "—"],
       ["Branch", t.branch ? '<span class="mono">' + esc(t.branch) + "</span>" : "—"],
       ["PR", t.pr ? esc(t.pr) : "—"],
@@ -618,6 +680,27 @@
       (t.acceptance ? "<h3>Acceptance</h3>" + renderMarkdown(t.acceptance) : "") +
       (t.body ? "<h3>Notes</h3>" + renderMarkdown(t.body) : "") +
       "<h3>History</h3>" + historyHtml;
+    var assignSelect = ticketModalBody.querySelector(".assign-select");
+    if (assignSelect) {
+      assignSelect.addEventListener("change", async function () {
+        assignSelect.disabled = true;
+        try {
+          var result = await apiPost("/api/tickets/" + encodeURIComponent(assignSelect.dataset.id) + "/assign", {
+            assignee: assignSelect.value || null, actor: "peephole-ui",
+          });
+          // The server refuses to reassign a ticket somebody is actively working; surface that
+          // instead of leaving the select showing a change that never landed.
+          if (result && result.error) {
+            window.alert(result.error);
+            assignSelect.value = t.assignee || "";
+          } else {
+            t.assignee = assignSelect.value || null;
+          }
+        } finally {
+          assignSelect.disabled = false;
+        }
+      });
+    }
     ticketModalBackdrop.hidden = false;
   }
   function closeTicketModal() {
@@ -740,7 +823,14 @@
         '<span class="status ' + status + '">' + status + "</span>" +
         (a.activeTicket ? '<div class="ticket mono">#' + esc(a.activeTicket) + "</div>" : "") +
         '<div class="since">last seen ' + relTime(a.lastSeenAt) + "</div>" +
-        (a.tokens ? '<div class="tokens mono">' + fmtNum(a.tokens.totalTokens) + " tokens</div>" : "") +
+        (a.tokens
+          ? '<div class="tokens mono">' + fmtNum(a.tokens.totalTokens) + " tokens" +
+            // Cache reads are excluded from the headline (re-sent context, billed at a fraction),
+            // but at this scale they are 100x the counted total — hiding them entirely made the
+            // number read as "this session's usage", which it is not.
+            (a.tokens.cacheReadTokens ? ' <span class="dim">+ ' + fmtNum(a.tokens.cacheReadTokens) + " cached reads</span>" : "") +
+            "</div>"
+          : "") +
         "</div>"
       );
     }).join("");
@@ -802,6 +892,10 @@
 
   function render(state) {
     latestState = state;
+    authorBySession = {};
+    (state.agents || []).forEach(function (a) {
+      if (a.sessionId && a.author && a.author.name) authorBySession[a.sessionId] = a.author.name;
+    });
     projectName.textContent = state.project || "—";
     remoteLink.textContent = state.remoteUrl || "";
     remoteLink.href = toHttpUrl(state.remoteUrl);

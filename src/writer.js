@@ -183,6 +183,7 @@ export async function setControl(repoRoot, remoteBranch, ticketId, control, acto
   }
   if (control === "skip") {
     ticket.owner = null;
+    ticket.ownerName = null;
   }
 
   await fs.writeFile(file, serializeTicket(ticket), "utf8");
@@ -193,10 +194,75 @@ export async function setControl(repoRoot, remoteBranch, ticketId, control, acto
   return { committed: Boolean(sha), sha, unpushed, worktreePath, localBranch };
 }
 
+/** Upserts one {sessionId, transcriptPath, tokensAtStart, tokensAtLatest} entry into
+ * ticket.sessions by sessionId — the durable link from a ticket back to the actual chat effort
+ * (transcript + tokens) that produced it, since chat sessions are ephemeral (agents/*.json
+ * heartbeats get overwritten/expire) but a ticket file is committed history.
+ *
+ * `tokens` passed in is always the SESSION's cumulative total (that's all a transcript can give
+ * us — it has no per-ticket boundaries), so it can't be stored as this ticket's cost directly:
+ * every ticket the same long-running session ever touches would end up showing that session's
+ * entire lifetime total. Storing tokensAtStart (set once, on first touch) alongside
+ * tokensAtLatest (advanced on every touch) lets the caller compute (tokensAtLatest -
+ * tokensAtStart) — the marginal spend actually attributable to this ticket's span, not the
+ * whole session. No-op if sessionId isn't given (nothing to link). */
+function upsertSession(ticket, { sessionId, transcriptPath, tokens }) {
+  if (!sessionId) return;
+  ticket.sessions = Array.isArray(ticket.sessions) ? ticket.sessions : [];
+  const at = new Date().toISOString();
+  const existing = ticket.sessions.find((s) => s.sessionId === sessionId);
+  if (existing) {
+    existing.transcriptPath = transcriptPath || existing.transcriptPath;
+    if (existing.tokensAtStart == null && tokens != null) existing.tokensAtStart = tokens;
+    if (tokens != null) existing.tokensAtLatest = tokens;
+    existing.at = at;
+  } else {
+    ticket.sessions.push({
+      sessionId, transcriptPath: transcriptPath || null,
+      tokensAtStart: tokens ?? null, tokensAtLatest: tokens ?? null, at,
+    });
+  }
+}
+
+/** Refreshes the token high-water mark on a ticket's session entry WITHOUT any other change —
+ * called from the throttled (<=1/min) session check-in, which is the only place that sees a
+ * session's running total while the work is still happening.
+ *
+ * Without this, `tokensAtLatest` only ever advanced when the agent happened to make a ticket
+ * write (create/claim/advance), so a ticket claimed and worked for an hour recorded the delta
+ * between two writes seconds apart — measured across a real repo, 4 of 5 scoped entries came out
+ * at exactly 0. Amends rather than piles up commits, same as a control write: a per-minute
+ * heartbeat is not a milestone. */
+export async function touchTicketSession(repoRoot, remoteBranch, ticketId, { sessionId, transcriptPath, tokens, author }) {
+  if (!ticketId || !sessionId || tokens == null) return { committed: false };
+  const { worktreePath, localBranch } = await prepWorktree(repoRoot, remoteBranch);
+  const file = path.join(worktreePath, ".peephole", "tickets", `${ticketId}.md`);
+  if (!(await fileExists(file))) return { committed: false };
+
+  const { parseTicket } = await import("./schema.js");
+  const parsed = parseTicket(await fs.readFile(file, "utf8"), ticketId);
+  if (!parsed.ok) return { committed: false };
+  const ticket = parsed.ticket;
+
+  const before = JSON.stringify(ticket.sessions || []);
+  upsertSession(ticket, { sessionId, transcriptPath, tokens });
+  if (author && author.name && !ticket.ownerName && ticket.owner === sessionId) ticket.ownerName = author.name;
+  if (JSON.stringify(ticket.sessions) === before) return { committed: false };
+  // Deliberately no history entry and no updatedAt bump: this is measurement, not an event, and
+  // it must not make an idle ticket look freshly touched in the lane sort.
+
+  await fs.writeFile(file, serializeTicket(ticket), "utf8");
+  const { sha, unpushed } = await commitOrAmend(
+    worktreePath, localBranch, remoteBranch,
+    `peephole: ${ticketId} session tokens`, `peephole: ${ticketId} session tokens`,
+  );
+  return { committed: Boolean(sha), sha, unpushed };
+}
+
 /** Moves a ticket's `state` — forward (proposed→...→shipped) or to `closed`, per the ledger rule
  * (state only ever advances or closes, never drags backward, never deletes). Always its own commit:
  * unlike `control` clicks this is a meaningful milestone, never rapid-fire. */
-export async function setState(repoRoot, remoteBranch, ticketId, state, actor = "peephole-ui") {
+export async function setState(repoRoot, remoteBranch, ticketId, state, actor = "peephole-ui", session = null) {
   const { STATES, FORWARD_STATES, parseTicket } = await import("./schema.js");
   if (!STATES.includes(state)) {
     throw new Error(`invalid state "${state}" (expected one of ${STATES.join(", ")})`);
@@ -223,6 +289,7 @@ export async function setState(repoRoot, remoteBranch, ticketId, state, actor = 
   ticket.updatedAt = new Date().toISOString();
   ticket.history = Array.isArray(ticket.history) ? ticket.history : [];
   ticket.history.push({ at: ticket.updatedAt, from, to: state, by: actor });
+  if (session) upsertSession(ticket, { sessionId: session.sessionId || actor, transcriptPath: session.transcriptPath, tokens: session.tokens });
 
   await fs.writeFile(file, serializeTicket(ticket), "utf8");
   const sha = await git.commitAll(worktreePath, `peephole: ${ticketId} state -> ${state}`);
@@ -231,7 +298,7 @@ export async function setState(repoRoot, remoteBranch, ticketId, state, actor = 
 }
 
 /** Creates a new ticket file with a schema-correct frontmatter — the deterministic alternative to an agent hand-writing YAML. Always its own commit. */
-export async function createTicket(repoRoot, remoteBranch, { id, project, intent, acceptance = "", body = "", risk = "reversible", owner = null, tags = [], createdBy = null, state: stateOverride, actor }) {
+export async function createTicket(repoRoot, remoteBranch, { id, project, intent, acceptance = "", body = "", risk = "reversible", owner = null, assignee = null, tags = [], createdBy = null, state: stateOverride, actor, session = null }) {
   if (!project || !intent) throw new Error("project and intent are required");
   const { STATES } = await import("./schema.js");
   if (stateOverride && !STATES.includes(stateOverride)) {
@@ -248,10 +315,12 @@ export async function createTicket(repoRoot, remoteBranch, { id, project, intent
   const who = actor || createdBy || "agent";
   const ticket = {
     id, project, intent, acceptance, body, state, risk, blockedOn: "", control: "run", owner,
+    ownerName: owner ? session?.author?.name ?? null : null, assignee: assignee || null,
     tags: Array.isArray(tags) ? tags : [], createdBy,
     branch: null, pr: null, estimate: null, createdAt: now, updatedAt: now,
     history: [{ at: now, from: null, to: state, by: who }],
   };
+  if (session) upsertSession(ticket, { sessionId: session.sessionId || owner || who, transcriptPath: session.transcriptPath, tokens: session.tokens });
   await fs.writeFile(file, serializeTicket(ticket), "utf8");
   const sha = await git.commitAll(worktreePath, `peephole: new ticket ${id}`);
   const unpushed = await git.unpushedCount(worktreePath, localBranch, remoteBranch);
@@ -259,7 +328,7 @@ export async function createTicket(repoRoot, remoteBranch, { id, project, intent
 }
 
 /** Claims (or re-affirms) ownership of an existing ticket, advancing proposed -> in-progress. Always its own commit. */
-export async function claimTicket(repoRoot, remoteBranch, ticketId, owner, actor) {
+export async function claimTicket(repoRoot, remoteBranch, ticketId, owner, actor, session = null) {
   const { worktreePath, localBranch } = await prepWorktree(repoRoot, remoteBranch);
   const file = path.join(worktreePath, ".peephole", "tickets", `${ticketId}.md`);
   if (!(await fileExists(file))) throw new Error(`ticket "${ticketId}" not found`);
@@ -270,12 +339,31 @@ export async function claimTicket(repoRoot, remoteBranch, ticketId, owner, actor
   if (!parsed.ok) throw new Error(`Cannot claim ${ticketId}: ${parsed.errors.join("; ")}`);
   const ticket = parsed.ticket;
   if (ticket.owner && ticket.owner !== owner) {
-    return { claimed: false, reason: `already claimed by ${ticket.owner}`, ticket };
+    return { claimed: false, reason: `already claimed by ${ticket.ownerName || ticket.owner}`, ticket };
+  }
+  // An assigned ticket is reserved for one person: any other person's session is refused here, at
+  // the only door into ownership. The claimer proves who they are with the git identity their
+  // SessionStart hook already reports (session.author) — an anonymous claimer can't take an
+  // assigned ticket at all, since "unidentified" can never equal a named assignee.
+  const claimantName = session?.author?.name ?? null;
+  if (ticket.assignee && ticket.assignee !== claimantName) {
+    return {
+      claimed: false,
+      reason: claimantName
+        ? `assigned to ${ticket.assignee} — ${claimantName} cannot claim it`
+        : `assigned to ${ticket.assignee} — claimer has no git identity to match`,
+      ticket,
+    };
   }
 
   const from = ticket.state;
   ticket.owner = owner;
+  if (claimantName) ticket.ownerName = claimantName;
+  // A control left over from a previous claim (a skip, say) would otherwise deny this session on
+  // its very first tool call — the block belongs to the claim that earned it, not to this one.
+  ticket.control = "run";
   if (ticket.state === "proposed") ticket.state = "in-progress";
+  if (session) upsertSession(ticket, { sessionId: session.sessionId || owner, transcriptPath: session.transcriptPath, tokens: session.tokens });
   ticket.updatedAt = new Date().toISOString();
   ticket.history.push({ at: ticket.updatedAt, from, to: ticket.state, by: actor || owner });
 
@@ -283,6 +371,73 @@ export async function claimTicket(repoRoot, remoteBranch, ticketId, owner, actor
   const sha = await git.commitAll(worktreePath, `peephole: ${ticketId} claimed by ${owner}`);
   const unpushed = await git.unpushedCount(worktreePath, localBranch, remoteBranch);
   return { claimed: true, committed: Boolean(sha), sha, unpushed, ticket };
+}
+
+/** Reserves a ticket for one person by name (or clears the reservation with null). An assignee is
+ * checked in `claimTicket`, so it is a real gate on ownership rather than a label: another
+ * person's session is refused at claim time and never starts the work. Deliberately a name, not a
+ * session id — people outlive sessions, and the name is the same git identity the Members panel
+ * and the heartbeats already use. Always its own commit. */
+export async function assignTicket(repoRoot, remoteBranch, ticketId, assignee, actor = "peephole-ui") {
+  const { worktreePath, localBranch } = await prepWorktree(repoRoot, remoteBranch);
+  const file = path.join(worktreePath, ".peephole", "tickets", `${ticketId}.md`);
+  if (!(await fileExists(file))) throw new Error(`ticket "${ticketId}" not found`);
+  const raw = await fs.readFile(file, "utf8");
+
+  const { parseTicket } = await import("./schema.js");
+  const parsed = parseTicket(raw, ticketId);
+  if (!parsed.ok) throw new Error(`Cannot assign ${ticketId}: ${parsed.errors.join("; ")}`);
+  const ticket = parsed.ticket;
+
+  const name = assignee ? String(assignee).trim() : null;
+  // Reassigning a ticket someone is actively working is a coordination decision, not a mechanical
+  // one — refuse it rather than silently stranding the running session's claim.
+  if (name && ticket.owner && (ticket.ownerName || null) !== name) {
+    throw new Error(`"${ticketId}" is already being worked by ${ticket.ownerName || ticket.owner} — unclaim it before assigning to ${name}`);
+  }
+  const from = ticket.assignee || null;
+  ticket.assignee = name;
+  ticket.updatedAt = new Date().toISOString();
+  ticket.history = Array.isArray(ticket.history) ? ticket.history : [];
+  ticket.history.push({ at: ticket.updatedAt, from: `assignee:${from || "none"}`, to: `assignee:${name || "none"}`, by: actor });
+
+  await fs.writeFile(file, serializeTicket(ticket), "utf8");
+  const sha = await git.commitAll(worktreePath, `peephole: ${ticketId} assigned -> ${name || "unassigned"}`);
+  const unpushed = await git.unpushedCount(worktreePath, localBranch, remoteBranch);
+  return { committed: Boolean(sha), sha, unpushed, ticket };
+}
+
+/** Returns a ticket to `proposed` and clears its owner — the one bounded exception to
+ * forward-only state, mirroring how `closed` is reachable from anywhere. Ownership is a
+ * coordination lock, not a hard one: an agent can hang, crash, or misjudge, so a human (or
+ * anyone) must always have an escape hatch to hand a ticket back. It's deliberately narrow —
+ * only from `in-progress`, never from `built`/`verified`/`shipped` — so it can undo a claim
+ * before any real progress exists without ever rewinding actual work. */
+export async function unclaimTicket(repoRoot, remoteBranch, ticketId, actor = "peephole-ui") {
+  const { worktreePath, localBranch } = await prepWorktree(repoRoot, remoteBranch);
+  const file = path.join(worktreePath, ".peephole", "tickets", `${ticketId}.md`);
+  if (!(await fileExists(file))) throw new Error(`ticket "${ticketId}" not found`);
+  const raw = await fs.readFile(file, "utf8");
+
+  const { parseTicket } = await import("./schema.js");
+  const parsed = parseTicket(raw, ticketId);
+  if (!parsed.ok) throw new Error(`Cannot unclaim ${ticketId}: ${parsed.errors.join("; ")}`);
+  const ticket = parsed.ticket;
+  if (ticket.state !== "in-progress") {
+    throw new Error(`cannot unclaim "${ticketId}" from ${ticket.state} — only in-progress tickets can be returned to proposed`);
+  }
+
+  const from = ticket.state;
+  ticket.owner = null;
+  ticket.ownerName = null;
+  ticket.state = "proposed";
+  ticket.updatedAt = new Date().toISOString();
+  ticket.history.push({ at: ticket.updatedAt, from, to: ticket.state, by: actor });
+
+  await fs.writeFile(file, serializeTicket(ticket), "utf8");
+  const sha = await git.commitAll(worktreePath, `peephole: ${ticketId} unclaimed -> proposed`);
+  const unpushed = await git.unpushedCount(worktreePath, localBranch, remoteBranch);
+  return { committed: Boolean(sha), sha, unpushed, ticket };
 }
 
 /** Upserts one session's heartbeat file. Rapid repeat calls (same session, still unpushed) amend, same as control writes. */
