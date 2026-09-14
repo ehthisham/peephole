@@ -7,7 +7,53 @@
     { key: "shipped", label: "Shipped" },
     { key: "closed", label: "Closed" },
   ];
+  var STATE_COLOR = {
+    "proposed": "var(--proposed)",
+    "in-progress": "var(--progress)",
+    "built": "var(--built)",
+    "verified": "var(--verified)",
+    "shipped": "var(--shipped)",
+    "closed": "var(--closed)",
+  };
+  var STATE_BG = {
+    "proposed": "var(--proposed-bg)",
+    "in-progress": "var(--progress-bg)",
+    "built": "var(--built-bg)",
+    "verified": "var(--verified-bg)",
+    "shipped": "var(--shipped-bg)",
+    "closed": "var(--closed-bg)",
+  };
+  // The board shows three lanes, not six. `built`, `verified` and `closed` stay real states in the
+  // schema (the CLI, writer.setState, history and the Insights breakdown all still use them) but
+  // they are PHASES WITHIN a lane rather than lanes of their own: in practice ~85% of tickets go
+  // proposed → shipped without ever stopping in built/verified, so as columns they were two
+  // permanently-empty lanes squeezing the ones that carry the traffic. Each renders as a phase
+  // badge on its card instead — same label, same palette entry, no column of its own.
+  var LANES = [
+    { key: "proposed", label: "Proposed", states: ["proposed"] },
+    { key: "in-progress", label: "In progress", states: ["in-progress", "built", "verified"] },
+    { key: "shipped", label: "Shipped", states: ["shipped", "closed"] },
+  ];
+  // The states that show as a badge because they are not their lane's headline state.
+  var PHASE_STATES = new Set(["built", "verified", "closed"]);
+
   var CONTROLS = ["run", "pause", "skip", "restart"];
+  var CONTROL_ICON = { run: "▶", pause: "⏸", skip: "⏭", restart: "↻" };
+  // Stroked SVG rather than a text glyph: an arrow driven into a bar ("send to the next lane")
+  // has no Unicode equivalent that renders the same across fonts, and `currentColor` lets one
+  // markup string pick up whichever target-state tint the button carries.
+  function moveIcon(dir) {
+    var fwd = dir === "fwd";
+    var shaft = fwd ? "M2.5 8H10" : "M13.5 8H6";
+    var head = fwd ? "M7.2 4.8 10.4 8 7.2 11.2" : "M8.8 4.8 5.6 8 8.8 11.2";
+    var bar = fwd ? "M13.2 3.4V12.6" : "M2.8 3.4V12.6";
+    return (
+      '<svg class="mv-icon" viewBox="0 0 16 16" width="15" height="15" aria-hidden="true" focusable="false" ' +
+      'fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">' +
+      '<path d="' + shaft + '"/><path d="' + head + '"/><path d="' + bar + '" stroke-width="2"/></svg>'
+    );
+  }
+  var MOVE_ICON = { back: moveIcon("back"), fwd: moveIcon("fwd") };
   var STRUCTURAL_ISSUES = new Set([
     "missing-config", "missing-tickets-dir", "missing-agents-dir",
     "missing-agent-note", "missing-readme-note", "missing-hook-setup",
@@ -34,10 +80,10 @@
   var tokenUsage = document.getElementById("tokenUsage");
   var coverageModulesEl = document.getElementById("coverageModules");
   var memberList = document.getElementById("memberList");
-  var insightsToggle = document.getElementById("insightsToggle");
-  var insightsBody = document.getElementById("insightsBody");
-  var agentsToggle = document.getElementById("agentsToggle");
-  var agentsBody = document.getElementById("agentsBody");
+  var tabButtons = Array.prototype.slice.call(document.querySelectorAll(".tab"));
+  var standardsContent = document.getElementById("standardsContent");
+  var stateChartEl = document.getElementById("stateChart");
+  var configContent = document.getElementById("configContent");
   var ticketModalBackdrop = document.getElementById("ticketModalBackdrop");
   var ticketModalTitle = document.getElementById("ticketModalTitle");
   var ticketModalClose = document.getElementById("ticketModalClose");
@@ -182,6 +228,37 @@
     return typeof n === "number" ? n.toLocaleString() : "—";
   }
 
+  function fmtDuration(ms) {
+    if (!(ms >= 0)) return "—";
+    var m = ms / 60000;
+    if (m < 60) return Math.max(1, Math.round(m)) + "m";
+    var h = m / 60;
+    if (h < 24) return Math.floor(h) + "h " + Math.round(m % 60) + "m";
+    var d = h / 24;
+    return Math.floor(d) + "d " + Math.round(h % 24) + "h";
+  }
+
+  /** Cost of one ticket: wall-clock time-in-flight (creation to shipped/closed, or to now while
+   *  still open) and tokens spent — specifically for THIS ticket, not the session's lifetime
+   *  total. A transcript has no per-ticket boundaries of its own, so writer.js's upsertSession
+   *  stores a {tokensAtStart, tokensAtLatest} pair per session touch; the marginal spend on this
+   *  ticket is the sum of (tokensAtLatest - tokensAtStart) across whichever sessions touched it.
+   *  Entries missing either bound (the old single-`tokens`-field shape, or a session that never
+   *  reported tokens) are skipped rather than misread as zero cost. */
+  function ticketCost(t) {
+    var history = Array.isArray(t.history) ? t.history : [];
+    var startedAt = history.length ? history[0].at : t.createdAt;
+    var isTerminal = TERMINAL_STATES.has(t.state);
+    var endedAt = isTerminal && history.length ? history[history.length - 1].at : null;
+    var ms = startedAt ? (endedAt ? Date.parse(endedAt) : Date.now()) - Date.parse(startedAt) : null;
+    var sessions = Array.isArray(t.sessions) ? t.sessions : [];
+    var scoped = sessions.filter(function (s) { return s.tokensAtStart != null && s.tokensAtLatest != null; });
+    var tokens = scoped.length
+      ? scoped.reduce(function (sum, s) { return sum + Math.max(0, s.tokensAtLatest - s.tokensAtStart); }, 0)
+      : null;
+    return { ms: ms, tokens: tokens, live: isTerminal ? null : true };
+  }
+
   function renderInsights(stats, coverage, agents) {
     if (!stats) {
       statRow.innerHTML = '<p class="empty-note">Insights unavailable.</p>';
@@ -246,6 +323,44 @@
       }).join("");
   }
 
+  /** Global progress at a glance — a donut of every ticket's current state, pure CSS
+   *  (conic-gradient), no chart library. The count in the middle is the total across every
+   *  state, not just the ones with a nonzero slice. */
+  function renderStateChart(tickets) {
+    if (!tickets || tickets.length === 0) {
+      stateChartEl.innerHTML = "";
+      return;
+    }
+    var counts = STATES.map(function (s) {
+      return { key: s.key, label: s.label, count: tickets.filter(function (t) { return t.state === s.key; }).length };
+    });
+    var total = tickets.length;
+    var stops = [];
+    var acc = 0;
+    counts.forEach(function (c) {
+      if (c.count === 0) return;
+      var start = (acc / total) * 100;
+      acc += c.count;
+      var end = (acc / total) * 100;
+      stops.push(STATE_COLOR[c.key] + " " + start.toFixed(2) + "% " + end.toFixed(2) + "%");
+    });
+    stateChartEl.innerHTML =
+      "<h3>Ticket progress</h3>" +
+      '<div class="state-chart-body">' +
+      '<div class="donut" style="background:conic-gradient(' + stops.join(", ") + ')">' +
+      '<div class="donut-hole"><span class="donut-total mono">' + fmtNum(total) + '</span><span class="donut-total-label">tickets</span></div>' +
+      "</div>" +
+      '<ul class="state-legend">' +
+      counts.map(function (c) {
+        var pct = total > 0 ? Math.round((c.count / total) * 100) : 0;
+        return (
+          "<li><span class=\"swatch\" style=\"background:" + STATE_COLOR[c.key] + '"></span>' +
+          esc(c.label) + '<span class="count">' + fmtNum(c.count) + '</span><span class="pct">' + pct + "%</span></li>"
+        );
+      }).join("") +
+      "</ul></div>";
+  }
+
   function coverageColor(pct) {
     if (pct < 40) return "var(--accent)";
     if (pct < 70) return "var(--proposed)";
@@ -255,9 +370,31 @@
   // Per-package breakdown ("how we developed tests" — module by module, worst-covered first),
   // not just one aggregate percentage. Absent entirely when no coverage.out/-summary.json was
   // found (no test run yet), same "omit, don't show a misleading 0%" rule as the tile above.
+  /** How Peephole is set up for this repo — its own config.yaml plus the live runtime bits
+   *  (hook wiring, auto-fetch, resolved git identity) that aren't in the file but matter just
+   *  as much for understanding "is this actually tracking me." */
+  function renderConfig(state) {
+    var cfg = state.config || {};
+    var gitUser = state.gitUser || {};
+    var rows = [
+      ["Project", esc(cfg.project || state.project || "—")],
+      ["Remote", state.remoteUrl ? '<span class="mono">' + esc(state.remoteUrl) + "</span>" : "—"],
+      ["State branch", state.stateBranch ? '<span class="mono">' + esc(state.stateBranch) + "</span>" : "—"],
+      ["Git identity", gitUser.name || gitUser.email ? esc(gitUser.name || "") + (gitUser.email ? " <" + esc(gitUser.email) + ">" : "") : "—"],
+      ["Hook", state.hookConfigured ? "connected — live" : "not configured"],
+      ["Auto-fetch", state.autoFetch && state.autoFetch.enabled ? "every " + esc(state.autoFetch.intervalMinutes) + " min" : "off"],
+      ["States", Array.isArray(cfg.states) ? cfg.states.map(esc).join(" → ") : "—"],
+      ["Control values", Array.isArray(cfg.control) ? cfg.control.map(esc).join(", ") : "—"],
+      ["Risk values", Array.isArray(cfg.risk) ? cfg.risk.map(esc).join(", ") : "—"],
+    ];
+    configContent.innerHTML = rows.map(function (r) {
+      return '<div class="modal-row"><span class="k">' + r[0] + '</span><span class="v">' + r[1] + "</span></div>";
+    }).join("");
+  }
+
   function renderCoverageModules(coverage) {
     if (!coverage || !Array.isArray(coverage.modules) || coverage.modules.length === 0) {
-      coverageModulesEl.innerHTML = "";
+      coverageModulesEl.innerHTML = '<p class="empty-note">No coverage run found yet.</p>';
       return;
     }
     coverageModulesEl.innerHTML =
@@ -304,12 +441,58 @@
     return STATES[idx + 1];
   }
 
+  // The only legal backward move in the whole model: unclaiming an in-progress ticket hands it
+  // back to `proposed` (writer.unclaimTicket). Everything past in-progress represents real work
+  // that already happened, so there is deliberately no "prev" for it — the back button still
+  // renders there, disabled, with the reason in its tooltip, rather than silently vanishing.
+  function prevStateOf(state) {
+    return state === "in-progress" ? STATES[0] : null;
+  }
+
+  // Owners come in two flavours: a human git name, or a raw agent session-id (UUID). Truncating
+  // a UUID to "915b1f55…" made every card touched by one session look identical, so a session
+  // owner instead gets a dot whose hue is derived from the id — two different sessions can never
+  // read as the same agent — plus its first block. Full value stays in the tooltip either way.
+  var SESSION_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-/i;
+
+  function hueOf(s) {
+    var h = 0;
+    for (var i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0;
+    return h % 360;
+  }
+
+  function ownerChip(owner) {
+    if (!owner) return "";
+    if (!SESSION_ID_RE.test(owner)) {
+      return '<span class="owner-chip" title="owner: ' + esc(owner) + '">' +
+        '<span class="owner-dot human" aria-hidden="true"></span>' +
+        '<span class="owner-name">' + esc(owner) + "</span></span>";
+    }
+    // The label stays short (one id block) because a 200px lane has no room for more; the dot's
+    // hue is what actually tells two agent sessions apart at a glance, and the tooltip carries
+    // the full session id for anyone who needs to match it against the Agents tab.
+    return '<span class="owner-chip agent" title="agent session ' + esc(owner) + '">' +
+      '<span class="owner-dot" aria-hidden="true" style="background:hsl(' + hueOf(owner) + ' 58% 45%)"></span>' +
+      '<span class="owner-name">' + esc(owner.slice(0, 6)) + "</span></span>";
+  }
+
   function cardEl(t) {
     var card = document.createElement("article");
     card.className = "card";
     var risk = t.risk === "irreversible" ? '<span class="badge risk">⚠ irreversible</span>' : "";
     var blocked = t.blockedOn ? '<span class="badge blocked">⛓ ' + esc(t.blockedOn) + "</span>" : "";
-    var owner = t.owner ? '<span class="badge owner">' + esc(t.owner) + "</span>" : "";
+    // The owner used to ride in `.card-top` alongside the project tag, the risk badge and every
+    // ticket tag — four competing chips in one wrapping row. It now sits alone on the footer's
+    // left, opposite the state-move buttons, so it can never crowd the tag row again.
+    var owner = ownerChip(t.owner);
+    // A card sitting in a state that is not its lane's headline state says so on its own face —
+    // "Built"/"Verified" inside the In progress lane, "Closed" inside Shipped — tinted with that
+    // state's palette entry, so the lane stays coarse while the card stays exact.
+    var phaseState = PHASE_STATES.has(t.state) ? STATES.find(function (x) { return x.key === t.state; }) : null;
+    var phase = phaseState
+      ? '<span class="badge phase" style="color:' + STATE_COLOR[phaseState.key] + ";background:" + STATE_BG[phaseState.key] +
+        '">' + esc(phaseState.label) + "</span>"
+      : "";
     var tags = Array.isArray(t.tags) && t.tags.length
       ? t.tags.map(function (tg) { return '<span class="badge tag">' + esc(tg) + "</span>"; }).join("")
       : "";
@@ -317,19 +500,46 @@
     var controls = isTerminal ? "" : CONTROLS.map(function (c) {
       return (
         '<button class="ctl ' + c + '" data-ctl="' + c + '" data-id="' + esc(t.id) + '" aria-pressed="' +
-        (t.control === c) + '" type="button">' + c + "</button>"
+        (t.control === c) + '" title="' + c + '" aria-label="' + c + '" type="button">' + CONTROL_ICON[c] + "</button>"
       );
     }).join("");
     var next = nextStateOf(t.state);
+    var prev = prevStateOf(t.state);
+    // Icon-only, because a 200px lane has no room for two labelled buttons and the lane the card
+    // lands in already says which state it reached. The glyph is an arrow driven INTO a bar —
+    // "push this card to the next lane" — deliberately not the ▶ of the run control right below
+    // it. Meaning that can't fit on the button lives in title/aria-label; the tint still comes
+    // from the TARGET state's palette entry, so the color alone says where a click sends it.
+    // --mv-fg/--mv-bg are custom properties (not the properties themselves) so the stylesheet's
+    // :hover rule can invert them; setting background/color inline would out-specificity :hover.
     var advance = next
-      ? '<button class="advance-btn" data-id="' + esc(t.id) + '" data-state="' + next.key + '" type="button">' +
-        esc(next.label) + " →</button>"
+      ? '<button class="move-btn fwd" data-id="' + esc(t.id) + '" data-state="' + next.key +
+        '" style="--mv-fg:' + STATE_COLOR[next.key] + ";--mv-bg:" + STATE_BG[next.key] +
+        '" title="Move forward to ' + esc(next.label) + '" aria-label="Move forward to ' + esc(next.label) + '" type="button">' +
+        MOVE_ICON.fwd + "</button>"
       : "";
+    // Ownership is a coordination lock, not a hard one — an agent can hang, crash, or misjudge,
+    // so a human always needs a way to hand a claimed ticket back. This is the one bounded
+    // exception to forward-only state (writer.unclaimTicket): reachable only from in-progress,
+    // never from built/verified/shipped, so it can undo a claim but never rewind real work.
+    // On every other non-terminal state the button still renders, disabled, so the pair reads as
+    // one back/forward control and the absence of a back move is explained instead of invisible.
+    var unclaim = prev
+      ? '<button class="move-btn back" data-id="' + esc(t.id) +
+        '" style="--mv-fg:' + STATE_COLOR[prev.key] + ";--mv-bg:" + STATE_BG[prev.key] +
+        '" title="Move back to ' + esc(prev.label) + ' (unclaim)" aria-label="Move back to ' + esc(prev.label) + ' (unclaim)" type="button">' +
+        MOVE_ICON.back + "</button>"
+      : (isTerminal ? "" :
+        '<button class="move-btn back" disabled title="No way back from ' + esc(t.state) +
+        ' — state only moves forward once work has been built" aria-label="No move back from ' + esc(t.state) + '" type="button">' +
+        MOVE_ICON.back + "</button>");
+    var moves = advance || unclaim ? '<div class="move-group">' + unclaim + advance + "</div>" : "";
+    var foot = owner || moves ? '<div class="card-foot">' + owner + moves + "</div>" : "";
     card.innerHTML =
-      '<div class="card-top"><span class="project-tag">' + esc(t.project || "—") + "</span>" + tags + risk + owner + "</div>" +
+      '<div class="card-top"><span class="project-tag">' + esc(t.project || "—") + "</span>" + phase + tags + risk + "</div>" +
       '<p class="intent">' + esc(t.intent) + "</p>" +
       (blocked ? "<div>" + blocked + "</div>" : "") +
-      '<div class="card-foot"><span class="id mono">#' + esc(t.id) + "</span>" + advance + "</div>" +
+      foot +
       (isTerminal ? "" : '<div class="controls">' + controls + "</div>");
     Array.prototype.forEach.call(card.querySelectorAll(".ctl"), function (btn) {
       btn.addEventListener("click", async function (ev) {
@@ -342,7 +552,7 @@
         }
       });
     });
-    var advanceBtn = card.querySelector(".advance-btn");
+    var advanceBtn = card.querySelector(".move-btn.fwd");
     if (advanceBtn) {
       advanceBtn.addEventListener("click", async function (ev) {
         ev.stopPropagation(); // never also open the detail modal
@@ -356,6 +566,18 @@
         }
       });
     }
+    var unclaimBtn = card.querySelector(".move-btn.back:not([disabled])");
+    if (unclaimBtn) {
+      unclaimBtn.addEventListener("click", async function (ev) {
+        ev.stopPropagation();
+        unclaimBtn.disabled = true;
+        try {
+          await apiPost("/api/tickets/" + encodeURIComponent(unclaimBtn.dataset.id) + "/unclaim", { actor: "peephole-ui" });
+        } finally {
+          unclaimBtn.disabled = false;
+        }
+      });
+    }
     card.addEventListener("click", function () { openTicketModal(t); });
     return card;
   }
@@ -364,6 +586,7 @@
    *  branch it was (or is being) built on, if the ticket ever recorded one. */
   function openTicketModal(t) {
     ticketModalTitle.textContent = "#" + t.id;
+    var cost = ticketCost(t);
     var rows = [
       ["State", esc(t.state || "—")],
       ["Risk", esc(t.risk || "—")],
@@ -374,6 +597,8 @@
       ["PR", t.pr ? esc(t.pr) : "—"],
       ["Estimate", t.estimate ? esc(t.estimate) : "—"],
       ["Blocked on", t.blockedOn ? esc(t.blockedOn) : "—"],
+      ["Time in flight", cost.ms != null ? fmtDuration(cost.ms) + (cost.live ? " (open)" : "") : "—"],
+      ["Tokens spent", cost.tokens != null ? fmtNum(cost.tokens) : "—"],
     ];
     var rowsHtml = rows.map(function (r) {
       return '<div class="modal-row"><span class="k">' + r[0] + '</span><span class="v">' + r[1] + "</span></div>";
@@ -458,14 +683,34 @@
     }
   });
 
+  // One shared sort direction across every lane (not per-lane — a ticket's rank should mean the
+  // same thing wherever it's looked at). "desc" (default) = latest-modified-first, the useful
+  // default since it surfaces whatever just changed; "asc" = oldest-modified-first.
+  var LANE_SORT_KEY = "peephole.laneSortDir";
+  function getLaneSortDir() {
+    try { return localStorage.getItem(LANE_SORT_KEY) === "asc" ? "asc" : "desc"; } catch (e) { return "desc"; }
+  }
+  function sortByModified(list, dir) {
+    return list.slice().sort(function (a, b) {
+      var diff = Date.parse(b.updatedAt || 0) - Date.parse(a.updatedAt || 0);
+      return dir === "asc" ? -diff : diff;
+    });
+  }
+
+  var latestTickets = [];
   function renderBoard(tickets) {
+    latestTickets = tickets;
+    var dir = getLaneSortDir();
     board.innerHTML = "";
-    STATES.forEach(function (s) {
-      var inLane = tickets.filter(function (t) { return t.state === s.key; });
+    LANES.forEach(function (s) {
+      var inLane = sortByModified(tickets.filter(function (t) { return s.states.indexOf(t.state) !== -1; }), dir);
       var lane = document.createElement("section");
       lane.className = "lane";
       lane.innerHTML =
-        "<header><h2>" + s.label + '</h2><span class="count mono">' + inLane.length + "</span></header>" +
+        "<header><h2>" + s.label + '</h2><span class="count mono">' + inLane.length + '</span>' +
+        '<button class="sort-btn" data-lane-sort type="button" title="Sort: ' +
+        (dir === "desc" ? "latest modified first" : "oldest modified first") + '" aria-pressed="' + (dir === "asc") + '">' +
+        (dir === "desc" ? "↓" : "↑") + "</button></header>" +
         '<div class="lane-body"></div>';
       var body = lane.querySelector(".lane-body");
       if (inLane.length === 0) {
@@ -473,6 +718,11 @@
       } else {
         inLane.forEach(function (t) { body.appendChild(cardEl(t)); });
       }
+      lane.querySelector("[data-lane-sort]").addEventListener("click", function () {
+        var next = getLaneSortDir() === "desc" ? "asc" : "desc";
+        try { localStorage.setItem(LANE_SORT_KEY, next); } catch (e) {}
+        renderBoard(latestTickets);
+      });
       board.appendChild(lane);
     });
   }
@@ -585,10 +835,12 @@
     }
 
     renderInsights(state.stats, state.coverage, state.agents);
+    renderStateChart(state.tickets || []);
     renderBoard(state.tickets || []);
     renderAgents(state.agents || []);
     renderTokenUsage(state.agents || []);
     renderMembers((state.stats && state.stats.contributorList) || []);
+    renderConfig(state);
   }
 
   pullBtn.addEventListener("click", async function () {
@@ -632,29 +884,46 @@
     }
   });
 
-  function setInsightsExpanded(expanded) {
-    insightsBody.hidden = !expanded;
-    insightsToggle.setAttribute("aria-expanded", String(expanded));
-    try { localStorage.setItem("peephole.insightsExpanded", expanded ? "1" : "0"); } catch (e) {}
-  }
-  insightsToggle.addEventListener("click", function () {
-    setInsightsExpanded(insightsToggle.getAttribute("aria-expanded") !== "true");
-  });
-  var storedExpanded = true;
-  try { storedExpanded = localStorage.getItem("peephole.insightsExpanded") !== "0"; } catch (e) {}
-  setInsightsExpanded(storedExpanded);
+  // Tabs replace what used to be independently-collapsible sections stacked on one page —
+  // one panel visible at a time instead, persisted so a reload/live-update doesn't reset
+  // whichever one the user was looking at.
+  var ACTIVE_TAB_KEY = "peephole.activeTab";
+  var standardsLoaded = false;
 
-  function setAgentsExpanded(expanded) {
-    agentsBody.hidden = !expanded;
-    agentsToggle.setAttribute("aria-expanded", String(expanded));
-    try { localStorage.setItem("peephole.agentsExpanded", expanded ? "1" : "0"); } catch (e) {}
+  function setActiveTab(name) {
+    tabButtons.forEach(function (btn) {
+      var active = btn.dataset.tab === name;
+      btn.setAttribute("aria-selected", String(active));
+      var panel = document.getElementById("panel-" + btn.dataset.tab);
+      if (panel) panel.hidden = !active;
+    });
+    try { localStorage.setItem(ACTIVE_TAB_KEY, name); } catch (e) {}
+    if (name === "standards" && !standardsLoaded) loadStandards();
   }
-  agentsToggle.addEventListener("click", function () {
-    setAgentsExpanded(agentsToggle.getAttribute("aria-expanded") !== "true");
+  tabButtons.forEach(function (btn) {
+    btn.addEventListener("click", function () { setActiveTab(btn.dataset.tab); });
   });
-  var storedAgentsExpanded = true;
-  try { storedAgentsExpanded = localStorage.getItem("peephole.agentsExpanded") !== "0"; } catch (e) {}
-  setAgentsExpanded(storedAgentsExpanded);
+  var storedTab = "tasks";
+  try { storedTab = localStorage.getItem(ACTIVE_TAB_KEY) || "tasks"; } catch (e) {}
+  if (!tabButtons.some(function (b) { return b.dataset.tab === storedTab; })) storedTab = "tasks";
+  setActiveTab(storedTab);
+
+  /** The project's own ENGINEERING-STANDARDS-GO.md, read at the same git ref repoStats scans —
+   *  fetched once per page load (it doesn't change as often as tickets/agents do), rendered
+   *  with the same small markdown renderer ticket bodies use. */
+  async function loadStandards() {
+    standardsLoaded = true;
+    try {
+      var res = await fetch("/api/standards");
+      var data = await res.json();
+      standardsContent.innerHTML = data.content
+        ? renderMarkdown(data.content)
+        : '<p class="empty-note">No ENGINEERING-STANDARDS-GO.md found in this repo.</p>';
+    } catch (e) {
+      standardsLoaded = false;
+      standardsContent.innerHTML = '<p class="empty-note">Could not load standards doc.</p>';
+    }
+  }
 
   fetch("/api/state").then(function (r) { return r.json(); }).then(render).catch(function () {});
 

@@ -50,16 +50,11 @@
   .banner ul{margin:4px 0 0; padding-left:18px;}
   .banner .fixbtn{margin-left:auto;}
 
-  .insights{max-width:1220px; margin:0 auto 16px;}
-  .insights-head{margin-bottom:8px;}
-  .insights-toggle{
-    background:none; border:none; padding:4px 2px; font:inherit; font-size:12px; font-weight:600;
-    text-transform:uppercase; letter-spacing:0.05em; color:var(--ink-dim); cursor:pointer;
-    display:flex; align-items:center; gap:6px;
-  }
-  .insights-toggle:hover{color:var(--ink);}
-  .chevron{display:inline-block; transition:transform .15s ease; font-size:10px;}
-  .insights-toggle[aria-expanded="false"] .chevron{transform:rotate(-90deg);}
+  .tabs{max-width:1220px; margin:0 auto 18px; display:flex; gap:4px; border-bottom:1px solid var(--border); flex-wrap:wrap;}
+  .tab{background:none; border:none; padding:10px 14px; font:inherit; font-size:13px; font-weight:600; color:var(--ink-dim); cursor:pointer; border-bottom:2px solid transparent; margin-bottom:-1px;}
+  .tab:hover{color:var(--ink);}
+  .tab[aria-selected="true"]{color:var(--accent); border-bottom-color:var(--accent);}
+  .tab-panel{max-width:1220px; margin:0 auto 16px;}
   .stat-row{display:flex; gap:10px; flex-wrap:wrap; margin-bottom:10px;}
   .stat-tile{background:var(--surface); border:1px solid var(--border); border-radius:8px; padding:10px 14px; flex:1 1 120px; min-width:110px;}
   .stat-tile .value{font-size:19px; font-weight:700; color:var(--accent); font-variant-numeric:tabular-nums;}
@@ -67,6 +62,19 @@
   .stat-tile .sub{font-size:11px; color:var(--ink-dim); margin-top:3px;}
   .langs{background:var(--surface); border:1px solid var(--border); border-radius:8px; padding:12px 14px;}
   .langs h3{margin:0 0 8px; font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:0.05em; color:var(--ink-dim);}
+
+  .state-chart{background:var(--surface); border:1px solid var(--border); border-radius:8px; padding:14px 16px; margin-bottom:10px;}
+  .state-chart h3{margin:0 0 12px; font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:0.05em; color:var(--ink-dim);}
+  .state-chart-body{display:flex; align-items:center; gap:24px; flex-wrap:wrap;}
+  .donut{position:relative; width:120px; height:120px; border-radius:50%; flex:none;}
+  .donut-hole{position:absolute; inset:20%; background:var(--surface); border-radius:50%; display:flex; flex-direction:column; align-items:center; justify-content:center;}
+  .donut-total{font-size:19px; font-weight:700; font-family:"IBM Plex Mono",ui-monospace,monospace; font-variant-numeric:tabular-nums;}
+  .donut-total-label{font-size:9.5px; color:var(--ink-dim); text-transform:uppercase; letter-spacing:0.04em;}
+  .state-legend{list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:7px; font-size:12.5px; flex:1; min-width:170px;}
+  .state-legend li{display:flex; align-items:center; gap:8px;}
+  .state-legend .swatch{width:10px; height:10px; border-radius:3px; flex:none;}
+  .state-legend .count{margin-left:auto; font-family:"IBM Plex Mono",ui-monospace,monospace; font-weight:600; font-variant-numeric:tabular-nums;}
+  .state-legend .pct{color:var(--ink-dim); font-size:11px; width:36px; text-align:right; font-variant-numeric:tabular-nums;}
   .lang-row{display:flex; align-items:center; gap:8px; font-size:12.5px; margin-bottom:5px;}
   .lang-row .name{width:90px; flex:none; color:var(--ink-dim);}
   .lang-row .bar-track{flex:1; max-width:160px; background:var(--surface-2); border-radius:4px; height:8px; overflow:hidden;}
@@ -79,8 +87,8 @@
   .token-row .bar-track{flex:1; background:var(--surface-2); border-radius:4px; height:8px; overflow:hidden;}
   .token-row .bar-fill{display:block; height:100%; background:var(--accent); border-radius:4px;}
 
-  .coverage-modules h3{margin:16px 0 8px; font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:0.05em; color:var(--ink-dim);}
-  .coverage-modules .cov-list{max-height:260px; overflow-y:auto; padding-right:4px;}
+  .coverage-modules{background:var(--surface); border:1px solid var(--border); border-radius:8px; padding:12px 14px;}
+  .coverage-modules h3{margin:0 0 8px; font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:0.05em; color:var(--ink-dim);}
   .cov-row{display:flex; align-items:center; gap:8px; font-size:12px; margin-bottom:4px;}
   .cov-row .name{width:160px; flex:none; color:var(--ink-dim); font-family:"IBM Plex Mono",ui-monospace,monospace; font-size:11.5px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
   .cov-row .bar-track{flex:1; background:var(--surface-2); border-radius:4px; height:8px; overflow:hidden;}
@@ -91,9 +99,11 @@
   .layout{max-width:1220px; margin:0 auto; display:flex; gap:20px; align-items:flex-start;}
   .board{flex:1; display:flex; gap:14px; align-items:flex-start; overflow-x:auto;}
   .lane{background:var(--surface-2); border-radius:10px; padding:12px; flex:1 1 200px; min-width:200px; display:flex; flex-direction:column; gap:10px;}
-  .lane header{display:flex; align-items:baseline; justify-content:space-between; padding:2px 4px;}
-  .lane header h2{margin:0; font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:0.06em; color:var(--ink-dim);}
+  .lane header{display:flex; align-items:baseline; gap:6px; padding:2px 4px;}
+  .lane header h2{margin:0; font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:0.06em; color:var(--ink-dim); flex:1;}
   .lane header .count{font-size:11px; color:var(--ink-dim);}
+  .sort-btn{background:none; border:none; padding:1px 3px; font-size:12px; line-height:1; color:var(--ink-dim); border-radius:4px;}
+  .sort-btn:hover{color:var(--accent); background:var(--accent-wash);}
   .lane-body{display:flex; flex-direction:column; gap:8px; min-height:36px;}
   .lane-empty{font-size:11.5px; color:var(--ink-dim); padding:8px 4px; font-style:italic;}
 
@@ -103,24 +113,33 @@
   .badge{font-size:10.5px; font-weight:600; border-radius:5px; padding:2px 6px; white-space:nowrap;}
   .badge.risk{color:var(--accent); background:var(--accent-wash);}
   .badge.blocked{color:var(--closed); background:var(--closed-bg);}
-  .badge.owner{color:var(--progress); background:var(--progress-bg);}
   .badge.tag{color:var(--ink-dim); background:var(--surface-2); border:1px solid var(--border);}
+  .badge.phase{font-weight:700; letter-spacing:0.01em;}
   .intent{margin:0; font-size:13px; line-height:1.4; font-weight:500;}
-  .card-foot{display:flex; align-items:center; justify-content:space-between; gap:6px;}
-  .card-foot .id{font-size:10.5px; color:var(--ink-dim);}
-  .advance-btn{border:1px solid var(--accent); background:var(--accent-wash); color:var(--accent); border-radius:5px; padding:3px 8px; font-size:10.5px; font-weight:700; white-space:nowrap;}
-  .advance-btn:hover{background:var(--accent); color:var(--accent-ink);}
-  .advance-btn:disabled{opacity:0.5; cursor:default;}
+  .card-foot{display:flex; align-items:center; justify-content:space-between; gap:8px; flex-wrap:nowrap; margin-top:2px; padding-top:7px; border-top:1px solid var(--border);}
+  .owner-chip{display:inline-flex; align-items:center; gap:4px; flex:0 1 auto; font-size:10.5px; font-weight:600; color:var(--ink-dim); max-width:100%; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+  .owner-dot{width:7px; height:7px; border-radius:50%; flex:none;}
+  .owner-dot.human{background:var(--progress);}
+  .owner-chip.agent .owner-name{font-family:"IBM Plex Mono",ui-monospace,monospace; letter-spacing:-0.01em;}
+  .owner-name{min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+  .move-group{display:inline-flex; align-items:stretch; gap:4px; margin-left:auto; flex:none;}
+  .move-btn{border:1px solid var(--mv-fg,var(--border)); border-radius:6px; width:27px; height:25px; padding:0; display:inline-flex; align-items:center; justify-content:center; background:var(--mv-bg,var(--bg)); color:var(--mv-fg,var(--ink-dim)); transition:background .12s ease, color .12s ease, border-color .12s ease;}
+  .move-btn .mv-icon{display:block;}
+  .move-btn:hover:not(:disabled){background:var(--mv-fg,var(--ink-dim)); color:var(--accent-ink); border-color:var(--mv-fg,var(--ink-dim));}
+  .move-btn:disabled{opacity:0.4; cursor:not-allowed; border-style:dashed; color:var(--ink-dim); border-color:var(--border); background:none;}
   .controls{display:flex; gap:4px; flex-wrap:wrap;}
-  .ctl{border:1px solid var(--border); background:var(--bg); color:var(--ink-dim); border-radius:5px; padding:3px 7px; font-size:10.5px; font-weight:600;}
+  .ctl{border:1px solid var(--border); background:var(--bg); color:var(--ink-dim); border-radius:5px; width:24px; height:24px; padding:0; display:inline-flex; align-items:center; justify-content:center; font-size:12px; line-height:1; transition:background .12s ease, border-color .12s ease, color .12s ease;}
   .ctl[aria-pressed="true"]{border-color:var(--ink); color:var(--ink); background:var(--surface-2);}
   .ctl.pause[aria-pressed="true"]{border-color:var(--proposed); color:var(--proposed); background:var(--proposed-bg);}
   .ctl.skip[aria-pressed="true"]{border-color:var(--closed); color:var(--closed); background:var(--closed-bg);}
   .ctl.restart[aria-pressed="true"]{border-color:var(--accent); color:var(--accent); background:var(--accent-wash);}
   .ctl.run[aria-pressed="true"]{border-color:var(--built); color:var(--built); background:var(--built-bg);}
+  .ctl.run:hover{border-color:var(--built); color:var(--built); background:var(--built-bg);}
+  .ctl.pause:hover{border-color:var(--proposed); color:var(--proposed); background:var(--proposed-bg);}
+  .ctl.skip:hover{border-color:var(--closed); color:var(--closed); background:var(--closed-bg);}
+  .ctl.restart:hover{border-color:var(--accent); color:var(--accent); background:var(--accent-wash);}
 
-  .agents-columns{display:flex; gap:16px; flex-wrap:wrap;}
-  .agents-col{background:var(--surface); border:1px solid var(--border); border-radius:8px; padding:12px 14px; flex:1 1 220px; min-width:200px;}
+  .agents-col{background:var(--surface); border:1px solid var(--border); border-radius:8px; padding:12px 14px;}
   .agents-col h3{margin:0 0 8px; font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:0.05em; color:var(--ink-dim);}
   .agent{border-top:1px solid var(--border); padding:9px 0; font-size:12.5px;}
   .agent:first-of-type{border-top:none; padding-top:0;}
@@ -164,9 +183,10 @@
 
   /* Rendered markdown (ticket Notes/Acceptance) */
   .modal-body p{margin:0 0 10px; font-size:13.5px; line-height:1.55;}
-  .modal-body h4.md-h, .modal-body h5.md-h, .modal-body h6.md-h{
+  .modal-body h3.md-h, .modal-body h4.md-h, .modal-body h5.md-h, .modal-body h6.md-h{
     margin:16px 0 6px; font-size:13.5px; font-weight:700; color:var(--ink);
   }
+  .modal-body h3.md-h{font-size:15.5px;}
   .modal-body h4.md-h{font-size:14.5px;}
   .modal-body ul, .modal-body ol{margin:0 0 10px; padding-left:20px; font-size:13.5px; line-height:1.5;}
   .modal-body li{margin-bottom:4px;}
@@ -187,6 +207,11 @@
   .modal-body a{color:var(--accent);}
   .modal-history .by{color:var(--ink); font-weight:600;}
 
+  /* Coding standards tab reuses the modal-body markdown typography above, full-width and
+     unclipped instead of the modal's popup sizing. */
+  .standards-doc{background:var(--surface); border:1px solid var(--border); border-radius:8px; padding:16px 18px; max-height:none; overflow:visible;}
+  .standards-doc h3.md-h{font-size:16.5px; margin-top:0;}
+
   #newTicketForm .field{margin-bottom:14px;}
   #newTicketForm label{display:block; font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:0.04em; color:var(--ink-dim); margin-bottom:5px;}
   #newTicketForm input, #newTicketForm textarea, #newTicketForm select{
@@ -202,7 +227,6 @@
   @media (max-width:720px){
     .board{flex-direction:column; overflow-x:visible;}
     .lane{max-width:100%;}
-    .agents-columns{flex-direction:column;}
   }
 </style>
 </head>
@@ -241,42 +265,53 @@
     <button class="primary fixbtn" id="pushBtn" type="button">Push to remote</button>
   </div>
 
-  <section class="insights" id="insights">
-    <div class="insights-head">
-      <button class="insights-toggle" id="insightsToggle" type="button" aria-expanded="true" aria-controls="insightsBody">
-        <span class="chevron">▾</span> Insights
-      </button>
-    </div>
-    <div class="insights-body" id="insightsBody">
-      <div class="stat-row" id="statRow"></div>
-      <div class="langs" id="langs"></div>
-      <div class="tokens" id="tokenUsage"></div>
-      <div class="coverage-modules" id="coverageModules"></div>
-    </div>
-  </section>
+  <nav class="tabs" id="tabs">
+    <button class="tab" data-tab="tasks" type="button" aria-selected="true">Tasks</button>
+    <button class="tab" data-tab="insights" type="button" aria-selected="false">Insights</button>
+    <button class="tab" data-tab="coverage" type="button" aria-selected="false">Coverage</button>
+    <button class="tab" data-tab="agents" type="button" aria-selected="false">Agents</button>
+    <button class="tab" data-tab="members" type="button" aria-selected="false">Members</button>
+    <button class="tab" data-tab="standards" type="button" aria-selected="false">Coding standards</button>
+    <button class="tab" data-tab="config" type="button" aria-selected="false">Configuration</button>
+  </nav>
 
-  <section class="insights" id="agentsPanel">
-    <div class="insights-head">
-      <button class="insights-toggle" id="agentsToggle" type="button" aria-expanded="true" aria-controls="agentsBody">
-        <span class="chevron">▾</span> Agents &amp; Members
-      </button>
+  <div class="tab-panel" id="panel-tasks">
+    <div class="layout">
+      <div class="board" id="board"></div>
     </div>
-    <div class="insights-body" id="agentsBody">
-      <div class="agents-columns">
-        <div class="agents-col">
-          <h3>Agents</h3>
-          <div id="agentList"><p class="empty-note">No live sessions.</p></div>
-        </div>
-        <div class="agents-col">
-          <h3>Members</h3>
-          <div id="memberList"><p class="empty-note">No commits yet.</p></div>
-        </div>
-      </div>
-    </div>
-  </section>
+  </div>
 
-  <div class="layout">
-    <div class="board" id="board"></div>
+  <div class="tab-panel" id="panel-insights" hidden>
+    <div class="state-chart" id="stateChart"></div>
+    <div class="stat-row" id="statRow"></div>
+    <div class="langs" id="langs"></div>
+    <div class="tokens" id="tokenUsage"></div>
+  </div>
+
+  <div class="tab-panel" id="panel-coverage" hidden>
+    <div class="coverage-modules" id="coverageModules"></div>
+  </div>
+
+  <div class="tab-panel" id="panel-agents" hidden>
+    <div class="agents-col">
+      <h3>Agents</h3>
+      <div id="agentList"><p class="empty-note">No live sessions.</p></div>
+    </div>
+  </div>
+
+  <div class="tab-panel" id="panel-members" hidden>
+    <div class="agents-col">
+      <h3>Members</h3>
+      <div id="memberList"><p class="empty-note">No commits yet.</p></div>
+    </div>
+  </div>
+
+  <div class="tab-panel" id="panel-standards" hidden>
+    <div class="modal-body standards-doc" id="standardsContent"><p class="empty-note">Loading…</p></div>
+  </div>
+
+  <div class="tab-panel" id="panel-config" hidden>
+    <div class="modal-body standards-doc" id="configContent"></div>
   </div>
 
   <div class="modal-backdrop" id="ticketModalBackdrop" hidden>
