@@ -606,13 +606,19 @@
         ' — state only moves forward once work has been built" aria-label="No move back from ' + esc(t.state) + '" type="button">' +
         MOVE_ICON.back + "</button>");
     var moves = advance || unclaim ? '<div class="move-group">' + unclaim + advance + "</div>" : "";
-    var foot = owner || moves ? '<div class="card-foot">' + owner + moves + "</div>" : "";
+    var ctlGroup = controls ? '<div class="controls">' + controls + "</div>" : "";
+    // One footer row, read left to right as "what the agent is doing" -> "who" -> "where it goes
+    // next": run/pause/skip on the left, owner in the middle (the part that truncates when a lane
+    // is narrow), the state moves on the right. They were two stacked rows, which cost every card
+    // a line of height and split two control groups that are read together.
+    var foot = ctlGroup || owner || moves
+      ? '<div class="card-foot">' + ctlGroup + owner + moves + "</div>"
+      : "";
     card.innerHTML =
       '<div class="card-top">' + epicTag + phase + tags + risk + "</div>" +
       '<p class="intent">' + esc(t.intent) + "</p>" +
       (blocked ? "<div>" + blocked + "</div>" : "") +
-      foot +
-      (isTerminal ? "" : '<div class="controls">' + controls + "</div>");
+      foot;
     Array.prototype.forEach.call(card.querySelectorAll(".ctl"), function (btn) {
       btn.addEventListener("click", async function (ev) {
         ev.stopPropagation(); // a control click must not also open the detail modal
