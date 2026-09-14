@@ -97,6 +97,9 @@
   var newTicketBackdrop = document.getElementById("newTicketBackdrop");
   var newTicketClose = document.getElementById("newTicketClose");
   var newTicketForm = document.getElementById("newTicketForm");
+  var groupToggle = document.getElementById("groupToggle");
+  var otherProjects = document.getElementById("otherProjects");
+  var epicOptions = document.getElementById("epicOptions");
 
   function esc(s) {
     return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) {
@@ -247,25 +250,52 @@
     return Math.floor(d) + "d " + Math.round(h % 24) + "h";
   }
 
-  /** Cost of one ticket: wall-clock time-in-flight (creation to shipped/closed, or to now while
-   *  still open) and tokens spent — specifically for THIS ticket, not the session's lifetime
-   *  total. A transcript has no per-ticket boundaries of its own, so writer.js's upsertSession
-   *  stores a {tokensAtStart, tokensAtLatest} pair per session touch; the marginal spend on this
-   *  ticket is the sum of (tokensAtLatest - tokensAtStart) across whichever sessions touched it.
-   *  Entries missing either bound (the old single-`tokens`-field shape, or a session that never
-   *  reported tokens) are skipped rather than misread as zero cost. */
+  /** Cost of one ticket, split into the two spans that mean different things:
+   *
+   *  - `waitMs`  — created until somebody claimed it (or until now, while nobody has). Backlog
+   *    latency: nothing is being spent, the ticket is just sitting there.
+   *  - `workMs`  — first claim until the ticket reached a terminal state (or until now, while
+   *    still open). The only span in which effort was actually going into it.
+   *
+   *  They used to be one number measured from creation, which made a ticket filed 8 minutes ago
+   *  and never touched report "8m in flight" as though someone were working it.
+   *
+   *  Tokens are likewise scoped to THIS ticket rather than the session's lifetime: a transcript
+   *  has no per-ticket boundaries, so writer.js stores a {tokensAtStart, tokensAtLatest} pair per
+   *  session touch and the marginal spend is the sum of the differences. Entries missing either
+   *  bound (a session that never reported tokens) are skipped, not read as zero cost. */
   function ticketCost(t) {
     var history = Array.isArray(t.history) ? t.history : [];
-    var startedAt = history.length ? history[0].at : t.createdAt;
+    var createdAt = t.createdAt || (history.length ? history[0].at : null);
+    var claimEntry = history.find(function (h) { return h.to === "in-progress"; });
+    var claimedAt = claimEntry ? claimEntry.at : null;
     var isTerminal = TERMINAL_STATES.has(t.state);
     var endedAt = isTerminal && history.length ? history[history.length - 1].at : null;
-    var ms = startedAt ? (endedAt ? Date.parse(endedAt) : Date.now()) - Date.parse(startedAt) : null;
+    var now = Date.now();
+
+    var waitMs = createdAt ? (claimedAt ? Date.parse(claimedAt) : now) - Date.parse(createdAt) : null;
+    var workMs = claimedAt ? (endedAt ? Date.parse(endedAt) : now) - Date.parse(claimedAt) : null;
+
     var sessions = Array.isArray(t.sessions) ? t.sessions : [];
     var scoped = sessions.filter(function (s) { return s.tokensAtStart != null && s.tokensAtLatest != null; });
     var tokens = scoped.length
       ? scoped.reduce(function (sum, s) { return sum + Math.max(0, s.tokensAtLatest - s.tokensAtStart); }, 0)
       : null;
-    return { ms: ms, tokens: tokens, live: isTerminal ? null : true };
+    return {
+      createdAt: createdAt, waitMs: waitMs, workMs: workMs, tokens: tokens,
+      waiting: !claimedAt, working: Boolean(claimedAt) && !isTerminal,
+    };
+  }
+
+  /** Absolute local timestamp to the minute — a board is read against a calendar ("filed Monday
+   *  afternoon"), which a relative age alone can't answer. */
+  function fmtDateTime(iso) {
+    if (!iso) return "—";
+    var d = new Date(iso);
+    if (isNaN(d)) return "—";
+    return d.toLocaleString(undefined, {
+      year: "numeric", month: "short", day: "2-digit", hour: "2-digit", minute: "2-digit",
+    });
   }
 
   function renderInsights(stats, coverage, agents) {
@@ -519,6 +549,10 @@
     // A card sitting in a state that is not its lane's headline state says so on its own face —
     // "Built"/"Verified" inside the In progress lane, "Closed" inside Shipped — tinted with that
     // state's palette entry, so the lane stays coarse while the card stays exact.
+    // The project name was the same on every card of a single-project board — pure noise. The
+    // epic is what actually varies and what a reader groups by, so it takes that slot; a ticket
+    // with no epic simply has one less chip.
+    var epicTag = t.epic ? '<span class="epic-tag" title="epic: ' + esc(t.epic) + '">' + esc(t.epic) + "</span>" : "";
     var phaseState = PHASE_STATES.has(t.state) ? STATES.find(function (x) { return x.key === t.state; }) : null;
     var phase = phaseState
       ? '<span class="badge phase" style="color:' + STATE_COLOR[phaseState.key] + ";background:" + STATE_BG[phaseState.key] +
@@ -567,7 +601,7 @@
     var moves = advance || unclaim ? '<div class="move-group">' + unclaim + advance + "</div>" : "";
     var foot = owner || moves ? '<div class="card-foot">' + owner + moves + "</div>" : "";
     card.innerHTML =
-      '<div class="card-top"><span class="project-tag">' + esc(t.project || "—") + "</span>" + phase + tags + risk + "</div>" +
+      '<div class="card-top">' + epicTag + phase + tags + risk + "</div>" +
       '<p class="intent">' + esc(t.intent) + "</p>" +
       (blocked ? "<div>" + blocked + "</div>" : "") +
       foot +
@@ -624,6 +658,13 @@
     return names.filter(function (n, i) { return n && names.indexOf(n) === i; }).sort();
   }
 
+  /** Every epic any ticket currently carries — the epic list is derived, never declared, so an
+   *  epic exists exactly as long as something is filed under it. */
+  function knownEpics() {
+    var seen = (latestTickets || []).map(function (t) { return t.epic; }).filter(Boolean);
+    return seen.filter(function (e, i) { return seen.indexOf(e) === i; }).sort();
+  }
+
   /** Assignment is a claim-time gate, not a label (writer.claimTicket refuses a mismatched
    *  claimant), so it is edited here in the detail view rather than on the card — reserving work
    *  for a person is a deliberate act, unlike the one-click state moves. */
@@ -636,6 +677,15 @@
         return '<option value="' + esc(n) + '"' + (t.assignee === n ? " selected" : "") + ">" + esc(n) + "</option>";
       }).join("") +
       "</select>"
+    );
+  }
+
+  /** Free text with the existing epics offered as suggestions: a new epic is created by typing
+   *  one, which is the whole ceremony — see writer.setEpic on why epics aren't records. */
+  function epicControl(t) {
+    return (
+      '<input class="epic-input" list="epicOptions" data-id="' + esc(t.id) + '" value="' + esc(t.epic || "") +
+      '" placeholder="none" aria-label="Epic for this ticket">'
     );
   }
 
@@ -653,13 +703,16 @@
       // instead of taking the card's only chip.
       ["Owner", t.owner ? esc(ownerNameOf(t) || "unknown") : "—"],
       ["Assignee", assignControl(t)],
+      ["Epic", epicControl(t)],
       ["Session", t.owner ? '<span class="mono">' + esc(t.owner) + "</span>" : "—"],
       ["Created by", t.createdBy ? esc(t.createdBy) : "—"],
       ["Branch", t.branch ? '<span class="mono">' + esc(t.branch) + "</span>" : "—"],
       ["PR", t.pr ? esc(t.pr) : "—"],
       ["Estimate", t.estimate ? esc(t.estimate) : "—"],
       ["Blocked on", t.blockedOn ? esc(t.blockedOn) : "—"],
-      ["Time in flight", cost.ms != null ? fmtDuration(cost.ms) + (cost.live ? " (open)" : "") : "—"],
+      ["Created", cost.createdAt ? esc(fmtDateTime(cost.createdAt)) + ' <span class="dim">(' + relTime(cost.createdAt) + ")</span>" : "—"],
+      ["Waiting", cost.waitMs != null ? fmtDuration(cost.waitMs) + (cost.waiting ? " (unclaimed)" : " before claim") : "—"],
+      ["Work duration", cost.workMs != null ? fmtDuration(cost.workMs) + (cost.working ? " (open)" : "") : "—"],
       ["Tokens spent", cost.tokens != null ? fmtNum(cost.tokens) : "—"],
     ];
     var rowsHtml = rows.map(function (r) {
@@ -680,6 +733,27 @@
       (t.acceptance ? "<h3>Acceptance</h3>" + renderMarkdown(t.acceptance) : "") +
       (t.body ? "<h3>Notes</h3>" + renderMarkdown(t.body) : "") +
       "<h3>History</h3>" + historyHtml;
+    var epicInput = ticketModalBody.querySelector(".epic-input");
+    if (epicInput) {
+      // On change (blur/Enter), not on every keystroke — each write is a commit.
+      epicInput.addEventListener("change", async function () {
+        var value = epicInput.value.trim();
+        epicInput.disabled = true;
+        try {
+          var res = await apiPost("/api/tickets/" + encodeURIComponent(epicInput.dataset.id) + "/epic", {
+            epic: value || null, actor: "peephole-ui",
+          });
+          if (res && res.error) {
+            window.alert(res.error);
+            epicInput.value = t.epic || "";
+          } else {
+            t.epic = value || null;
+          }
+        } finally {
+          epicInput.disabled = false;
+        }
+      });
+    }
     var assignSelect = ticketModalBody.querySelector(".assign-select");
     if (assignSelect) {
       assignSelect.addEventListener("change", async function () {
@@ -753,6 +827,7 @@
         intent: newTicketForm.intent.value.trim(),
         acceptance: newTicketForm.acceptance.value.trim(),
         risk: newTicketForm.risk.value,
+        epic: newTicketForm.epic.value.trim() || null,
         createdBy: createdBy || null,
       });
       if (res && res.error) {
@@ -780,13 +855,31 @@
     });
   }
 
+  // Grouping is a view preference, not ticket data — same treatment as the sort direction.
+  var EPIC_GROUP_KEY = "peephole.groupByEpic";
+  function getGroupByEpic() {
+    try { return localStorage.getItem(EPIC_GROUP_KEY) === "1"; } catch (e) { return false; }
+  }
+  var NO_EPIC = "\u0000none"; // sorts nowhere near a real epic name, can't collide with one
+
+  /** One board = one project. A repo's `.peephole/tickets` can hold tickets filed against other
+   *  projects (Peephole's own tickets living in the repo it watches, say); showing them turned
+   *  the project tag into a permanent chip on every card and mixed two backlogs in one board. */
+  function forThisProject(tickets) {
+    var project = latestState && latestState.project;
+    if (!project) return tickets;
+    return tickets.filter(function (t) { return !t.project || t.project === project; });
+  }
+
   var latestTickets = [];
   function renderBoard(tickets) {
     latestTickets = tickets;
     var dir = getLaneSortDir();
+    var grouped = getGroupByEpic();
+    var visible = forThisProject(tickets);
     board.innerHTML = "";
     LANES.forEach(function (s) {
-      var inLane = sortByModified(tickets.filter(function (t) { return s.states.indexOf(t.state) !== -1; }), dir);
+      var inLane = sortByModified(visible.filter(function (t) { return s.states.indexOf(t.state) !== -1; }), dir);
       var lane = document.createElement("section");
       lane.className = "lane";
       lane.innerHTML =
@@ -798,6 +891,28 @@
       var body = lane.querySelector(".lane-body");
       if (inLane.length === 0) {
         body.innerHTML = '<div class="lane-empty">No tickets</div>';
+      } else if (grouped) {
+        // Epics keep their order across lanes (alphabetical, un-filed last) so one epic's work
+        // reads as a row across the board rather than shuffling per column.
+        var byEpic = {};
+        inLane.forEach(function (t) {
+          var key = t.epic || NO_EPIC;
+          (byEpic[key] = byEpic[key] || []).push(t);
+        });
+        // Alphabetical, but the un-filed pile always sinks to the bottom of the lane: it is the
+        // residue, not a group anyone is tracking. (NO_EPIC's NUL prefix would otherwise sort it
+        // first, above every real epic.)
+        var keys = Object.keys(byEpic).sort().filter(function (k) { return k !== NO_EPIC; });
+        if (byEpic[NO_EPIC]) keys.push(NO_EPIC);
+        keys.forEach(function (key) {
+          var group = document.createElement("div");
+          group.className = "lane-group";
+          group.innerHTML = '<h3 class="group-head">' +
+            (key === NO_EPIC ? '<span class="dim">No epic</span>' : esc(key)) +
+            '<span class="count mono">' + byEpic[key].length + "</span></h3>";
+          byEpic[key].forEach(function (t) { group.appendChild(cardEl(t)); });
+          body.appendChild(group);
+        });
       } else {
         inLane.forEach(function (t) { body.appendChild(cardEl(t)); });
       }
@@ -912,6 +1027,17 @@
     autoFetchToggle.setAttribute("aria-pressed", String(Boolean(state.autoFetch && state.autoFetch.enabled)));
     if (state.autoFetch) intervalInput.value = state.autoFetch.intervalMinutes;
 
+    groupToggle.setAttribute("aria-pressed", String(getGroupByEpic()));
+    // Filtering to one project is silent otherwise — a ticket filed against another project would
+    // simply never appear, with no way to tell that from "never created".
+    var all = state.tickets || [];
+    var hidden = all.length - forThisProject(all).length;
+    otherProjects.hidden = hidden === 0;
+    otherProjects.textContent = hidden
+      ? hidden + (hidden === 1 ? " ticket" : " tickets") + " from other projects hidden"
+      : "";
+    epicOptions.innerHTML = knownEpics().map(function (e) { return '<option value="' + esc(e) + '">'; }).join("");
+
     var issues = state.issues || [];
     if (issues.length) {
       issuesBanner.hidden = false;
@@ -946,6 +1072,13 @@
       pullBtn.disabled = false;
       pullBtn.textContent = "Pull latest";
     }
+  });
+
+  groupToggle.addEventListener("click", function () {
+    var next = !getGroupByEpic();
+    try { localStorage.setItem(EPIC_GROUP_KEY, next ? "1" : "0"); } catch (e) {}
+    groupToggle.setAttribute("aria-pressed", String(next));
+    renderBoard(latestTickets);
   });
 
   autoFetchToggle.addEventListener("click", async function () {

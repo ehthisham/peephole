@@ -65,7 +65,7 @@ async function cmdTicketNew(argv) {
   const args = parseArgs(argv);
   const port = requirePort(args);
   if (!args.project || !args.intent) {
-    console.error('usage: peephole ticket new --project <p> --intent "<text>" [--id <id>] [--acceptance "<text>"] [--risk reversible|irreversible] [--owner <sessionId>] [--transcript <path>] [--port 4173]');
+    console.error('usage: peephole ticket new --project <p> --intent "<text>" [--id <id>] [--acceptance "<text>"] [--risk reversible|irreversible] [--owner <sessionId>] [--epic "<epic>"] [--transcript <path>] [--port 4173]');
     process.exit(1);
   }
   const id = args.id || slugify(args.intent);
@@ -77,6 +77,7 @@ async function cmdTicketNew(argv) {
     risk: args.risk || "reversible",
     owner: args.owner || null,
     assignee: args.assignee && args.assignee !== true ? String(args.assignee) : null,
+    epic: args.epic && args.epic !== true ? String(args.epic) : null,
     transcriptPath: args.transcript || null,
     author: await resolveAuthor(args),
   });
@@ -125,6 +126,21 @@ async function cmdTicketAssign(argv) {
   const assignee = clearing ? null : String(args.to);
   const result = await apiCall(port, "POST", `/api/tickets/${encodeURIComponent(id)}/assign`, { assignee, actor: args.actor });
   console.log(`"${id}" assigned -> ${result.ticket.assignee || "unassigned"}`);
+}
+
+async function cmdTicketEpic(argv) {
+  const id = argv[0];
+  const args = parseArgs(argv.slice(1));
+  const port = requirePort(args);
+  const clearing = args.clear === true || args.to === "none";
+  if (!id || (!args.to && !clearing)) {
+    console.error('usage: peephole ticket epic <id> --to "<epic>" | --clear [--port 4173]');
+    process.exit(1);
+  }
+  const result = await apiCall(port, "POST", `/api/tickets/${encodeURIComponent(id)}/epic`, {
+    epic: clearing ? null : String(args.to), actor: args.actor,
+  });
+  console.log(`"${id}" epic -> ${result.ticket.epic || "none"}`);
 }
 
 async function cmdTicketAdvance(argv) {
@@ -194,6 +210,7 @@ async function main() {
   if (cmd === "ticket" && argv[1] === "claim") return cmdTicketClaim(argv.slice(2));
   if (cmd === "ticket" && argv[1] === "unclaim") return cmdTicketUnclaim(argv.slice(2));
   if (cmd === "ticket" && argv[1] === "assign") return cmdTicketAssign(argv.slice(2));
+  if (cmd === "ticket" && argv[1] === "epic") return cmdTicketEpic(argv.slice(2));
   if (cmd === "ticket" && argv[1] === "advance") return cmdTicketAdvance(argv.slice(2));
   if (cmd === "ticket" && argv[1] === "rename") return cmdTicketRename(argv.slice(2));
   if (cmd === "agent" && argv[1] === "heartbeat") return cmdAgentHeartbeat(argv.slice(2));
@@ -206,6 +223,7 @@ async function main() {
     "  peephole ticket claim <id> --owner <sessionId>\n" +
     "  peephole ticket unclaim <id>  # return to proposed, in-progress only\n" +
     '  peephole ticket assign <id> --to "<person>" | --clear  # reserve it; only that person can claim\n' +
+    '  peephole ticket epic <id> --to "<epic>" | --clear      # file it under an epic\n' +
     "  peephole ticket advance <id> --state <proposed|in-progress|built|verified|shipped|closed>\n" +
     "  peephole ticket rename <id> --to <new-id>\n" +
     "  peephole agent heartbeat --session <id> [--ticket <id>] [--status working|idle|paused|stopped]\n" +

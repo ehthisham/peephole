@@ -298,7 +298,7 @@ export async function setState(repoRoot, remoteBranch, ticketId, state, actor = 
 }
 
 /** Creates a new ticket file with a schema-correct frontmatter — the deterministic alternative to an agent hand-writing YAML. Always its own commit. */
-export async function createTicket(repoRoot, remoteBranch, { id, project, intent, acceptance = "", body = "", risk = "reversible", owner = null, assignee = null, tags = [], createdBy = null, state: stateOverride, actor, session = null }) {
+export async function createTicket(repoRoot, remoteBranch, { id, project, intent, acceptance = "", body = "", risk = "reversible", owner = null, assignee = null, epic = null, tags = [], createdBy = null, state: stateOverride, actor, session = null }) {
   if (!project || !intent) throw new Error("project and intent are required");
   const { STATES } = await import("./schema.js");
   if (stateOverride && !STATES.includes(stateOverride)) {
@@ -316,6 +316,7 @@ export async function createTicket(repoRoot, remoteBranch, { id, project, intent
   const ticket = {
     id, project, intent, acceptance, body, state, risk, blockedOn: "", control: "run", owner,
     ownerName: owner ? session?.author?.name ?? null : null, assignee: assignee || null,
+    epic: epic || null,
     tags: Array.isArray(tags) ? tags : [], createdBy,
     branch: null, pr: null, estimate: null, createdAt: now, updatedAt: now,
     history: [{ at: now, from: null, to: state, by: who }],
@@ -371,6 +372,34 @@ export async function claimTicket(repoRoot, remoteBranch, ticketId, owner, actor
   const sha = await git.commitAll(worktreePath, `peephole: ${ticketId} claimed by ${owner}`);
   const unpushed = await git.unpushedCount(worktreePath, localBranch, remoteBranch);
   return { claimed: true, committed: Boolean(sha), sha, unpushed, ticket };
+}
+
+/** Files a ticket under an epic (or clears it with null). An epic is a free-text grouping label,
+ * not a record of its own: tickets are the only durable unit here, and a board that needed an
+ * epic to exist first would push the ceremony back onto the agent creating the ticket. The board
+ * derives the epic list from whatever the tickets actually carry. Always its own commit. */
+export async function setEpic(repoRoot, remoteBranch, ticketId, epic, actor = "peephole-ui") {
+  const { worktreePath, localBranch } = await prepWorktree(repoRoot, remoteBranch);
+  const file = path.join(worktreePath, ".peephole", "tickets", `${ticketId}.md`);
+  if (!(await fileExists(file))) throw new Error(`ticket "${ticketId}" not found`);
+
+  const { parseTicket } = await import("./schema.js");
+  const parsed = parseTicket(await fs.readFile(file, "utf8"), ticketId);
+  if (!parsed.ok) throw new Error(`Cannot set epic on ${ticketId}: ${parsed.errors.join("; ")}`);
+  const ticket = parsed.ticket;
+
+  const name = epic ? String(epic).trim() : null;
+  const from = ticket.epic || null;
+  if (from === name) return { committed: false, ticket };
+  ticket.epic = name;
+  ticket.updatedAt = new Date().toISOString();
+  ticket.history = Array.isArray(ticket.history) ? ticket.history : [];
+  ticket.history.push({ at: ticket.updatedAt, from: `epic:${from || "none"}`, to: `epic:${name || "none"}`, by: actor });
+
+  await fs.writeFile(file, serializeTicket(ticket), "utf8");
+  const sha = await git.commitAll(worktreePath, `peephole: ${ticketId} epic -> ${name || "none"}`);
+  const unpushed = await git.unpushedCount(worktreePath, localBranch, remoteBranch);
+  return { committed: Boolean(sha), sha, unpushed, ticket };
 }
 
 /** Reserves a ticket for one person by name (or clears the reservation with null). An assignee is

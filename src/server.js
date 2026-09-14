@@ -273,6 +273,13 @@ export async function startServer(repoRoot, { port = 4173, remote = "origin" } =
         await refresh({ doFetch: false });
         return sendJson(res, 200, { ...result, state: publicState() });
       }
+      const epicMatch = url.pathname.match(/^\/api\/tickets\/([^/]+)\/epic$/);
+      if (req.method === "POST" && epicMatch) {
+        const body = await readJsonBody(req);
+        const result = await writer.setEpic(repoRoot, stateBranch, epicMatch[1], body.epic ?? null, body.actor);
+        await refresh({ doFetch: false });
+        return sendJson(res, 200, { ...result, state: publicState() });
+      }
       const assignMatch = url.pathname.match(/^\/api\/tickets\/([^/]+)\/assign$/);
       if (req.method === "POST" && assignMatch) {
         const body = await readJsonBody(req);

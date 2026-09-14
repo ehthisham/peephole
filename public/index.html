@@ -115,6 +115,13 @@
   .badge.blocked{color:var(--closed); background:var(--closed-bg);}
   .badge.tag{color:var(--ink-dim); background:var(--surface-2); border:1px solid var(--border);}
   .badge.phase{font-weight:700; letter-spacing:0.01em;}
+  .epic-tag{font-size:10.5px; font-weight:700; color:var(--verified); background:var(--verified-bg); border-radius:5px; padding:2px 6px; max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+  .lane-group{display:flex; flex-direction:column; gap:8px; margin-bottom:12px;}
+  .lane-group:last-child{margin-bottom:0;}
+  .group-head{display:flex; align-items:baseline; gap:6px; margin:0 0 1px; padding:0 3px; font-size:10.5px; font-weight:700; text-transform:uppercase; letter-spacing:0.05em; color:var(--verified);}
+  .group-head .count{margin-left:auto; color:var(--ink-dim); font-weight:600;}
+  .group-head .dim{color:var(--ink-dim);}
+  .dim{opacity:0.75;}
   .intent{margin:0; font-size:13px; line-height:1.4; font-weight:500;}
   .card-foot{display:flex; align-items:center; justify-content:space-between; gap:8px; flex-wrap:nowrap; margin-top:2px; padding-top:7px; border-top:1px solid var(--border);}
   .owner-chip{display:inline-flex; align-items:center; gap:4px; flex:0 1 auto; font-size:10.5px; font-weight:600; color:var(--ink-dim); max-width:100%; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
@@ -124,6 +131,8 @@
   .owner-chip.assigned{color:var(--proposed);}
   .assign-select{font:inherit; font-size:12px; padding:2px 5px; border:1px solid var(--border); border-radius:5px; background:var(--bg); color:var(--ink); max-width:180px;}
   .assign-select:disabled{opacity:0.6;}
+  .epic-input{font:inherit; font-size:12px; padding:2px 6px; border:1px solid var(--border); border-radius:5px; background:var(--bg); color:var(--ink); max-width:220px;}
+  .epic-input:disabled{opacity:0.6;}
   .owner-chip.agent .owner-name{font-family:"IBM Plex Mono",ui-monospace,monospace; letter-spacing:-0.01em;}
   .owner-name{min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
   .move-group{display:inline-flex; align-items:stretch; gap:4px; margin-left:auto; flex:none;}
@@ -252,7 +261,9 @@
     <span>every</span>
     <input class="interval mono" id="intervalInput" type="number" min="1" max="180" value="5">
     <span>min</span>
+    <button class="ghost" id="groupToggle" type="button" aria-pressed="false">Group by epic</button>
     <span class="spacer"></span>
+    <span class="hookstate dim" id="otherProjects" hidden></span>
     <span class="hookstate" id="hookState">Hook: not configured — checking…</span>
     <span class="mono" id="lastUpdated"></span>
   </div>
@@ -355,6 +366,11 @@
               <option value="reversible" selected>Reversible</option>
               <option value="irreversible">Irreversible</option>
             </select>
+          </div>
+          <div class="field">
+            <label for="nt-epic">Epic — optional grouping label</label>
+            <input id="nt-epic" name="epic" list="epicOptions" autocomplete="off">
+            <datalist id="epicOptions"></datalist>
           </div>
           <div class="field">
             <label for="nt-createdby">Created by</label>
