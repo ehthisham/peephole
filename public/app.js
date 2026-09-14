@@ -98,6 +98,9 @@
   var newTicketClose = document.getElementById("newTicketClose");
   var newTicketForm = document.getElementById("newTicketForm");
   var groupToggle = document.getElementById("groupToggle");
+  var filterBtn = document.getElementById("filterBtn");
+  var filterMenu = document.getElementById("filterMenu");
+  var filterCount = document.getElementById("filterCount");
   var otherProjects = document.getElementById("otherProjects");
   var epicOptions = document.getElementById("epicOptions");
 
@@ -503,8 +506,12 @@
    *  heartbeat's author, else null — in which case the caller falls back to the raw session id. */
   function ownerNameOf(t) {
     if (t.ownerName) return t.ownerName;
-    var a = t.owner ? authorBySession[t.owner] : null;
-    return a || null;
+    if (!t.owner) return null;
+    // An `owner` that isn't a session id IS a name — tickets claimed by a human (or by a CLI call
+    // passing a person as --owner) carry one directly, and treating those as nameless made them
+    // invisible to a member filter that was matching on names.
+    if (!SESSION_ID_RE.test(t.owner)) return t.owner;
+    return authorBySession[t.owner] || null;
   }
 
   function hueOf(s) {
@@ -871,12 +878,42 @@
     return tickets.filter(function (t) { return !t.project || t.project === project; });
   }
 
+  // Selected member names, persisted like the other view preferences. Empty = no filter at all,
+  // which is a different thing from "nobody selected" — an empty set must never blank the board.
+  var MEMBER_FILTER_KEY = "peephole.memberFilter";
+  // NOT a NUL-prefixed sentinel like NO_EPIC: this one is written into a checkbox's value
+  // attribute, and the HTML parser rewrites a literal NUL to U+FFFD — the value read back never
+  // equalled the constant, so selecting "Unassigned" silently matched nothing.
+  var UNASSIGNED = "__peephole:unassigned__";
+  function getMemberFilter() {
+    try {
+      var raw = JSON.parse(localStorage.getItem(MEMBER_FILTER_KEY) || "[]");
+      return Array.isArray(raw) ? raw : [];
+    } catch (e) { return []; }
+  }
+  function setMemberFilter(list) {
+    try { localStorage.setItem(MEMBER_FILTER_KEY, JSON.stringify(list)); } catch (e) {}
+  }
+
+  /** A ticket belongs to whoever is working it (owner) OR whoever it is reserved for (assignee) —
+   *  both, because a filter on "my work" has to surface the queue waiting for me as well as what
+   *  I already hold. A ticket with neither matches only the explicit "Unassigned" choice. */
+  function matchesMembers(t, selected) {
+    if (!selected.length) return true;
+    var owner = ownerNameOf(t);
+    if (owner && selected.indexOf(owner) !== -1) return true;
+    if (t.assignee && selected.indexOf(t.assignee) !== -1) return true;
+    if (!owner && !t.assignee && selected.indexOf(UNASSIGNED) !== -1) return true;
+    return false;
+  }
+
   var latestTickets = [];
   function renderBoard(tickets) {
     latestTickets = tickets;
     var dir = getLaneSortDir();
     var grouped = getGroupByEpic();
-    var visible = forThisProject(tickets);
+    var selected = getMemberFilter();
+    var visible = forThisProject(tickets).filter(function (t) { return matchesMembers(t, selected); });
     board.innerHTML = "";
     LANES.forEach(function (s) {
       var inLane = sortByModified(visible.filter(function (t) { return s.states.indexOf(t.state) !== -1; }), dir);
@@ -1028,6 +1065,7 @@
     if (state.autoFetch) intervalInput.value = state.autoFetch.intervalMinutes;
 
     groupToggle.setAttribute("aria-pressed", String(getGroupByEpic()));
+    renderFilterState();
     // Filtering to one project is silent otherwise — a ticket filed against another project would
     // simply never appear, with no way to tell that from "never created".
     var all = state.tickets || [];
@@ -1071,6 +1109,89 @@
     } finally {
       pullBtn.disabled = false;
       pullBtn.textContent = "Pull latest";
+    }
+  });
+
+  /** The menu is rebuilt from the current ticket set each time it opens, so it never offers a
+   *  person who has nothing on this board — and never hides a selection that is still active. */
+  function renderFilterMenu() {
+    var selected = getMemberFilter();
+    // Candidates come from the tickets themselves first (an owner or assignee who has never
+    // committed to this repo still belongs in the list), then anyone else already known.
+    var pool = [];
+    (latestTickets || []).forEach(function (t) {
+      var owner = ownerNameOf(t);
+      if (owner) pool.push(owner);
+      if (t.assignee) pool.push(t.assignee);
+    });
+    knownPeople(null).forEach(function (n) { pool.push(n); });
+    selected.forEach(function (n) { if (n !== UNASSIGNED) pool.push(n); });
+    var people = pool
+      .filter(function (n, i) { return n && pool.indexOf(n) === i; })
+      .filter(function (name) {
+        return selected.indexOf(name) !== -1 || (latestTickets || []).some(function (t) {
+          return ownerNameOf(t) === name || t.assignee === name;
+        });
+      })
+      .sort();
+    var opts = people.map(function (name) {
+      return { value: name, label: name };
+    });
+    opts.push({ value: UNASSIGNED, label: "Unassigned" });
+    filterMenu.innerHTML =
+      opts.map(function (o) {
+        return '<label><input type="checkbox" value="' + esc(o.value) + '"' +
+          (selected.indexOf(o.value) !== -1 ? " checked" : "") + "> " + esc(o.label) + "</label>";
+      }).join("") +
+      (selected.length ? '<div class="filter-foot"><button class="clear-filter" type="button">Clear filter</button></div>' : "");
+
+    Array.prototype.forEach.call(filterMenu.querySelectorAll("input"), function (box) {
+      box.addEventListener("change", function () {
+        var next = getMemberFilter().filter(function (v) { return v !== box.value; });
+        if (box.checked) next.push(box.value);
+        setMemberFilter(next);
+        renderFilterState();
+        renderBoard(latestTickets);
+        renderFilterMenu();
+      });
+    });
+    var clear = filterMenu.querySelector(".clear-filter");
+    if (clear) {
+      clear.addEventListener("click", function () {
+        setMemberFilter([]);
+        renderFilterState();
+        renderBoard(latestTickets);
+        renderFilterMenu();
+      });
+    }
+  }
+
+  /** How many people are selected, on the button itself — an active filter that only shows up
+   *  inside a closed menu is how a board ends up silently missing half its tickets. */
+  function renderFilterState() {
+    var n = getMemberFilter().length;
+    filterCount.hidden = n === 0;
+    filterCount.textContent = String(n);
+    filterBtn.setAttribute("aria-pressed", String(n > 0));
+  }
+
+  filterBtn.addEventListener("click", function (ev) {
+    ev.stopPropagation();
+    var open = filterMenu.hidden;
+    if (open) renderFilterMenu();
+    filterMenu.hidden = !open;
+    filterBtn.setAttribute("aria-expanded", String(open));
+  });
+  document.addEventListener("click", function (ev) {
+    if (!filterMenu.hidden && !filterMenu.contains(ev.target) && ev.target !== filterBtn) {
+      filterMenu.hidden = true;
+      filterBtn.setAttribute("aria-expanded", "false");
+    }
+  });
+  document.addEventListener("keydown", function (ev) {
+    if (ev.key === "Escape" && !filterMenu.hidden) {
+      filterMenu.hidden = true;
+      filterBtn.setAttribute("aria-expanded", "false");
     }
   });
 
