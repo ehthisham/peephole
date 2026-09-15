@@ -61,12 +61,31 @@ function relatedCwd(cwd, repoRoot) {
   return reachOf(cwd, repoRoot) < 3;
 }
 
-/** The idle session that fits this repo most tightly. A busy session is never chosen: resuming one
- *  starts a COPY under a new id, which is the session sprawl this queue exists to avoid. */
+/**
+ * The session a ticket may be dispatched into: an idle BACKGROUND session only.
+ *
+ * Interactive sessions are excluded even when idle, and that is the whole point. An interactive
+ * session is somebody sitting at a terminal — dispatching into it resumes the conversation they
+ * are in the middle of, which is exactly what happened in testing: the queue found the operator's
+ * own session idle between turns and resumed it with a ticket prompt. "Idle" means "not mid-turn",
+ * not "unattended". (`--resume` on an attached session also just starts a copy, so reusing one is
+ * unreliable as well as rude.)
+ *
+ * Background sessions are the ones that exist to be handed work, so they are the only candidates;
+ * when there is none, the queue starts one. Ties break toward the session rooted most tightly in
+ * this repo.
+ */
 function idleSessionOf(sessions) {
-  const idle = sessions.filter((s) => s.status !== "busy");
-  idle.sort((a, b) => (a.reach ?? 3) - (b.reach ?? 3));
-  return idle[0] || null;
+  const usable = sessions.filter((s) => s.status !== "busy" && s.kind === "background");
+  usable.sort((a, b) => (a.reach ?? 3) - (b.reach ?? 3));
+  return usable[0] || null;
+}
+
+/** Whether anything at all could take work right now — used to decide between holding the queue
+ *  and starting a worker. A repo full of busy background sessions should wait for one; a repo with
+ *  only interactive sessions (or none) needs its own worker started. */
+function hasBackgroundSession(sessions) {
+  return sessions.some((s) => s.kind === "background");
 }
 
 /** The instruction handed to the agent. Deliberately points at the CLI rather than describing the
@@ -142,8 +161,10 @@ export function createQueue({ repoRoot, binPath, port, claimTicket, onChange }) 
     if (running || pending.length === 0) return;
     const sessions = await listSessions(repoRoot);
     const idle = idleSessionOf(sessions);
-    if (!idle && sessions.length > 0) {
-      schedulePoll(); // everything busy: hold the queue rather than forking a copy
+    if (!idle && hasBackgroundSession(sessions)) {
+      // Workers exist but all are mid-turn: wait for one rather than starting another, and never
+      // fall through to an interactive session.
+      schedulePoll();
       return;
     }
 
@@ -172,7 +193,7 @@ export function createQueue({ repoRoot, binPath, port, claimTicket, onChange }) 
     const prompt = promptFor(ticket, { binPath, port });
     const args = idle
       ? ["-p", "--resume", sessionId, "--permission-mode", next.permissionMode, prompt]
-      : ["-p", "--session-id", sessionId, "--permission-mode", next.permissionMode, prompt];
+      : ["--background", "-p", "--session-id", sessionId, "--permission-mode", next.permissionMode, prompt];
 
     let child;
     try {

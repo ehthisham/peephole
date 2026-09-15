@@ -58,6 +58,7 @@ export async function startServer(repoRoot, { port = 4173, remote = "origin", ho
 
   let cache = { config: null, tickets: [], agents: [], issues: [], lastFetchedAt: null, unpushed: 0, coverage: null };
   let queueState = { pending: [], running: null, lastError: null };
+  let lastCoverageStamp = null;
   // Dispatching a ticket claims it for the session that is about to work it, then re-reads, so the
   // board shows in-progress before the agent's first tool call rather than after it.
   const queue = createQueue({
@@ -155,6 +156,17 @@ export async function startServer(repoRoot, { port = 4173, remote = "origin", ho
     };
   }
 
+  /** Cheap change-detector for the coverage profile: size + mtime, no parsing. Null when no
+   *  profile exists, which is itself a change worth noticing (a deleted profile clears coverage). */
+  async function coverageStamp(root) {
+    try {
+      const st = await fs.stat(path.join(root, "coverage.out"));
+      return `${st.size}:${st.mtimeMs}`;
+    } catch {
+      return null;
+    }
+  }
+
   async function refresh({ doFetch }) {
     if (doFetch) {
       await git.fetch(repoRoot, remote);
@@ -171,11 +183,17 @@ export async function startServer(repoRoot, { port = 4173, remote = "origin", ho
     const enrichedStats = stats
       ? { ...stats, contributorList: await withMemberTokens(state.agents, stats.contributorList) }
       : stats;
-    // Coverage is a live-filesystem check (a test-run artifact, not committed — see
-    // coverage.js), and `go tool cover` shells out, so it's only recomputed on a real
-    // fetch cycle (Pull latest / auto-fetch), never on the heartbeat/ticket-write refreshes
-    // that fire as often as once a minute per session — those just carry the last value forward.
-    const coverage = doFetch
+    // Coverage is a live-filesystem check (a test-run artifact, not committed — see coverage.js),
+    // so it is recomputed on a real fetch cycle OR whenever the profile itself has changed on
+    // disk. Fetch-only was wrong: a test run rewrites coverage.out without touching git, so the
+    // board kept reporting a figure from before the run — 56% while `go tool cover` said 80% —
+    // and only a Pull latest would correct it.
+    const coverageChanged = await coverageStamp(repoRoot).then((stamp) => {
+      if (stamp === lastCoverageStamp) return false;
+      lastCoverageStamp = stamp;
+      return true;
+    });
+    const coverage = doFetch || coverageChanged || cache.coverage == null
       ? await detectCoverage(repoRoot).catch((e) => {
           console.error("coverage detection failed:", e.message);
           return cache.coverage ?? null;
@@ -290,7 +308,10 @@ export async function startServer(repoRoot, { port = 4173, remote = "origin", ho
       const controlMatch = url.pathname.match(/^\/api\/tickets\/([^/]+)\/control$/);
       if (req.method === "POST" && controlMatch) {
         const body = await readJsonBody(req);
-        const result = await writer.setControl(repoRoot, stateBranch, controlMatch[1], body.control);
+        const result = await writer.setControl(
+          repoRoot, stateBranch, controlMatch[1], body.control,
+          body.actor || (gitUser && gitUser.name) || "peephole-ui", body.note,
+        );
         await refresh({ doFetch: false });
         return sendJson(res, 200, { ...result, state: publicState() });
       }
@@ -314,6 +335,16 @@ export async function startServer(repoRoot, { port = 4173, remote = "origin", ho
       if (req.method === "POST" && unclaimMatch) {
         const body = await readJsonBody(req);
         const result = await writer.unclaimTicket(repoRoot, stateBranch, unclaimMatch[1], body.actor);
+        await refresh({ doFetch: false });
+        return sendJson(res, 200, { ...result, state: publicState() });
+      }
+      const commentMatch = url.pathname.match(/^\/api\/tickets\/([^/]+)\/comments$/);
+      if (req.method === "POST" && commentMatch) {
+        const body = await readJsonBody(req);
+        // Authorship defaults to this machine's git identity, so a comment is attributable without
+        // the UI having to ask who is typing.
+        const author = body.author || (gitUser && gitUser.name) || "peephole-ui";
+        const result = await writer.addComment(repoRoot, stateBranch, commentMatch[1], body.text, author);
         await refresh({ doFetch: false });
         return sendJson(res, 200, { ...result, state: publicState() });
       }

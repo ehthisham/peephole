@@ -161,7 +161,7 @@ async function commitOrAmend(worktreePath, localBranch, remoteBranch, subjectPre
 }
 
 /** Writes a new `control` value onto one ticket, appends a history entry, commits locally. Never pushes. */
-export async function setControl(repoRoot, remoteBranch, ticketId, control, actor = "peephole-ui") {
+export async function setControl(repoRoot, remoteBranch, ticketId, control, actor = "peephole-ui", note = "") {
   // Validate before touching the file: an undefined/garbage value used to be written straight onto
   // the ticket, and since yaml.dump drops an undefined key the result was a ticket with no
   // `control` field — which then failed validation and vanished from the board entirely.
@@ -184,6 +184,13 @@ export async function setControl(repoRoot, remoteBranch, ticketId, control, acto
   ticket.updatedAt = new Date().toISOString();
   ticket.history = Array.isArray(ticket.history) ? ticket.history : [];
   ticket.history.push({ at: ticket.updatedAt, from: `control:${from}`, to: `control:${control}`, by: actor });
+  // "Why is this skipped?" is the question a bare control flag can never answer, so the reason is
+  // stored as a comment — the same place every other human sentence about the ticket goes.
+  const reason = String(note || "").trim();
+  if (reason) {
+    ticket.comments = Array.isArray(ticket.comments) ? ticket.comments : [];
+    ticket.comments.push({ at: ticket.updatedAt, by: actor, text: reason, control });
+  }
   if (control === "restart") {
     ticket.owner = null;
     ticket.branch = null;
@@ -323,7 +330,7 @@ export async function createTicket(repoRoot, remoteBranch, { id, project, intent
   const ticket = {
     id, project, intent, acceptance, body, state, risk, blockedOn: "", control: "run", owner,
     ownerName: owner ? session?.author?.name ?? null : null, assignee: assignee || null,
-    epic: epic || null, selected: false,
+    epic: epic || null, selected: false, comments: [],
     tags: Array.isArray(tags) ? tags : [], createdBy,
     branch: null, pr: null, estimate: null, createdAt: now, updatedAt: now,
     history: [{ at: now, from: null, to: state, by: who }],
@@ -380,6 +387,34 @@ export async function claimTicket(repoRoot, remoteBranch, ticketId, owner, actor
   const sha = await git.commitAll(worktreePath, `peephole: ${ticketId} claimed by ${owner}`);
   const unpushed = await git.unpushedCount(worktreePath, localBranch, remoteBranch);
   return { claimed: true, committed: Boolean(sha), sha, unpushed, ticket };
+}
+
+/** Appends a comment to a ticket: free text, plus who wrote it and when. Comments are the only
+ * place a human sentence belongs on a ticket — `history` records what changed, and the body says
+ * what the work is; neither can hold "skipping this until the rule engine lands". Always its own
+ * commit: a comment is something someone said, never a rapid-fire toggle to be amended away. */
+export async function addComment(repoRoot, remoteBranch, ticketId, text, author = "peephole-ui") {
+  const body = String(text == null ? "" : text).trim();
+  if (!body) throw new Error("comment text is required");
+
+  const { worktreePath, localBranch } = await prepWorktree(repoRoot, remoteBranch);
+  const file = path.join(worktreePath, ".peephole", "tickets", `${ticketId}.md`);
+  if (!(await fileExists(file))) throw new Error(`ticket "${ticketId}" not found`);
+
+  const { parseTicket } = await import("./schema.js");
+  const parsed = parseTicket(await fs.readFile(file, "utf8"), ticketId);
+  if (!parsed.ok) throw new Error(`Cannot comment on ${ticketId}: ${parsed.errors.join("; ")}`);
+  const ticket = parsed.ticket;
+
+  const at = new Date().toISOString();
+  ticket.comments = Array.isArray(ticket.comments) ? ticket.comments : [];
+  ticket.comments.push({ at, by: author, text: body });
+  ticket.updatedAt = at;
+
+  await fs.writeFile(file, serializeTicket(ticket), "utf8");
+  const sha = await git.commitAll(worktreePath, `peephole: ${ticketId} comment by ${author}`);
+  const unpushed = await git.unpushedCount(worktreePath, localBranch, remoteBranch);
+  return { committed: Boolean(sha), sha, unpushed, ticket };
 }
 
 /** Marks a ticket as selected for execution (or clears it). Selection is a queue-building act,

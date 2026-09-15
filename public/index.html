@@ -132,6 +132,16 @@
   .ctl.execute:disabled{opacity:0.4; cursor:not-allowed;}
   .badge.queued{color:var(--progress); background:var(--progress-bg);}
   .badge.queued.running{color:var(--accent-ink); background:var(--progress);}
+  .badge.control-pause{color:var(--proposed); background:var(--proposed-bg);}
+  .badge.control-skip{color:var(--closed); background:var(--closed-bg);}
+  .comment-add{display:flex; gap:8px; align-items:flex-start; margin-bottom:6px;}
+  .comment-add textarea{flex:1; font:inherit; font-size:13px; padding:8px 10px; border:1px solid var(--border); border-radius:7px; background:var(--bg); color:var(--ink); resize:vertical;}
+  .comment-add button{flex:none; padding:8px 14px;}
+  .modal-history li{display:flex; gap:10px; align-items:baseline;}
+  .modal-history .ev-when{flex:none; width:70px; color:var(--ink-dim); font-size:11.5px;}
+  .modal-history .ev-body{flex:1; min-width:0;}
+  .modal-history .ev-comment .ev-body{color:var(--ink); white-space:pre-wrap;}
+  .modal-history .ev-comment{background:var(--surface-2); border-radius:6px; padding:6px 8px; margin:2px 0;}
 
   .exec-modal{max-width:440px;}
   .exec-note{margin:0 0 14px; font-size:12.5px; line-height:1.5; color:var(--ink-dim);}

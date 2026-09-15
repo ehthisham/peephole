@@ -583,6 +583,11 @@
     // epic is what actually varies and what a reader groups by, so it takes that slot; a ticket
     // with no epic simply has one less chip.
     var epicTag = t.epic ? '<span class="epic-tag" title="epic: ' + esc(t.epic) + '">' + esc(t.epic) + "</span>" : "";
+    // A control flag used to change nothing but a faint border tint on one 24px button, so setting
+    // it looked like nothing happened. It now says so on the card's face, like every other state.
+    var controlTag = t.control && t.control !== "run"
+      ? '<span class="badge control-' + esc(t.control) + '">' + (t.control === "pause" ? "⏸ paused" : "⏭ skipped") + "</span>"
+      : "";
     var queueTag = runningId === t.id
       ? '<span class="badge queued running">▶ running</span>'
       : (queuedIds.indexOf(t.id) !== -1 ? '<span class="badge queued">queued</span>' : "");
@@ -662,7 +667,7 @@
       ? '<div class="card-foot">' + ctlGroup + owner + moves + "</div>"
       : "";
     card.innerHTML =
-      '<div class="card-top">' + epicTag + queueTag + phase + tags + risk + "</div>" +
+      '<div class="card-top">' + epicTag + queueTag + controlTag + phase + tags + risk + "</div>" +
       '<p class="intent">' + esc(t.intent) + "</p>" +
       (blocked ? "<div>" + blocked + "</div>" : "") +
       foot;
@@ -672,9 +677,17 @@
     Array.prototype.forEach.call(card.querySelectorAll(".ctl[data-ctl]"), function (btn) {
       btn.addEventListener("click", async function (ev) {
         ev.stopPropagation(); // a control click must not also open the detail modal
+        var control = btn.dataset.ctl;
+        var note = null;
+        if (control !== "run") {
+          // Pausing or skipping is a decision someone else has to understand later; clearing one
+          // back to `run` needs no defence, so only the setting direction asks.
+          note = window.prompt("Why " + control + " this ticket? (saved as a comment — optional)", "");
+          if (note === null) return; // dismissed: do not write the control either
+        }
         Array.prototype.forEach.call(card.querySelectorAll(".ctl[data-ctl]"), function (b) { b.disabled = true; });
         try {
-          await apiPost("/api/tickets/" + encodeURIComponent(btn.dataset.id) + "/control", { control: btn.dataset.ctl });
+          await apiPost("/api/tickets/" + encodeURIComponent(btn.dataset.id) + "/control", { control: control, note: note });
         } finally {
           Array.prototype.forEach.call(card.querySelectorAll(".ctl[data-ctl]"), function (b) { b.disabled = false; });
         }
@@ -809,21 +822,59 @@
     var rowsHtml = rows.map(function (r) {
       return '<div class="modal-row"><span class="k">' + r[0] + '</span><span class="v">' + r[1] + "</span></div>";
     }).join("");
-    var history = Array.isArray(t.history) ? t.history.slice().reverse() : [];
-    var historyHtml = history.length
-      ? '<ul class="modal-history">' + history.map(function (h) {
+    // History and comments are one story told in two arrays — a state change and the sentence
+    // explaining it are minutes apart and belong on the same timeline, newest first.
+    var events = [];
+    (Array.isArray(t.history) ? t.history : []).forEach(function (h) {
+      events.push({ at: h.at, kind: "event", by: h.by, from: h.from, to: h.to });
+    });
+    (Array.isArray(t.comments) ? t.comments : []).forEach(function (c) {
+      events.push({ at: c.at, kind: "comment", by: c.by, text: c.text, control: c.control });
+    });
+    events.sort(function (a, b) { return Date.parse(b.at || 0) - Date.parse(a.at || 0); });
+    var historyHtml = events.length
+      ? '<ul class="modal-history">' + events.map(function (e) {
+          if (e.kind === "comment") {
+            return (
+              '<li class="ev-comment"><span class="ev-when">' + relTime(e.at) + "</span>" +
+              '<span class="ev-body">' + (e.control ? '<b>' + esc(e.control) + "</b> — " : "") +
+              esc(e.text) + '</span><span class="by">' + esc(e.by || "") + "</span></li>"
+            );
+          }
           return (
-            "<li>" + relTime(h.at) + " — " + esc(h.from || "—") + " → " + esc(h.to || "—") +
-            ' <span class="by">' + esc(h.by || "") + "</span></li>"
+            '<li><span class="ev-when">' + relTime(e.at) + '</span><span class="ev-body">' +
+            esc(e.from || "—") + " → " + esc(e.to || "—") +
+            '</span><span class="by">' + esc(e.by || "") + "</span></li>"
           );
         }).join("") + "</ul>"
-      : '<p class="empty-note">No history yet.</p>';
+      : '<p class="empty-note">Nothing logged yet.</p>';
     ticketModalBody.innerHTML =
       rowsHtml +
       "<h3>Intent</h3><p>" + esc(t.intent || "—") + "</p>" +
       (t.acceptance ? "<h3>Acceptance</h3>" + renderMarkdown(t.acceptance) : "") +
       (t.body ? "<h3>Notes</h3>" + renderMarkdown(t.body) : "") +
-      "<h3>History</h3>" + historyHtml;
+      '<h3>Comments</h3>' +
+      '<div class="comment-add"><textarea id="commentText" rows="2" placeholder="Add a comment — why this is blocked, skipped, or what you decided"></textarea>' +
+      '<button class="ghost" id="commentAdd" type="button" data-id="' + esc(t.id) + '">Comment</button></div>' +
+      "<h3>Activity</h3>" + historyHtml;
+    var commentBtn = ticketModalBody.querySelector("#commentAdd");
+    var commentText = ticketModalBody.querySelector("#commentText");
+    if (commentBtn && commentText) {
+      commentBtn.addEventListener("click", async function () {
+        var text = commentText.value.trim();
+        if (!text) return;
+        commentBtn.disabled = true;
+        try {
+          var res = await apiPost("/api/tickets/" + encodeURIComponent(commentBtn.dataset.id) + "/comments", { text: text });
+          if (res && res.error) { window.alert(res.error); return; }
+          // Re-open against the stored ticket so the new comment shows without a round trip.
+          var fresh = (latestTickets || []).find(function (x) { return x.id === t.id; });
+          openTicketModal(fresh && fresh.comments ? fresh : (res.ticket || t));
+        } finally {
+          commentBtn.disabled = false;
+        }
+      });
+    }
     var epicInput = ticketModalBody.querySelector(".epic-input");
     if (epicInput) {
       // On change (blur/Enter), not on every keystroke — each write is a commit.
