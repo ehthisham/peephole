@@ -4,21 +4,57 @@ Local-first live status interface into multi-agent AI work. Reads `.peephole/**`
 git repo (no server, no auth, no bot credential) and writes control changes back through your own
 git identity. See the [project plan](../peephole-plan) for the full design.
 
-## Enable it on a new project
+## Adding Peephole to a repo
 
-No per-project install — this one checkout of `peephole` serves any repo via `--repo`:
+Peephole is a separate checkout that serves any number of repos — nothing is installed into the
+repo you are tracking, and the repo gains no dependency on this one. What lands in your repo is
+data (`.peephole/`) plus two documentation sections; what stays on your machine is the hook wiring
+and a git worktree.
+
+### A repo that has never used it
 
 ```
 cd ~/workx/peephole
-node bin/peephole.js serve --repo /path/to/other-repo --port 4174   # pick a free port
+node bin/peephole.js serve --repo /path/to/your-repo --port 4173
 ```
 
-Open the printed `http://localhost:<port>` link. First run shows an issues list (missing
-`config.yaml` / `tickets/` / `agents/` / CLAUDE.md and README pointers) — click **Fix it** once to
-scaffold all of it and commit locally. That includes a `<!-- peephole:start -->` section in
-`CLAUDE.md` (so any agent working the repo discovers the ticket convention on its own) and one in
-`README.md` (the exact command above, so a human opening the repo finds the live board). Push when
-ready.
+The board opens on a self-check listing what is missing. **Fix it** creates all of it in one local
+commit, on the peephole-owned branch inside your repo:
+
+| what | where | committed? |
+|---|---|---|
+| `config.yaml`, `tickets/`, `agents/` | `.peephole/` in your repo | yes |
+| ticket convention for agents | `CLAUDE.md`, between `peephole:start`/`peephole:end` | yes |
+| how to open the board | `README.md`, same markers | yes |
+| SessionStart / PreToolUse / SessionEnd hooks | `.claude/settings.local.json` | **no — per machine** |
+| the working copy writes go through | `.peephole-worktree/` | no — add it to `.gitignore` |
+
+Then click **Push to remote** to share it. Nothing reaches the remote before that.
+
+The hooks are what make the board live: they report each session, enforce pause/skip before every
+tool call, and attach token usage. They are written with absolute paths to *this* peephole
+checkout, which is why they are per-machine and not committed.
+
+### A repo somebody has already set up
+
+Your teammate's `.peephole/` arrives with a normal `git pull`; the board is not part of it. Get
+your own copy of Peephole and point it at the repo:
+
+```
+git clone <peephole repo> ~/workx/peephole && cd ~/workx/peephole && npm install
+node bin/peephole.js serve --repo /path/to/the-repo --port 4173
+```
+
+Every ticket is already there — it is committed repo content. The self-check will still report a
+missing hook setup, because `.claude/settings.local.json` is per machine; **Fix it** wires your
+own hooks and creates nothing else.
+
+### Notes
+
+- One port per repo — run a second `serve` with `--port 4174` to watch another.
+- Requires Node 18+ and a git remote; the board reads the remote's default branch (see
+  **Where the files live**).
+- The server listens on `127.0.0.1` only. See **Executing tickets** before exposing it.
 
 ## Run it (already set up)
 
