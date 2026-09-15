@@ -313,6 +313,20 @@
     };
   }
 
+  /** How much of this project's work is finished, as a share of tickets that reached a terminal
+   *  state. Deliberately NOT weighted by a per-state guess (built = 60% done and so on): those
+   *  weights are invented, and a board that claims 71% because several tickets are "nearly built"
+   *  is reporting an opinion as a measurement. Shipped or closed, or not done.
+   *
+   *  Scoped to the project the board is showing, so it matches the lanes rather than the file
+   *  count. Null when there are no tickets at all — 0% of nothing is not progress. */
+  function ticketProgress(tickets) {
+    var mine = forThisProject(tickets || []);
+    if (!mine.length) return null;
+    var done = mine.filter(function (t) { return TERMINAL_STATES.has(t.state); }).length;
+    return { done: done, total: mine.length, pct: (done / mine.length) * 100 };
+  }
+
   /** Absolute local timestamp to the minute — a board is read against a calendar ("filed Monday
    *  afternoon"), which a relative age alone can't answer. */
   function fmtDateTime(iso) {
@@ -330,7 +344,16 @@
       langs.innerHTML = "";
       return;
     }
-    var tiles = [
+    var progress = ticketProgress(latestTickets);
+    var tiles = [];
+    if (progress) {
+      tiles.push({
+        value: progress.pct.toFixed(0) + "%",
+        label: "Progress",
+        sub: fmtNum(progress.done) + " of " + fmtNum(progress.total) + " shipped or closed",
+      });
+    }
+    tiles = tiles.concat([
       { value: fmtNum(stats.linesOfCodeApprox), label: "Lines of code", sub: "approx." },
       { value: fmtNum(stats.totalFiles), label: "Tracked files" },
       { value: fmtNum(stats.commits), label: "Commits" },
@@ -340,7 +363,7 @@
         label: "Last commit",
         sub: stats.lastCommit ? esc(stats.lastCommit.author) : "",
       },
-    ];
+    ]);
     // Grand total across every session, not just ones that matched a git-identity'd member —
     // the same source renderTokenUsage sums per-session, so the two numbers can never disagree.
     var totalTokens = (agents || []).reduce(function (sum, a) {
@@ -462,7 +485,18 @@
       coverageModulesEl.innerHTML = '<p class="empty-note">No coverage run found yet.</p>';
       return;
     }
+    // The per-package list never added up to anything a reader could quote: packages have wildly
+    // different statement counts, so eyeballing 40 rows says nothing about the project. The
+    // headline is the statement-weighted total — the same figure `go tool cover` reports.
+    var head = typeof coverage.pct === "number"
+      ? '<div class="cov-head"><span class="cov-pct">' + coverage.pct.toFixed(1) + "%</span>" +
+        '<span class="cov-head-label">overall statement coverage<small>' +
+        esc(coverage.tool === "go" ? "go test" : "istanbul") + " · " + esc(coverage.file || "") +
+        "</small></span>" +
+        '<span class="cov-head-bar"><span style="width:' + Math.max(0, Math.min(100, coverage.pct)).toFixed(1) + '%"></span></span></div>'
+      : "";
     coverageModulesEl.innerHTML =
+      head +
       "<h3>Coverage by package (" + esc(coverage.tool === "go" ? "go test" : "istanbul") + ")</h3>" +
       '<div class="cov-list">' +
       coverage.modules.map(function (m) {
