@@ -467,18 +467,15 @@ export async function setSelected(repoRoot, remoteBranch, ticketId, selected, ac
 
   const want = Boolean(selected);
   const blocked = ticket.control && ticket.control !== "run";
-  if (Boolean(ticket.selected) === want && !(want && blocked)) return { committed: false, ticket };
+  // A blocked ticket cannot be selected at all. Selecting used to lift the block, which meant a
+  // pause somebody else set could be undone by a click that didn't look like unblocking; the block
+  // has to be cleared deliberately, with its own button, first.
+  if (want && blocked) {
+    throw new Error(`"${ticketId}" is ${ticket.control} — clear that before selecting it for execution`);
+  }
+  if (Boolean(ticket.selected) === want) return { committed: false, ticket };
   ticket.selected = want;
   ticket.updatedAt = new Date().toISOString();
-  // The mirror of the rule in setControl: picking a blocked ticket for execution is a decision to
-  // unblock it, so the pause/skip is lifted here rather than leaving a ticket that is both queued
-  // and forbidden. Recorded, because someone else set that block.
-  if (want && blocked) {
-    const from = ticket.control;
-    ticket.control = "run";
-    ticket.history = Array.isArray(ticket.history) ? ticket.history : [];
-    ticket.history.push({ at: ticket.updatedAt, from: `control:${from}`, to: "control:run", by: actor });
-  }
 
   await fs.writeFile(file, serializeTicket(ticket), "utf8");
   const { sha, unpushed } = await commitOrAmend(

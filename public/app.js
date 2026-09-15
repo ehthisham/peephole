@@ -614,15 +614,23 @@
     var selectable = t.state === "proposed";
     var queued = queuedIds.indexOf(t.id) !== -1;
     var isRunning = runningId === t.id;
+    // A paused or skipped ticket is not a candidate for execution, so neither button is live on
+    // one — offering them and then refusing the write would be the same contradiction one layer up.
+    // The block itself is cleared with its own (lit) pause/skip button.
+    // NOT named `blocked` — that is already the blockedOn badge's markup a few lines up, and
+    // shadowing it rendered the literal string "true" on every skipped card.
+    var ctlBlocked = t.control && t.control !== "run";
+    var blockedWhy = ctlBlocked ? "This ticket is " + (t.control === "pause" ? "paused" : "skipped") + " — clear that first" : "";
     var selectBtn = selectable
       ? '<button class="ctl select" data-select="' + (t.selected ? "off" : "on") + '" data-id="' + esc(t.id) +
-        '" aria-pressed="' + Boolean(t.selected) + '" title="' + (t.selected ? "Selected for execution — click to unselect" : "Select for execution") +
+        '" aria-pressed="' + Boolean(t.selected) + '"' + (ctlBlocked ? " disabled" : "") +
+        ' title="' + esc(ctlBlocked ? blockedWhy : (t.selected ? "Selected for execution — click to unselect" : "Select for execution")) +
         '" aria-label="Select for execution" type="button">' + SELECT_ICON + "</button>"
       : "";
     var executeBtn = selectable
       ? '<button class="ctl execute" data-execute="' + esc(t.id) + '" type="button"' +
-        (queued || isRunning ? " disabled" : "") +
-        ' title="' + (isRunning ? "Running now" : queued ? "Queued for execution" : "Execute now — hand this ticket to a session") +
+        (queued || isRunning || ctlBlocked ? " disabled" : "") +
+        ' title="' + esc(ctlBlocked ? blockedWhy : (isRunning ? "Running now" : queued ? "Queued for execution" : "Execute now — hand this ticket to a session")) +
         '" aria-label="Execute this ticket">' + EXECUTE_ICON + "</button>"
       : "";
     var next = nextStateOf(t.state);
@@ -693,7 +701,7 @@
         }
       });
     });
-    var selBtn = card.querySelector(".ctl.select");
+    var selBtn = card.querySelector(".ctl.select:not([disabled])");
     if (selBtn) {
       selBtn.addEventListener("click", async function (ev) {
         ev.stopPropagation();
@@ -707,7 +715,7 @@
         }
       });
     }
-    var execBtn = card.querySelector(".ctl.execute");
+    var execBtn = card.querySelector(".ctl.execute:not([disabled])");
     if (execBtn) {
       execBtn.addEventListener("click", async function (ev) {
         ev.stopPropagation();
