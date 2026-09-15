@@ -42,8 +42,24 @@
   // NEXT claimer instead. Everything it could actually do is covered — pause stops, skip releases,
   // and the back button returns a ticket to proposed for a fresh attempt. `schema.CONTROLS` still
   // accepts "restart" so tickets already carrying it keep parsing.
-  var CONTROLS = ["run", "pause", "skip"];
-  var CONTROL_ICON = { run: "▶", pause: "⏸", skip: "⏭" };
+  //
+  // `run` is gone from the card too, and not because it did nothing: it set control back to the
+  // default, which is what un-pausing means. Pause and skip are toggles now — pressing a lit one
+  // clears it — so the row never needed a button whose icon promised to start something it had no
+  // way of starting.
+  var CONTROLS = ["pause", "skip"];
+  var CONTROL_ICON = { pause: "⏸", skip: "⏭" };
+
+  // Stroked SVGs for the two acts the old ▶ was conflating: marking a ticket for execution, and
+  // actually dispatching one. A checkmark reads as "picked", never as "running".
+  var SELECT_ICON =
+    '<svg class="mv-icon" viewBox="0 0 16 16" width="15" height="15" aria-hidden="true" focusable="false" ' +
+    'fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' +
+    '<path d="M3 8.6 6.3 12 13 4.6"/></svg>';
+  var EXECUTE_ICON =
+    '<svg class="mv-icon" viewBox="0 0 16 16" width="15" height="15" aria-hidden="true" focusable="false" ' +
+    'fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">' +
+    '<circle cx="8" cy="8" r="6.1"/><path d="M6.6 5.5 10.6 8l-4 2.5z" fill="currentColor" stroke="none"/></svg>';
   // Stroked SVG rather than a text glyph: an arrow driven into a bar ("send to the next lane")
   // has no Unicode equivalent that renders the same across fonts, and `currentColor` lets one
   // markup string pick up whichever target-state tint the button carries.
@@ -103,6 +119,13 @@
   var filterCount = document.getElementById("filterCount");
   var otherProjects = document.getElementById("otherProjects");
   var epicOptions = document.getElementById("epicOptions");
+  var execSelectedBtn = document.getElementById("execSelectedBtn");
+  var queueBar = document.getElementById("queueBar");
+  var execBackdrop = document.getElementById("execBackdrop");
+  var execTitle = document.getElementById("execTitle");
+  var execModes = document.getElementById("execModes");
+  var execGo = document.getElementById("execGo");
+  var execCancel = document.getElementById("execCancel");
 
   function esc(s) {
     return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) {
@@ -560,6 +583,9 @@
     // epic is what actually varies and what a reader groups by, so it takes that slot; a ticket
     // with no epic simply has one less chip.
     var epicTag = t.epic ? '<span class="epic-tag" title="epic: ' + esc(t.epic) + '">' + esc(t.epic) + "</span>" : "";
+    var queueTag = runningId === t.id
+      ? '<span class="badge queued running">▶ running</span>'
+      : (queuedIds.indexOf(t.id) !== -1 ? '<span class="badge queued">queued</span>' : "");
     var phaseState = PHASE_STATES.has(t.state) ? STATES.find(function (x) { return x.key === t.state; }) : null;
     var phase = phaseState
       ? '<span class="badge phase" style="color:' + STATE_COLOR[phaseState.key] + ";background:" + STATE_BG[phaseState.key] +
@@ -569,12 +595,31 @@
       ? t.tags.map(function (tg) { return '<span class="badge tag">' + esc(tg) + "</span>"; }).join("")
       : "";
     var isTerminal = TERMINAL_STATES.has(t.state);
+    // Pause/skip toggle: clicking a lit one writes `run` back, which is what un-pausing is.
     var controls = isTerminal ? "" : CONTROLS.map(function (c) {
+      var on = t.control === c;
       return (
-        '<button class="ctl ' + c + '" data-ctl="' + c + '" data-id="' + esc(t.id) + '" aria-pressed="' +
-        (t.control === c) + '" title="' + c + '" aria-label="' + c + '" type="button">' + CONTROL_ICON[c] + "</button>"
+        '<button class="ctl ' + c + '" data-ctl="' + (on ? "run" : c) + '" data-id="' + esc(t.id) + '" aria-pressed="' +
+        on + '" title="' + (on ? "resume (clear " + c + ")" : c) + '" aria-label="' + (on ? "resume" : c) + '" type="button">' +
+        CONTROL_ICON[c] + "</button>"
       );
     }).join("");
+    // Selecting is queue-building; executing dispatches. Both only make sense before the work has
+    // started, so neither appears once a ticket is past proposed.
+    var selectable = t.state === "proposed";
+    var queued = queuedIds.indexOf(t.id) !== -1;
+    var isRunning = runningId === t.id;
+    var selectBtn = selectable
+      ? '<button class="ctl select" data-select="' + (t.selected ? "off" : "on") + '" data-id="' + esc(t.id) +
+        '" aria-pressed="' + Boolean(t.selected) + '" title="' + (t.selected ? "Selected for execution — click to unselect" : "Select for execution") +
+        '" aria-label="Select for execution" type="button">' + SELECT_ICON + "</button>"
+      : "";
+    var executeBtn = selectable
+      ? '<button class="ctl execute" data-execute="' + esc(t.id) + '" type="button"' +
+        (queued || isRunning ? " disabled" : "") +
+        ' title="' + (isRunning ? "Running now" : queued ? "Queued for execution" : "Execute now — hand this ticket to a session") +
+        '" aria-label="Execute this ticket">' + EXECUTE_ICON + "</button>"
+      : "";
     var next = nextStateOf(t.state);
     var prev = prevStateOf(t.state);
     // Icon-only, because a 200px lane has no room for two labelled buttons and the lane the card
@@ -606,7 +651,9 @@
         ' — state only moves forward once work has been built" aria-label="No move back from ' + esc(t.state) + '" type="button">' +
         MOVE_ICON.back + "</button>");
     var moves = advance || unclaim ? '<div class="move-group">' + unclaim + advance + "</div>" : "";
-    var ctlGroup = controls ? '<div class="controls">' + controls + "</div>" : "";
+    var ctlGroup = selectBtn || executeBtn || controls
+      ? '<div class="controls">' + selectBtn + executeBtn + controls + "</div>"
+      : "";
     // One footer row, read left to right as "what the agent is doing" -> "who" -> "where it goes
     // next": run/pause/skip on the left, owner in the middle (the part that truncates when a lane
     // is narrow), the state moves on the right. They were two stacked rows, which cost every card
@@ -615,21 +662,52 @@
       ? '<div class="card-foot">' + ctlGroup + owner + moves + "</div>"
       : "";
     card.innerHTML =
-      '<div class="card-top">' + epicTag + phase + tags + risk + "</div>" +
+      '<div class="card-top">' + epicTag + queueTag + phase + tags + risk + "</div>" +
       '<p class="intent">' + esc(t.intent) + "</p>" +
       (blocked ? "<div>" + blocked + "</div>" : "") +
       foot;
-    Array.prototype.forEach.call(card.querySelectorAll(".ctl"), function (btn) {
+    // Scoped to [data-ctl]: the select and execute buttons share the .ctl look but are not control
+    // writes, and an unscoped selector posted `control: undefined` for them — which serialized a
+    // ticket with no `control` field at all and made the file fail validation.
+    Array.prototype.forEach.call(card.querySelectorAll(".ctl[data-ctl]"), function (btn) {
       btn.addEventListener("click", async function (ev) {
         ev.stopPropagation(); // a control click must not also open the detail modal
-        Array.prototype.forEach.call(card.querySelectorAll(".ctl"), function (b) { b.disabled = true; });
+        Array.prototype.forEach.call(card.querySelectorAll(".ctl[data-ctl]"), function (b) { b.disabled = true; });
         try {
           await apiPost("/api/tickets/" + encodeURIComponent(btn.dataset.id) + "/control", { control: btn.dataset.ctl });
         } finally {
-          Array.prototype.forEach.call(card.querySelectorAll(".ctl"), function (b) { b.disabled = false; });
+          Array.prototype.forEach.call(card.querySelectorAll(".ctl[data-ctl]"), function (b) { b.disabled = false; });
         }
       });
     });
+    var selBtn = card.querySelector(".ctl.select");
+    if (selBtn) {
+      selBtn.addEventListener("click", async function (ev) {
+        ev.stopPropagation();
+        selBtn.disabled = true;
+        try {
+          await apiPost("/api/tickets/" + encodeURIComponent(selBtn.dataset.id) + "/selected", {
+            selected: selBtn.dataset.select === "on", actor: "peephole-ui",
+          });
+        } finally {
+          selBtn.disabled = false;
+        }
+      });
+    }
+    var execBtn = card.querySelector(".ctl.execute");
+    if (execBtn) {
+      execBtn.addEventListener("click", async function (ev) {
+        ev.stopPropagation();
+        var mode = await askPermissionMode(1);
+        if (!mode) return;
+        execBtn.disabled = true;
+        try {
+          await apiPost("/api/tickets/" + encodeURIComponent(execBtn.dataset.execute) + "/execute", { permissionMode: mode });
+        } finally {
+          execBtn.disabled = false;
+        }
+      });
+    }
     var advanceBtn = card.querySelector(".move-btn.fwd");
     if (advanceBtn) {
       advanceBtn.addEventListener("click", async function (ev) {
@@ -904,6 +982,18 @@
   /** A ticket belongs to whoever is working it (owner) OR whoever it is reserved for (assignee) —
    *  both, because a filter on "my work" has to surface the queue waiting for me as well as what
    *  I already hold. A ticket with neither matches only the explicit "Unassigned" choice. */
+  // "all" | "selected" | "unselected" — a lane full of ticked and unticked cards is hard to scan
+  // when you are building a batch, so the board can narrow to one or the other.
+  var SELECTION_FILTER_KEY = "peephole.selectionFilter";
+  function getSelectionFilter() {
+    try { return localStorage.getItem(SELECTION_FILTER_KEY) || "all"; } catch (e) { return "all"; }
+  }
+  function matchesSelection(t, mode) {
+    if (mode === "selected") return Boolean(t.selected);
+    if (mode === "unselected") return !t.selected;
+    return true;
+  }
+
   function matchesMembers(t, selected) {
     if (!selected.length) return true;
     var owner = ownerNameOf(t);
@@ -913,13 +1003,20 @@
     return false;
   }
 
+  // Mirrored from the server's queue so a card can show "queued"/"running" without asking.
+  var queuedIds = [];
+  var runningId = null;
+
   var latestTickets = [];
   function renderBoard(tickets) {
     latestTickets = tickets;
     var dir = getLaneSortDir();
     var grouped = getGroupByEpic();
     var selected = getMemberFilter();
-    var visible = forThisProject(tickets).filter(function (t) { return matchesMembers(t, selected); });
+    var selMode = getSelectionFilter();
+    var visible = forThisProject(tickets).filter(function (t) {
+      return matchesMembers(t, selected) && matchesSelection(t, selMode);
+    });
     board.innerHTML = "";
     LANES.forEach(function (s) {
       var inLane = sortByModified(visible.filter(function (t) { return s.states.indexOf(t.state) !== -1; }), dir);
@@ -1050,6 +1147,10 @@
 
   function render(state) {
     latestState = state;
+    var q = state.queue || { pending: [], running: null };
+    queuedIds = (q.pending || []).map(function (p) { return p.ticketId; });
+    runningId = q.running ? q.running.ticketId : null;
+    renderQueueBar(q);
     authorBySession = {};
     (state.agents || []).forEach(function (a) {
       if (a.sessionId && a.author && a.author.name) authorBySession[a.sessionId] = a.author.name;
@@ -1071,7 +1172,11 @@
     if (state.autoFetch) intervalInput.value = state.autoFetch.intervalMinutes;
 
     groupToggle.setAttribute("aria-pressed", String(getGroupByEpic()));
+    // latestTickets is what the selected-count and the filter menu read; renderBoard sets it too,
+    // but it runs later in this function — without this the toolbar was always one refresh behind.
+    latestTickets = state.tickets || [];
     renderFilterState();
+    renderExecSelected();
     // Filtering to one project is silent otherwise — a ticket filed against another project would
     // simply never appear, with no way to tell that from "never created".
     var all = state.tickets || [];
@@ -1118,6 +1223,74 @@
     }
   });
 
+  var PERM_KEY = "peephole.permissionMode";
+  var PERM_MODES = [
+    { key: "acceptEdits", label: "Accept edits", sub: "writes files; bash and network refused" },
+    { key: "plan", label: "Plan only", sub: "investigates and reports, changes nothing" },
+    { key: "bypassPermissions", label: "Bypass all", sub: "any tool, unattended — including bash" },
+  ];
+
+  /** Asked per dispatch rather than configured once: "let an agent edit files unattended" and
+   *  "let it run any command unattended" are different decisions, and which is appropriate depends
+   *  on the ticket. Resolves to null when dismissed — dismissing must never dispatch. */
+  function askPermissionMode(count) {
+    var last = "acceptEdits";
+    try { last = localStorage.getItem(PERM_KEY) || last; } catch (e) {}
+    return new Promise(function (resolve) {
+      execTitle.textContent = count > 1 ? "Execute " + count + " tickets" : "Execute ticket";
+      execModes.innerHTML = PERM_MODES.map(function (m) {
+        return '<label class="perm-opt"><input type="radio" name="perm" value="' + m.key + '"' +
+          (m.key === last ? " checked" : "") + '><span><b>' + esc(m.label) + "</b><small>" + esc(m.sub) + "</small></span></label>";
+      }).join("");
+      execBackdrop.hidden = false;
+
+      function cleanup() {
+        execBackdrop.hidden = true;
+        execGo.removeEventListener("click", go);
+        execCancel.removeEventListener("click", cancel);
+        execBackdrop.removeEventListener("click", backdropClick);
+      }
+      function go() {
+        var picked = execModes.querySelector("input:checked");
+        var mode = picked ? picked.value : "acceptEdits";
+        try { localStorage.setItem(PERM_KEY, mode); } catch (e) {}
+        cleanup();
+        resolve(mode);
+      }
+      function cancel() { cleanup(); resolve(null); }
+      function backdropClick(ev) { if (ev.target === execBackdrop) cancel(); }
+      execGo.addEventListener("click", go);
+      execCancel.addEventListener("click", cancel);
+      execBackdrop.addEventListener("click", backdropClick);
+    });
+  }
+
+  /** The queue's own strip: what is running, what is waiting, and why nothing started when every
+   *  session in the repo is busy — a queue that holds silently looks identical to one that broke. */
+  function renderQueueBar(q) {
+    var running = q.running;
+    var pending = q.pending || [];
+    if (!running && !pending.length && !q.lastError) {
+      queueBar.hidden = true;
+      return;
+    }
+    queueBar.hidden = false;
+    var bits = [];
+    if (running) {
+      bits.push('<span class="q-run">▶ running <b>' + esc(running.ticketId) + "</b>" +
+        (running.sessionId ? ' <span class="dim mono">' + esc(running.sessionId.slice(0, 6)) + "</span>" : "") + "</span>");
+    }
+    if (pending.length) {
+      bits.push('<span class="q-wait">' + pending.length + " queued" +
+        (running ? "" : " — waiting for a free session") + "</span>");
+    }
+    if (q.lastError) bits.push('<span class="q-err">' + esc(q.lastError) + "</span>");
+    queueBar.innerHTML = bits.join('<span class="q-sep">·</span>') +
+      (running ? '<button class="ghost q-stop" id="queueStop" type="button">Stop</button>' : "");
+    var stopBtn = document.getElementById("queueStop");
+    if (stopBtn) stopBtn.addEventListener("click", function () { apiPost("/api/execute/stop", {}); });
+  }
+
   /** The menu is rebuilt from the current ticket set each time it opens, so it never offers a
    *  person who has nothing on this board — and never hides a selection that is still active. */
   function renderFilterMenu() {
@@ -1144,14 +1317,32 @@
       return { value: name, label: name };
     });
     opts.push({ value: UNASSIGNED, label: "Unassigned" });
+    var selMode = getSelectionFilter();
     filterMenu.innerHTML =
+      '<div class="filter-head">Selected for execution</div>' +
+      [["all", "Show all"], ["selected", "Selected only"], ["unselected", "Not selected only"]].map(function (o) {
+        return '<label><input type="radio" name="selfilter" value="' + o[0] + '"' +
+          (selMode === o[0] ? " checked" : "") + "> " + o[1] + "</label>";
+      }).join("") +
+      '<div class="filter-head">Member</div>' +
       opts.map(function (o) {
         return '<label><input type="checkbox" value="' + esc(o.value) + '"' +
           (selected.indexOf(o.value) !== -1 ? " checked" : "") + "> " + esc(o.label) + "</label>";
       }).join("") +
-      (selected.length ? '<div class="filter-foot"><button class="clear-filter" type="button">Clear filter</button></div>' : "");
+      (selected.length || selMode !== "all"
+        ? '<div class="filter-foot"><button class="clear-filter" type="button">Clear filter</button></div>'
+        : "");
 
-    Array.prototype.forEach.call(filterMenu.querySelectorAll("input"), function (box) {
+    Array.prototype.forEach.call(filterMenu.querySelectorAll('input[name="selfilter"]'), function (radio) {
+      radio.addEventListener("change", function () {
+        try { localStorage.setItem(SELECTION_FILTER_KEY, radio.value); } catch (e) {}
+        renderFilterState();
+        renderBoard(latestTickets);
+        renderFilterMenu();
+      });
+    });
+
+    Array.prototype.forEach.call(filterMenu.querySelectorAll('input[type="checkbox"]'), function (box) {
       box.addEventListener("change", function () {
         var next = getMemberFilter().filter(function (v) { return v !== box.value; });
         if (box.checked) next.push(box.value);
@@ -1165,6 +1356,7 @@
     if (clear) {
       clear.addEventListener("click", function () {
         setMemberFilter([]);
+        try { localStorage.setItem(SELECTION_FILTER_KEY, "all"); } catch (e) {}
         renderFilterState();
         renderBoard(latestTickets);
         renderFilterMenu();
@@ -1175,7 +1367,7 @@
   /** How many people are selected, on the button itself — an active filter that only shows up
    *  inside a closed menu is how a board ends up silently missing half its tickets. */
   function renderFilterState() {
-    var n = getMemberFilter().length;
+    var n = getMemberFilter().length + (getSelectionFilter() === "all" ? 0 : 1);
     filterCount.hidden = n === 0;
     filterCount.textContent = String(n);
     filterBtn.setAttribute("aria-pressed", String(n > 0));
@@ -1198,6 +1390,39 @@
     if (ev.key === "Escape" && !filterMenu.hidden) {
       filterMenu.hidden = true;
       filterBtn.setAttribute("aria-expanded", "false");
+    }
+  });
+
+  /** Selected tickets in the order the board reads them — lane order, then the lane's own sort —
+   *  so "execute all selected" runs them in the order you see, not the order you clicked. */
+  function selectedInBoardOrder() {
+    var dir = getLaneSortDir();
+    var visible = forThisProject(latestTickets || []);
+    var ids = [];
+    LANES.forEach(function (lane) {
+      sortByModified(visible.filter(function (t) {
+        return lane.states.indexOf(t.state) !== -1 && t.selected && t.state === "proposed";
+      }), dir).forEach(function (t) { ids.push(t.id); });
+    });
+    return ids;
+  }
+
+  function renderExecSelected() {
+    var n = selectedInBoardOrder().length;
+    execSelectedBtn.disabled = n === 0;
+    execSelectedBtn.textContent = n ? "Execute " + n + " selected" : "Execute selected";
+  }
+
+  execSelectedBtn.addEventListener("click", async function () {
+    var ids = selectedInBoardOrder();
+    if (!ids.length) return;
+    var mode = await askPermissionMode(ids.length);
+    if (!mode) return;
+    execSelectedBtn.disabled = true;
+    try {
+      await apiPost("/api/execute", { ticketIds: ids, permissionMode: mode });
+    } finally {
+      renderExecSelected();
     }
   });
 

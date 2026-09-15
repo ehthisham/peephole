@@ -7,6 +7,7 @@ import { scan } from "./scan.js";
 import { repoStats } from "./repoStats.js";
 import * as writer from "./writer.js";
 import * as tokenUsage from "./tokens.js";
+import { createQueue, listSessions } from "./execute.js";
 import { detectCoverage } from "./coverage.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -22,7 +23,13 @@ const CONTENT_TYPES = {
   ".css": "text/css; charset=utf-8",
 };
 
+/** Permission modes a dispatched session may run with. Chosen per dispatch in the UI rather than
+ *  configured once: "let an agent edit files unattended" and "let it run any command unattended"
+ *  are different decisions, and which one is appropriate depends on the ticket. */
+const PERMISSION_MODES = ["plan", "acceptEdits", "bypassPermissions"];
+
 export async function startServer(repoRoot, { port = 4173, remote = "origin" } = {}) {
+  const peepholeBin = path.join(__dirname, "..", "bin", "peephole.js");
   const stateBranch = await git.defaultRemoteBranch(repoRoot, remote);
   const remoteUrl = await git.remoteUrl(repoRoot, remote);
   const { worktreePath, localBranch } = await git.ensureWorktree(repoRoot, stateBranch, remote);
@@ -34,6 +41,25 @@ export async function startServer(repoRoot, { port = 4173, remote = "origin" } =
     : rawGitUser;
 
   let cache = { config: null, tickets: [], agents: [], issues: [], lastFetchedAt: null, unpushed: 0, coverage: null };
+  let queueState = { pending: [], running: null, lastError: null };
+  // Dispatching a ticket claims it for the session that is about to work it, then re-reads, so the
+  // board shows in-progress before the agent's first tool call rather than after it.
+  const queue = createQueue({
+    repoRoot,
+    binPath: peepholeBin,
+    port,
+    claimTicket: async (ticketId, sessionId) => {
+      const result = await writer.claimTicket(repoRoot, stateBranch, ticketId, sessionId, "peephole-queue", {
+        sessionId, transcriptPath: null, tokens: null, author: gitUser && gitUser.name ? gitUser : null,
+      });
+      await refresh({ doFetch: false });
+      return result;
+    },
+    onChange: (next) => {
+      queueState = next;
+      broadcast();
+    },
+  });
   let autoFetch = { enabled: false, intervalMinutes: 5 };
   let autoFetchTimer = null;
   const sseClients = new Set();
@@ -107,6 +133,7 @@ export async function startServer(repoRoot, { port = 4173, remote = "origin" } =
       gitUser,
       hookConfigured: hookConfigured(),
       autoFetch,
+      queue: queueState,
       ...cache,
     };
   }
@@ -226,7 +253,7 @@ export async function startServer(repoRoot, { port = 4173, remote = "origin" } =
         return sendJson(res, 200, publicState());
       }
       if (req.method === "POST" && url.pathname === "/api/scaffold") {
-        const binPath = path.join(__dirname, "..", "bin", "peephole.js");
+        const binPath = peepholeBin;
         const result = await writer.scaffold(repoRoot, stateBranch, {
           projectName: path.basename(repoRoot),
           remoteUrl,
@@ -272,6 +299,40 @@ export async function startServer(repoRoot, { port = 4173, remote = "origin" } =
         const result = await writer.unclaimTicket(repoRoot, stateBranch, unclaimMatch[1], body.actor);
         await refresh({ doFetch: false });
         return sendJson(res, 200, { ...result, state: publicState() });
+      }
+      const selectMatch = url.pathname.match(/^\/api\/tickets\/([^/]+)\/selected$/);
+      if (req.method === "POST" && selectMatch) {
+        const body = await readJsonBody(req);
+        const result = await writer.setSelected(repoRoot, stateBranch, selectMatch[1], body.selected, body.actor);
+        await refresh({ doFetch: false });
+        return sendJson(res, 200, { ...result, state: publicState() });
+      }
+      const executeMatch = url.pathname.match(/^\/api\/tickets\/([^/]+)\/execute$/);
+      if (req.method === "POST" && executeMatch) {
+        const body = await readJsonBody(req);
+        const mode = PERMISSION_MODES.includes(body.permissionMode) ? body.permissionMode : "acceptEdits";
+        queueState = queue.enqueue(executeMatch[1], mode);
+        return sendJson(res, 200, { queued: true, queue: queueState, state: publicState() });
+      }
+      if (req.method === "POST" && url.pathname === "/api/execute") {
+        const body = await readJsonBody(req);
+        const mode = PERMISSION_MODES.includes(body.permissionMode) ? body.permissionMode : "acceptEdits";
+        // Lane order, not click order: "run the selected ones" means the order they are read in.
+        const ids = Array.isArray(body.ticketIds) ? body.ticketIds : [];
+        ids.forEach((id) => { queueState = queue.enqueue(String(id), mode); });
+        return sendJson(res, 200, { queued: ids.length, queue: queueState, state: publicState() });
+      }
+      const dequeueMatch = url.pathname.match(/^\/api\/tickets\/([^/]+)\/dequeue$/);
+      if (req.method === "POST" && dequeueMatch) {
+        queueState = queue.cancel(dequeueMatch[1]);
+        return sendJson(res, 200, { queue: queueState, state: publicState() });
+      }
+      if (req.method === "POST" && url.pathname === "/api/execute/stop") {
+        queueState = queue.stop();
+        return sendJson(res, 200, { queue: queueState, state: publicState() });
+      }
+      if (req.method === "GET" && url.pathname === "/api/sessions") {
+        return sendJson(res, 200, { sessions: await listSessions(repoRoot) });
       }
       const epicMatch = url.pathname.match(/^\/api\/tickets\/([^/]+)\/epic$/);
       if (req.method === "POST" && epicMatch) {

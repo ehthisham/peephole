@@ -114,6 +114,33 @@
   .filter-menu .clear-filter{background:none; border:none; font:inherit; font-size:12px; color:var(--accent); padding:3px 6px; border-radius:5px;}
   .filter-menu .clear-filter:hover{background:var(--accent-wash);}
   .filter-menu .empty-note{padding:6px 7px;}
+  .filter-menu .filter-head{font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:0.05em; color:var(--ink-dim); padding:6px 7px 3px;}
+  .filter-menu .filter-head:first-child{padding-top:2px;}
+
+  .queue-bar{display:flex; align-items:center; gap:8px; flex-wrap:wrap; width:100%; font-size:12.5px;
+    background:var(--progress-bg); color:var(--progress); border:1px solid var(--progress); border-radius:8px; padding:8px 12px;}
+  .queue-bar .q-run b{font-weight:700;}
+  .queue-bar .q-wait{color:var(--ink-dim);}
+  .queue-bar .q-err{color:var(--accent);}
+  .queue-bar .q-sep{color:var(--ink-dim);}
+  .queue-bar .q-stop{margin-left:auto; padding:4px 10px; font-size:12px;}
+
+  .ctl.select[aria-pressed="true"]{border-color:var(--built); color:var(--built); background:var(--built-bg);}
+  .ctl.select:hover{border-color:var(--built); color:var(--built);}
+  .ctl.execute{border-color:var(--progress); color:var(--progress);}
+  .ctl.execute:hover:not(:disabled){background:var(--progress); color:var(--accent-ink); border-color:var(--progress);}
+  .ctl.execute:disabled{opacity:0.4; cursor:not-allowed;}
+  .badge.queued{color:var(--progress); background:var(--progress-bg);}
+  .badge.queued.running{color:var(--accent-ink); background:var(--progress);}
+
+  .exec-modal{max-width:440px;}
+  .exec-note{margin:0 0 14px; font-size:12.5px; line-height:1.5; color:var(--ink-dim);}
+  .perm-opt{display:flex; align-items:flex-start; gap:9px; padding:9px 10px; border:1px solid var(--border); border-radius:7px; margin-bottom:7px; cursor:pointer;}
+  .perm-opt:hover{border-color:var(--ink-dim);}
+  .perm-opt input{margin-top:2px;}
+  .perm-opt b{display:block; font-size:13px;}
+  .perm-opt small{display:block; font-size:11.5px; color:var(--ink-dim); margin-top:1px;}
+  .exec-actions{display:flex; justify-content:flex-end; gap:8px; margin-top:12px;}
   .board{flex:1; display:flex; gap:14px; align-items:flex-start; overflow-x:auto;}
   .lane{background:var(--surface-2); border-radius:10px; padding:12px; flex:1 1 200px; min-width:200px; display:flex; flex-direction:column; gap:10px;}
   .lane header{display:flex; align-items:baseline; gap:6px; padding:2px 4px;}
@@ -310,6 +337,7 @@
   <div class="tab-panel" id="panel-tasks">
     <div class="layout board-layout">
       <div class="board-toolbar">
+        <button class="primary" id="execSelectedBtn" type="button" disabled>Execute selected</button>
         <button class="ghost" id="groupToggle" type="button" aria-pressed="false">Group by epic</button>
         <div class="filter-wrap">
           <button class="ghost icon-btn" id="filterBtn" type="button" aria-expanded="false" aria-haspopup="true"
@@ -323,6 +351,7 @@
           <div class="filter-menu" id="filterMenu" hidden role="group" aria-label="Filter by member"></div>
         </div>
       </div>
+      <div class="queue-bar" id="queueBar" hidden></div>
       <div class="board" id="board"></div>
     </div>
   </div>
@@ -410,6 +439,24 @@
             <button class="primary" type="submit">Create ticket</button>
           </div>
         </form>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal-backdrop" id="execBackdrop" hidden>
+    <div class="modal exec-modal" role="dialog" aria-modal="true" aria-labelledby="execTitle">
+      <div class="modal-head">
+        <h2 id="execTitle">Execute ticket</h2>
+      </div>
+      <div class="modal-body">
+        <p class="exec-note">Peephole hands the ticket to an idle Claude session in this repo —
+          starting one in the background only if the repo has none, and waiting if every session is
+          busy. The ticket is claimed and moved to <b>in progress</b> when it is dispatched.</p>
+        <div id="execModes"></div>
+        <div class="exec-actions">
+          <button class="ghost" id="execCancel" type="button">Cancel</button>
+          <button class="primary" id="execGo" type="button">Execute</button>
+        </div>
       </div>
     </div>
   </div>

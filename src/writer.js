@@ -162,6 +162,13 @@ async function commitOrAmend(worktreePath, localBranch, remoteBranch, subjectPre
 
 /** Writes a new `control` value onto one ticket, appends a history entry, commits locally. Never pushes. */
 export async function setControl(repoRoot, remoteBranch, ticketId, control, actor = "peephole-ui") {
+  // Validate before touching the file: an undefined/garbage value used to be written straight onto
+  // the ticket, and since yaml.dump drops an undefined key the result was a ticket with no
+  // `control` field — which then failed validation and vanished from the board entirely.
+  const { CONTROLS } = await import("./schema.js");
+  if (!CONTROLS.includes(control)) {
+    throw new Error(`invalid control "${control}" (expected one of ${CONTROLS.join(", ")})`);
+  }
   const { worktreePath, localBranch } = await prepWorktree(repoRoot, remoteBranch);
   const file = path.join(worktreePath, ".peephole", "tickets", `${ticketId}.md`);
   const raw = await fs.readFile(file, "utf8");
@@ -316,7 +323,7 @@ export async function createTicket(repoRoot, remoteBranch, { id, project, intent
   const ticket = {
     id, project, intent, acceptance, body, state, risk, blockedOn: "", control: "run", owner,
     ownerName: owner ? session?.author?.name ?? null : null, assignee: assignee || null,
-    epic: epic || null,
+    epic: epic || null, selected: false,
     tags: Array.isArray(tags) ? tags : [], createdBy,
     branch: null, pr: null, estimate: null, createdAt: now, updatedAt: now,
     history: [{ at: now, from: null, to: state, by: who }],
@@ -359,6 +366,7 @@ export async function claimTicket(repoRoot, remoteBranch, ticketId, owner, actor
 
   const from = ticket.state;
   ticket.owner = owner;
+  ticket.selected = false; // it is being worked now; leaving it selected would re-queue it
   if (claimantName) ticket.ownerName = claimantName;
   // A control left over from a previous claim (a skip, say) would otherwise deny this session on
   // its very first tool call — the block belongs to the claim that earned it, not to this one.
@@ -372,6 +380,33 @@ export async function claimTicket(repoRoot, remoteBranch, ticketId, owner, actor
   const sha = await git.commitAll(worktreePath, `peephole: ${ticketId} claimed by ${owner}`);
   const unpushed = await git.unpushedCount(worktreePath, localBranch, remoteBranch);
   return { claimed: true, committed: Boolean(sha), sha, unpushed, ticket };
+}
+
+/** Marks a ticket as selected for execution (or clears it). Selection is a queue-building act,
+ * separate from `control`: `control` says whether an agent already working a ticket may continue,
+ * selection says whether this ticket should be handed to an agent at all. Amends rather than
+ * piling up commits — ticking boxes down a lane is not a milestone. */
+export async function setSelected(repoRoot, remoteBranch, ticketId, selected, actor = "peephole-ui") {
+  const { worktreePath, localBranch } = await prepWorktree(repoRoot, remoteBranch);
+  const file = path.join(worktreePath, ".peephole", "tickets", `${ticketId}.md`);
+  if (!(await fileExists(file))) throw new Error(`ticket "${ticketId}" not found`);
+
+  const { parseTicket } = await import("./schema.js");
+  const parsed = parseTicket(await fs.readFile(file, "utf8"), ticketId);
+  if (!parsed.ok) throw new Error(`Cannot select ${ticketId}: ${parsed.errors.join("; ")}`);
+  const ticket = parsed.ticket;
+
+  const want = Boolean(selected);
+  if (Boolean(ticket.selected) === want) return { committed: false, ticket };
+  ticket.selected = want;
+  ticket.updatedAt = new Date().toISOString();
+
+  await fs.writeFile(file, serializeTicket(ticket), "utf8");
+  const { sha, unpushed } = await commitOrAmend(
+    worktreePath, localBranch, remoteBranch,
+    `peephole: ${ticketId} selected -> `, `peephole: ${ticketId} selected -> ${want}`,
+  );
+  return { committed: Boolean(sha), sha, unpushed, ticket };
 }
 
 /** Files a ticket under an epic (or clears it with null). An epic is a free-text grouping label,
