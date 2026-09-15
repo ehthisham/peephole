@@ -25,10 +25,26 @@ const CONTENT_TYPES = {
 
 /** Permission modes a dispatched session may run with. Chosen per dispatch in the UI rather than
  *  configured once: "let an agent edit files unattended" and "let it run any command unattended"
- *  are different decisions, and which one is appropriate depends on the ticket. */
-const PERMISSION_MODES = ["plan", "acceptEdits", "bypassPermissions"];
+ *  are different decisions, and which one is appropriate depends on the ticket.
+ *
+ * `bypassPermissions` spawns an agent that may run ANY tool, unattended, in the watched repo — so
+ * it is not reachable from the API by default. Picking it in the UI is a decision about your own
+ * machine; accepting it from an unauthenticated HTTP request is a remote-code-execution hole, and
+ * the two must not be the same switch. Opt in per server with PEEPHOLE_ALLOW_BYPASS=1. */
+const BASE_PERMISSION_MODES = ["plan", "acceptEdits"];
+const BYPASS_MODE = "bypassPermissions";
+const BYPASS_REFUSED =
+  "bypassPermissions is disabled on this server — restart it with PEEPHOLE_ALLOW_BYPASS=1 to allow " +
+  "agents that may run any tool unattended";
+const bypassAllowed = process.env.PEEPHOLE_ALLOW_BYPASS === "1";
+const PERMISSION_MODES = bypassAllowed ? [...BASE_PERMISSION_MODES, BYPASS_MODE] : BASE_PERMISSION_MODES;
 
-export async function startServer(repoRoot, { port = 4173, remote = "origin" } = {}) {
+/** Requests that can reach a board can create tickets, push branches and (with bypass enabled)
+ *  start agents, all unauthenticated — so the server listens on loopback unless told otherwise.
+ *  It used to bind every interface, which put all of that on whatever network the laptop was on. */
+const DEFAULT_HOST = "127.0.0.1";
+
+export async function startServer(repoRoot, { port = 4173, remote = "origin", host = DEFAULT_HOST } = {}) {
   const peepholeBin = path.join(__dirname, "..", "bin", "peephole.js");
   const stateBranch = await git.defaultRemoteBranch(repoRoot, remote);
   const remoteUrl = await git.remoteUrl(repoRoot, remote);
@@ -134,6 +150,7 @@ export async function startServer(repoRoot, { port = 4173, remote = "origin" } =
       hookConfigured: hookConfigured(),
       autoFetch,
       queue: queueState,
+      permissionModes: PERMISSION_MODES,
       ...cache,
     };
   }
@@ -310,12 +327,14 @@ export async function startServer(repoRoot, { port = 4173, remote = "origin" } =
       const executeMatch = url.pathname.match(/^\/api\/tickets\/([^/]+)\/execute$/);
       if (req.method === "POST" && executeMatch) {
         const body = await readJsonBody(req);
+        if (body.permissionMode === BYPASS_MODE && !bypassAllowed) return sendJson(res, 403, { error: BYPASS_REFUSED });
         const mode = PERMISSION_MODES.includes(body.permissionMode) ? body.permissionMode : "acceptEdits";
         queueState = queue.enqueue(executeMatch[1], mode);
         return sendJson(res, 200, { queued: true, queue: queueState, state: publicState() });
       }
       if (req.method === "POST" && url.pathname === "/api/execute") {
         const body = await readJsonBody(req);
+        if (body.permissionMode === BYPASS_MODE && !bypassAllowed) return sendJson(res, 403, { error: BYPASS_REFUSED });
         const mode = PERMISSION_MODES.includes(body.permissionMode) ? body.permissionMode : "acceptEdits";
         // Lane order, not click order: "run the selected ones" means the order they are read in.
         const ids = Array.isArray(body.ticketIds) ? body.ticketIds : [];
@@ -443,6 +462,6 @@ export async function startServer(repoRoot, { port = 4173, remote = "origin" } =
 
   await refresh({ doFetch: true });
 
-  await new Promise((resolve) => server.listen(port, resolve));
+  await new Promise((resolve) => server.listen(port, host, resolve));
   return { server, port, stateBranch, remoteUrl, worktreePath };
 }

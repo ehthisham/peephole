@@ -1238,10 +1238,19 @@
     try { last = localStorage.getItem(PERM_KEY) || last; } catch (e) {}
     return new Promise(function (resolve) {
       execTitle.textContent = count > 1 ? "Execute " + count + " tickets" : "Execute ticket";
-      execModes.innerHTML = PERM_MODES.map(function (m) {
+      // Only what this server will actually accept: `bypassPermissions` needs PEEPHOLE_ALLOW_BYPASS=1,
+      // and offering a choice the API refuses is worse than not offering it.
+      var allowed = (latestState && latestState.permissionModes) || ["plan", "acceptEdits"];
+      var offered = PERM_MODES.filter(function (m) { return allowed.indexOf(m.key) !== -1; });
+      if (allowed.indexOf(last) === -1) last = "acceptEdits";
+      execModes.innerHTML = offered.map(function (m) {
         return '<label class="perm-opt"><input type="radio" name="perm" value="' + m.key + '"' +
           (m.key === last ? " checked" : "") + '><span><b>' + esc(m.label) + "</b><small>" + esc(m.sub) + "</small></span></label>";
-      }).join("");
+      }).join("") +
+        (allowed.indexOf("bypassPermissions") === -1
+          ? '<p class="perm-note">Unattended “bypass all” dispatch is disabled on this server. ' +
+            "Restart it with <code>PEEPHOLE_ALLOW_BYPASS=1</code> to enable it.</p>"
+          : "");
       execBackdrop.hidden = false;
 
       function cleanup() {

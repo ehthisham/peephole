@@ -45,6 +45,22 @@ you click **Push to remote** and confirm.
 - **Agents panel** — reads `.peephole/agents/*.json` heartbeats, marks a session `stale` once its
   heartbeat goes quiet for 5+ minutes.
 
+## Executing tickets
+
+Select proposed tickets with the ✓ on their card, then **Execute** one (▷) or the whole selection
+from the toolbar. Peephole hands each ticket to a live Claude session in the repo — resuming an
+idle one where possible, starting a background session only when the repo has none, and holding
+the queue while every session is busy. The ticket is claimed and moved to in-progress at dispatch.
+
+Each dispatch asks which permission mode the agent runs with. `plan` and `acceptEdits` are always
+available. `bypassPermissions` — an agent that may run **any** tool, unattended, in your repo — is
+refused unless the server was started with `PEEPHOLE_ALLOW_BYPASS=1`.
+
+The server listens on `127.0.0.1` only. Every endpoint is unauthenticated and they create tickets,
+push branches and start agents, so exposing the port means handing all of that to anyone who can
+reach it; `--host 0.0.0.0` exists but prints a warning, and turning it on together with
+`PEEPHOLE_ALLOW_BYPASS=1` is remote code execution by design.
+
 ## Where the files live
 
 Two directories with the same name, in the repo being watched — they are the same tracked path

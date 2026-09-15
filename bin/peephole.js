@@ -54,11 +54,20 @@ async function cmdServe(argv) {
   const args = parseArgs(argv);
   const repoRoot = path.resolve(args.repo || process.cwd());
   const port = requirePort(args);
-  const { stateBranch, remoteUrl } = await startServer(repoRoot, { port, remote: args.remote || "origin" });
+  // Loopback unless asked otherwise: every endpoint is unauthenticated, and they create tickets,
+  // push branches and start agents. `--host 0.0.0.0` exposes all of that to the network.
+  const host = args.host && args.host !== true ? String(args.host) : "127.0.0.1";
+  const { stateBranch, remoteUrl } = await startServer(repoRoot, { port, remote: args.remote || "origin", host });
   console.log(`peephole watching ${repoRoot}`);
   console.log(`  remote:       ${remoteUrl || "(none)"}`);
   console.log(`  state branch: ${stateBranch}`);
   console.log(`  dashboard:    http://localhost:${port}`);
+  if (host !== "127.0.0.1" && host !== "localhost") {
+    console.log(`  WARNING:      listening on ${host} — anyone who can reach this port can write tickets and start agents`);
+  }
+  if (process.env.PEEPHOLE_ALLOW_BYPASS === "1") {
+    console.log("  WARNING:      PEEPHOLE_ALLOW_BYPASS=1 — dispatched agents may run any tool unattended");
+  }
 }
 
 async function cmdTicketNew(argv) {
@@ -218,7 +227,7 @@ async function main() {
 
   console.error(
     "Usage:\n" +
-    "  peephole serve [--repo <path>] [--port 4173]\n" +
+    "  peephole serve [--repo <path>] [--port 4173] [--host 127.0.0.1]\n" +
     '  peephole ticket new --project <p> --intent "<text>" [--id <id>] [--acceptance "<text>"] [--risk reversible|irreversible] [--owner <sessionId>]\n' +
     "  peephole ticket claim <id> --owner <sessionId>\n" +
     "  peephole ticket unclaim <id>  # return to proposed, in-progress only\n" +
