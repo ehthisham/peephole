@@ -199,6 +199,10 @@ export async function setControl(repoRoot, remoteBranch, ticketId, control, acto
     ticket.owner = null;
     ticket.ownerName = null;
   }
+  // Selected-for-execution and blocked are contradictory states: a skipped or paused ticket that
+  // stayed selected would be handed to an agent by the next "execute selected", which is precisely
+  // what the block said not to do. Blocking clears the selection.
+  if (control !== "run") ticket.selected = false;
 
   await fs.writeFile(file, serializeTicket(ticket), "utf8");
   const { sha, unpushed } = await commitOrAmend(
@@ -389,6 +393,36 @@ export async function claimTicket(repoRoot, remoteBranch, ticketId, owner, actor
   return { claimed: true, committed: Boolean(sha), sha, unpushed, ticket };
 }
 
+/** Changes a ticket's risk. Risk is a judgement that usually arrives AFTER the ticket is written —
+ * you discover the migration is one-way while planning it — so it cannot only be settable at
+ * creation. Recorded in history, because "who decided this was safe" is the question asked after
+ * something irreversible goes wrong. */
+export async function setRisk(repoRoot, remoteBranch, ticketId, risk, actor = "peephole-ui") {
+  const { RISKS, parseTicket } = await import("./schema.js");
+  if (!RISKS.includes(risk)) {
+    throw new Error(`invalid risk "${risk}" (expected one of ${RISKS.join(", ")})`);
+  }
+  const { worktreePath, localBranch } = await prepWorktree(repoRoot, remoteBranch);
+  const file = path.join(worktreePath, ".peephole", "tickets", `${ticketId}.md`);
+  if (!(await fileExists(file))) throw new Error(`ticket "${ticketId}" not found`);
+
+  const parsed = parseTicket(await fs.readFile(file, "utf8"), ticketId);
+  if (!parsed.ok) throw new Error(`Cannot set risk on ${ticketId}: ${parsed.errors.join("; ")}`);
+  const ticket = parsed.ticket;
+  if (ticket.risk === risk) return { committed: false, ticket };
+
+  const from = ticket.risk;
+  ticket.risk = risk;
+  ticket.updatedAt = new Date().toISOString();
+  ticket.history = Array.isArray(ticket.history) ? ticket.history : [];
+  ticket.history.push({ at: ticket.updatedAt, from: `risk:${from}`, to: `risk:${risk}`, by: actor });
+
+  await fs.writeFile(file, serializeTicket(ticket), "utf8");
+  const sha = await git.commitAll(worktreePath, `peephole: ${ticketId} risk -> ${risk}`);
+  const unpushed = await git.unpushedCount(worktreePath, localBranch, remoteBranch);
+  return { committed: Boolean(sha), sha, unpushed, ticket };
+}
+
 /** Appends a comment to a ticket: free text, plus who wrote it and when. Comments are the only
  * place a human sentence belongs on a ticket — `history` records what changed, and the body says
  * what the work is; neither can hold "skipping this until the rule engine lands". Always its own
@@ -432,9 +466,19 @@ export async function setSelected(repoRoot, remoteBranch, ticketId, selected, ac
   const ticket = parsed.ticket;
 
   const want = Boolean(selected);
-  if (Boolean(ticket.selected) === want) return { committed: false, ticket };
+  const blocked = ticket.control && ticket.control !== "run";
+  if (Boolean(ticket.selected) === want && !(want && blocked)) return { committed: false, ticket };
   ticket.selected = want;
   ticket.updatedAt = new Date().toISOString();
+  // The mirror of the rule in setControl: picking a blocked ticket for execution is a decision to
+  // unblock it, so the pause/skip is lifted here rather than leaving a ticket that is both queued
+  // and forbidden. Recorded, because someone else set that block.
+  if (want && blocked) {
+    const from = ticket.control;
+    ticket.control = "run";
+    ticket.history = Array.isArray(ticket.history) ? ticket.history : [];
+    ticket.history.push({ at: ticket.updatedAt, from: `control:${from}`, to: "control:run", by: actor });
+  }
 
   await fs.writeFile(file, serializeTicket(ticket), "utf8");
   const { sha, unpushed } = await commitOrAmend(

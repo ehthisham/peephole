@@ -175,6 +175,8 @@ export function createQueue({ repoRoot, binPath, port, claimTicket, onChange }) 
       // Claim first: the ticket must already show in-progress and owned by the session that is
       // about to be handed the work, so the board never displays a ticket being worked by nobody.
       const claim = await claimTicket(next.ticketId, sessionId);
+      // claimTicket reports the ticket it saw; a block set between queueing and dispatch means the
+      // ticket must not run, whatever the queue still believes.
       if (!claim || claim.claimed === false) {
         lastError = `${next.ticketId}: ${claim && claim.reason ? claim.reason : "could not claim"}`;
         pending.shift();
@@ -182,6 +184,12 @@ export function createQueue({ repoRoot, binPath, port, claimTicket, onChange }) 
         return tick();
       }
       ticket = claim.ticket;
+      if (ticket && ticket.control && ticket.control !== "run") {
+        lastError = `${next.ticketId}: ${ticket.control} — not dispatched`;
+        pending.shift();
+        announce();
+        return tick();
+      }
     } catch (e) {
       lastError = `${next.ticketId}: ${e.message}`;
       pending.shift();

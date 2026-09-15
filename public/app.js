@@ -711,7 +711,7 @@
     if (execBtn) {
       execBtn.addEventListener("click", async function (ev) {
         ev.stopPropagation();
-        var mode = await askPermissionMode(1);
+        var mode = await askPermissionMode([execBtn.dataset.execute]);
         if (!mode) return;
         execBtn.disabled = true;
         try {
@@ -784,6 +784,19 @@
     );
   }
 
+  /** Risk is editable here because it is usually learned after the ticket is written — you find out
+   *  the migration is one-way while planning it. Every change is recorded in history. */
+  function riskControl(t) {
+    return (
+      '<select class="risk-select" data-id="' + esc(t.id) + '" aria-label="Risk for this ticket">' +
+      ["reversible", "irreversible"].map(function (r) {
+        return '<option value="' + r + '"' + (t.risk === r ? " selected" : "") + ">" +
+          (r === "irreversible" ? "⚠ irreversible" : "reversible") + "</option>";
+      }).join("") +
+      "</select>"
+    );
+  }
+
   /** Free text with the existing epics offered as suggestions: a new epic is created by typing
    *  one, which is the whole ceremony — see writer.setEpic on why epics aren't records. */
   function epicControl(t) {
@@ -800,7 +813,7 @@
     var cost = ticketCost(t);
     var rows = [
       ["State", esc(t.state || "—")],
-      ["Risk", esc(t.risk || "—")],
+      ["Risk", riskControl(t)],
       ["Tags", Array.isArray(t.tags) && t.tags.length ? t.tags.map(esc).join(", ") : "—"],
       // Owner is the human; the session id that did the work is machine detail — useful for
       // matching against the Agents tab and the transcript, so it keeps a row of its own here
@@ -857,6 +870,21 @@
       '<div class="comment-add"><textarea id="commentText" rows="2" placeholder="Add a comment — why this is blocked, skipped, or what you decided"></textarea>' +
       '<button class="ghost" id="commentAdd" type="button" data-id="' + esc(t.id) + '">Comment</button></div>' +
       "<h3>Activity</h3>" + historyHtml;
+    var riskSelect = ticketModalBody.querySelector(".risk-select");
+    if (riskSelect) {
+      riskSelect.addEventListener("change", async function () {
+        riskSelect.disabled = true;
+        try {
+          var res = await apiPost("/api/tickets/" + encodeURIComponent(riskSelect.dataset.id) + "/risk", {
+            risk: riskSelect.value,
+          });
+          if (res && res.error) { window.alert(res.error); riskSelect.value = t.risk || "reversible"; }
+          else t.risk = riskSelect.value;
+        } finally {
+          riskSelect.disabled = false;
+        }
+      });
+    }
     var commentBtn = ticketModalBody.querySelector("#commentAdd");
     var commentText = ticketModalBody.querySelector("#commentText");
     if (commentBtn && commentText) {
@@ -1284,7 +1312,15 @@
   /** Asked per dispatch rather than configured once: "let an agent edit files unattended" and
    *  "let it run any command unattended" are different decisions, and which is appropriate depends
    *  on the ticket. Resolves to null when dismissed — dismissing must never dispatch. */
-  function askPermissionMode(count) {
+  function askPermissionMode(ids) {
+    var list = Array.isArray(ids) ? ids : [];
+    var count = list.length;
+    // An irreversible ticket is one a revert cannot undo — a migration, a deleted column, a pushed
+    // release. Dispatching one starts an agent doing exactly that with nobody watching, so it is
+    // the one case where picking a permission mode is not consent enough.
+    var risky = list
+      .map(function (id) { return (latestTickets || []).find(function (t) { return t.id === id; }); })
+      .filter(function (t) { return t && t.risk === "irreversible"; });
     var last = "acceptEdits";
     try { last = localStorage.getItem(PERM_KEY) || last; } catch (e) {}
     return new Promise(function (resolve) {
@@ -1301,8 +1337,20 @@
         (allowed.indexOf("bypassPermissions") === -1
           ? '<p class="perm-note">Unattended “bypass all” dispatch is disabled on this server. ' +
             "Restart it with <code>PEEPHOLE_ALLOW_BYPASS=1</code> to enable it.</p>"
+          : "") +
+        (risky.length
+          ? '<div class="risk-warn"><b>⚠ ' + risky.length +
+            (risky.length === 1 ? " ticket is marked irreversible" : " tickets are marked irreversible") + "</b>" +
+            "<ul>" + risky.map(function (t) { return "<li>" + esc(t.intent || t.id) + "</li>"; }).join("") + "</ul>" +
+            '<label class="risk-ack"><input type="checkbox" id="riskAck"> Run ' +
+            (risky.length === 1 ? "it" : "them") + " anyway — this work cannot be undone by a revert</label></div>"
           : "");
       execBackdrop.hidden = false;
+      // Execute stays disabled until the acknowledgement is ticked; the checkbox is the consent,
+      // not the button.
+      var ack = execModes.querySelector("#riskAck");
+      execGo.disabled = Boolean(risky.length);
+      if (ack) ack.addEventListener("change", function () { execGo.disabled = !ack.checked; });
 
       function cleanup() {
         execBackdrop.hidden = true;
@@ -1315,9 +1363,10 @@
         var mode = picked ? picked.value : "acceptEdits";
         try { localStorage.setItem(PERM_KEY, mode); } catch (e) {}
         cleanup();
+        execGo.disabled = false;
         resolve(mode);
       }
-      function cancel() { cleanup(); resolve(null); }
+      function cancel() { cleanup(); execGo.disabled = false; resolve(null); }
       function backdropClick(ev) { if (ev.target === execBackdrop) cancel(); }
       execGo.addEventListener("click", go);
       execCancel.addEventListener("click", cancel);
@@ -1476,7 +1525,7 @@
   execSelectedBtn.addEventListener("click", async function () {
     var ids = selectedInBoardOrder();
     if (!ids.length) return;
-    var mode = await askPermissionMode(ids.length);
+    var mode = await askPermissionMode(ids);
     if (!mode) return;
     execSelectedBtn.disabled = true;
     try {

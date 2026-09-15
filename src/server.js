@@ -312,6 +312,9 @@ export async function startServer(repoRoot, { port = 4173, remote = "origin", ho
           repoRoot, stateBranch, controlMatch[1], body.control,
           body.actor || (gitUser && gitUser.name) || "peephole-ui", body.note,
         );
+        // Dropping the selection is not enough on its own: a ticket already sitting in the queue
+        // would still be dispatched when a worker frees up.
+        if (body.control !== "run") queueState = queue.cancel(controlMatch[1]);
         await refresh({ doFetch: false });
         return sendJson(res, 200, { ...result, state: publicState() });
       }
@@ -335,6 +338,16 @@ export async function startServer(repoRoot, { port = 4173, remote = "origin", ho
       if (req.method === "POST" && unclaimMatch) {
         const body = await readJsonBody(req);
         const result = await writer.unclaimTicket(repoRoot, stateBranch, unclaimMatch[1], body.actor);
+        await refresh({ doFetch: false });
+        return sendJson(res, 200, { ...result, state: publicState() });
+      }
+      const riskMatch = url.pathname.match(/^\/api\/tickets\/([^/]+)\/risk$/);
+      if (req.method === "POST" && riskMatch) {
+        const body = await readJsonBody(req);
+        const result = await writer.setRisk(
+          repoRoot, stateBranch, riskMatch[1], body.risk,
+          body.actor || (gitUser && gitUser.name) || "peephole-ui",
+        );
         await refresh({ doFetch: false });
         return sendJson(res, 200, { ...result, state: publicState() });
       }
