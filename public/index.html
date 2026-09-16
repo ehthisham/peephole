@@ -29,6 +29,8 @@
   .wordmark .project{font-size:13.5px; color:var(--ink-dim);}
   .wordmark .branch{font-size:12px; color:var(--ink-dim);}
   .remote-link{font-size:12px; color:var(--ink-dim); text-decoration:none;}
+  .checkout-branch{color:var(--ink-dim);}
+  .checkout-branch b{color:var(--ink); font-weight:600;}
   .branch-unpinned{color:var(--proposed); border-bottom:1px dotted var(--proposed); cursor:help;}
 
   .statusbar{max-width:1220px; margin:0 auto 16px; display:flex; align-items:center; gap:10px; flex-wrap:wrap; font-size:13px; color:var(--ink-dim); padding-block:4px;}
@@ -321,6 +323,7 @@
       <span class="project mono" id="projectName">—</span>
       <a class="remote-link mono" id="remoteLink" href="#" target="_blank" rel="noopener"></a>
       <span class="branch mono" id="branchName"></span>
+      <span class="branch mono" id="checkoutBranch"></span>
     </div>
   </header>
 

@@ -183,6 +183,8 @@ export async function startServer(repoRoot, { port = 4173, remote = "origin", ho
       remote,
       stateBranch,
       stateBranchSource,
+      checkoutBranch: cache.checkoutBranch ?? null,
+      repoRoot,
       gitUser,
       hookConfigured: hookConfigured(),
       autoFetch,
@@ -216,6 +218,10 @@ export async function startServer(repoRoot, { port = 4173, remote = "origin", ho
       }),
     ]);
     const unpushed = await git.unpushedCount(worktreePath, localBranch, stateBranch, remote).catch(() => 0);
+    // The developer's own checkout — NOT where the tickets live. Coverage is read from this
+    // working tree, so the figure on the board is whatever this person's branch last produced;
+    // two teammates on different branches see the same tickets and different coverage.
+    const checkoutBranch = await git.currentBranch(repoRoot).catch(() => null);
     const enrichedStats = stats
       ? { ...stats, contributorList: await withMemberTokens(state.agents, stats.contributorList) }
       : stats;
@@ -235,7 +241,7 @@ export async function startServer(repoRoot, { port = 4173, remote = "origin", ho
           return cache.coverage ?? null;
         })
       : cache.coverage ?? null;
-    cache = { ...state, stats: enrichedStats, coverage, lastFetchedAt: new Date().toISOString(), unpushed };
+    cache = { ...state, stats: enrichedStats, coverage, checkoutBranch, lastFetchedAt: new Date().toISOString(), unpushed };
     broadcast();
     return cache;
   }

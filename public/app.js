@@ -96,6 +96,7 @@
   var projectName = document.getElementById("projectName");
   var remoteLink = document.getElementById("remoteLink");
   var branchName = document.getElementById("branchName");
+  var checkoutBranchEl = document.getElementById("checkoutBranch");
   var statRow = document.getElementById("statRow");
   var langs = document.getElementById("langs");
   var tokenUsage = document.getElementById("tokenUsage");
@@ -495,6 +496,7 @@
       ? '<div class="cov-head"><span class="cov-pct">' + coverage.pct.toFixed(1) + "%</span>" +
         '<span class="cov-head-label">overall statement coverage<small>' +
         esc(coverage.tool === "go" ? "go test" : "istanbul") + " · " + esc(coverage.file || "") +
+        (latestState && latestState.checkoutBranch ? " · " + esc(latestState.checkoutBranch) : "") +
         "</small></span>" +
         '<span class="cov-head-bar"><span style="width:' + Math.max(0, Math.min(100, coverage.pct)).toFixed(1) + '%"></span></span></div>'
       : "";
@@ -1289,6 +1291,19 @@
       ? "ticket ledger branch — resolved from " + state.stateBranchSource
       : "";
     branchName.className = "branch mono" + (state.stateBranchSource === "remote default" ? " branch-unpinned" : "");
+    // Two refs feed this page and they are not the same one. Tickets come from the ledger branch,
+    // which everyone shares; coverage is read from THIS machine's working tree, so it reflects
+    // whatever branch the person running the board has checked out. Saying only the first made the
+    // second look like a property of the project rather than of one developer's checkout.
+    if (state.checkoutBranch) {
+      checkoutBranchEl.className = "branch mono checkout-branch";
+      checkoutBranchEl.innerHTML = "checkout: <b>" + esc(state.checkoutBranch) + "</b>";
+      checkoutBranchEl.title = "The checkout Peephole is watching (" + (state.repoRoot || "") +
+        ") — coverage and hook setup are read from it, tickets are not";
+    } else {
+      checkoutBranchEl.textContent = "";
+      checkoutBranchEl.title = "";
+    }
     lastUpdated.textContent = "Updated " + relTime(state.lastFetchedAt);
 
     if (state.hookConfigured) {
