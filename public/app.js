@@ -1328,12 +1328,19 @@
     }
     lastUpdated.textContent = "Updated " + relTime(state.lastFetchedAt);
 
+    // Three states, not two. `hookConfigured` means "a session checked in recently" — liveness —
+    // while `hooksInstalled` means the hooks are actually wired into this machine's
+    // .claude/settings.local.json. Collapsing them told a correctly-configured repo with nothing
+    // running that it was "not configured", and sent people to re-run a setup that was already done.
+    var sync = state.autoFetch && state.autoFetch.enabled
+      ? " · autosync every " + state.autoFetch.intervalMinutes + " min"
+      : "";
     if (state.hookConfigured) {
-      hookState.innerHTML = "Hook: <b>connected — live</b>";
-    } else if (state.autoFetch && state.autoFetch.enabled) {
-      hookState.innerHTML = "Hook: not configured — autosync every <b>" + state.autoFetch.intervalMinutes + " min</b>";
+      hookState.innerHTML = "Hooks: <b>live</b> — a session is checking in" + esc(sync);
+    } else if (state.hooksInstalled) {
+      hookState.innerHTML = "Hooks: <b>wired</b> — no session running right now" + esc(sync);
     } else {
-      hookState.textContent = "Hook: not configured — click Pull to refresh";
+      hookState.innerHTML = "Hooks: <b>not configured</b> — run Fix it to wire them" + esc(sync);
     }
     autoFetchToggle.setAttribute("aria-pressed", String(Boolean(state.autoFetch && state.autoFetch.enabled)));
     if (state.autoFetch) intervalInput.value = state.autoFetch.intervalMinutes;

@@ -112,8 +112,11 @@ export async function scan(ledgerRoot, ref, { repoRoot = ledgerRoot } = {}) {
     });
   }
 
-  if (!(await hasHookSetup(repoRoot))) {
-    issues.push({ kind: "missing-hook-setup", message: "No Peephole hook wired into .claude/settings.local.json — pause/skip/restart won't be enforced on agent sessions" });
+  // Reported as a value, not only as an issue: "are the hooks installed" and "has a session checked
+  // in recently" are different questions, and the board was answering the first with the second.
+  const hooksInstalled = await hasHookSetup(repoRoot);
+  if (!hooksInstalled) {
+    issues.push({ kind: "missing-hook-setup", message: "No Peephole hook wired into .claude/settings.local.json — pause/skip won't be enforced on agent sessions" });
   }
 
   const STALE_MS = 5 * 60 * 1000;
@@ -123,5 +126,5 @@ export async function scan(ledgerRoot, ref, { repoRoot = ledgerRoot } = {}) {
     a.stale = !Number.isFinite(last) || now - last > STALE_MS;
   }
 
-  return { config, tickets, agents, issues };
+  return { config, tickets, agents, issues, hooksInstalled };
 }

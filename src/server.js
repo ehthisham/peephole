@@ -222,6 +222,7 @@ export async function startServer(initialRepoRoot, { port = 4173, remote = "orig
       stateBranch,
       stateBranchSource,
       checkoutBranch: cache.checkoutBranch ?? null,
+      hooksInstalled: cache.hooksInstalled ?? false,
       ledger: { kind: ledger.kind, path: ledger.path, reason: ledger.reason },
       projects: knownProjects,
       stateBranchOnRemote: cache.stateBranchOnRemote ?? true,
