@@ -383,6 +383,16 @@
         sub: coverage.tool === "go" ? "go test" : "istanbul",
       });
     }
+    // Say which branch the code figures describe: they follow the reader's checkout, while the
+    // Progress tile beside them counts tickets from the shared ledger. Same row, two sources.
+    if (latestState && latestState.checkoutBranch) {
+      tiles = tiles.map(function (t) {
+        if (t.label === "Lines of code" || t.label === "Commits" || t.label === "Tracked files") {
+          return { ...t, sub: (t.sub ? t.sub + " · " : "") + latestState.checkoutBranch };
+        }
+        return t;
+      });
+    }
     statRow.innerHTML = tiles.map(function (t) {
       return (
         '<div class="stat-tile"><div class="value mono">' + t.value + "</div>" +

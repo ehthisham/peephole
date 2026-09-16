@@ -211,8 +211,14 @@ export async function startServer(repoRoot, { port = 4173, remote = "origin", ho
       await git.syncWorktreeIfClean(worktreePath, localBranch, stateBranch, remote);
     }
     const [state, stats] = await Promise.all([
+      // Tickets come from the ledger branch — that is the shared record.
       scan(repoRoot, localBranch),
-      repoStats(repoRoot, localBranch).catch((e) => {
+      // Code stats come from the developer's own checkout (HEAD), not the ledger. They describe
+      // the code someone is actually working on: lines, languages, commits, contributors, last
+      // commit. Reading them at the ledger branch was tolerable only while that branch WAS the
+      // code branch; on a dedicated ledger branch they would describe a snapshot taken when the
+      // branch was created and drift further from the work with every commit.
+      repoStats(repoRoot, "HEAD").catch((e) => {
         console.error("repoStats failed:", e.message);
         return null;
       }),
