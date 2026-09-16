@@ -94,6 +94,8 @@
   var hookState = document.getElementById("hookState");
   var lastUpdated = document.getElementById("lastUpdated");
   var projectName = document.getElementById("projectName");
+  var projectBtn = document.getElementById("projectBtn");
+  var projectMenu = document.getElementById("projectMenu");
   var remoteLink = document.getElementById("remoteLink");
   var branchName = document.getElementById("branchName");
   var checkoutBranchEl = document.getElementById("checkoutBranch");
@@ -1292,6 +1294,7 @@
       if (a.sessionId && a.author && a.author.name) authorBySession[a.sessionId] = a.author.name;
     });
     projectName.textContent = state.project || "—";
+    projectBtn.title = "Switch project — " + (state.repoRoot || "");
     remoteLink.textContent = state.remoteUrl || "";
     remoteLink.href = toHttpUrl(state.remoteUrl);
     // Where the ledger lives, and on whose authority. A board reading a branch nobody declared is
@@ -1465,6 +1468,52 @@
       execBackdrop.addEventListener("click", backdropClick);
     });
   }
+
+  /** Every repo this install has served, most recently opened first. The list is built simply by
+   *  running the board against a repo — there is no "add project" step to forget — so the menu is a
+   *  history of what you actually work on. An entry whose checkout has since moved is shown but
+   *  disabled rather than hidden, because a silently missing project looks like a bug. */
+  function renderProjectMenu() {
+    var projects = ((latestState && latestState.projects) || []).slice().sort(function (a, b) {
+      return String(b.lastOpenedAt || "").localeCompare(String(a.lastOpenedAt || ""));
+    });
+    if (!projects.length) {
+      projectMenu.innerHTML = '<p class="pm-note">No other projects yet — run the board against another repo with <code>--repo</code> and it appears here.</p>';
+      return;
+    }
+    projectMenu.innerHTML = projects.map(function (p) {
+      var active = p.repoRoot === (latestState && latestState.repoRoot);
+      return (
+        '<button type="button" role="menuitem" data-root="' + esc(p.repoRoot) + '"' +
+        (active ? ' aria-current="true"' : "") + (p.missing ? " disabled" : "") + ">" +
+        esc(p.name) + (p.missing ? " <span class=\"pm-path\">checkout not found</span>" : "") +
+        '<span class="pm-path">' + esc(p.repoRoot) + "</span></button>"
+      );
+    }).join("");
+    Array.prototype.forEach.call(projectMenu.querySelectorAll("button[data-root]"), function (btn) {
+      btn.addEventListener("click", async function () {
+        projectMenu.hidden = true;
+        projectBtn.setAttribute("aria-expanded", "false");
+        if (btn.getAttribute("aria-current") === "true") return;
+        var res = await apiPost("/api/projects/switch", { repoRoot: btn.dataset.root });
+        if (res && res.error) window.alert(res.error);
+      });
+    });
+  }
+
+  projectBtn.addEventListener("click", function (ev) {
+    ev.stopPropagation();
+    var open = projectMenu.hidden;
+    if (open) renderProjectMenu();
+    projectMenu.hidden = !open;
+    projectBtn.setAttribute("aria-expanded", String(open));
+  });
+  document.addEventListener("click", function (ev) {
+    if (!projectMenu.hidden && !projectMenu.contains(ev.target) && !projectBtn.contains(ev.target)) {
+      projectMenu.hidden = true;
+      projectBtn.setAttribute("aria-expanded", "false");
+    }
+  });
 
   /** The queue's own strip: what is running, what is waiting, and why nothing started when every
    *  session in the repo is busy — a queue that holds silently looks identical to one that broke. */

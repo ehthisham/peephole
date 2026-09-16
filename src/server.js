@@ -10,6 +10,7 @@ import * as tokenUsage from "./tokens.js";
 import { createQueue, listSessions } from "./execute.js";
 import { DEFAULT_STATE_BRANCH } from "./schema.js";
 import { resolveLedger } from "./ledger.js";
+import { listProjects, rememberProject, forgetProject, validateRepo } from "./projects.js";
 import { detectCoverage } from "./coverage.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -81,27 +82,49 @@ async function resolveStateBranch(repoRoot, remote, override) {
   return { branch: DEFAULT_STATE_BRANCH, source: "new " + DEFAULT_STATE_BRANCH + " branch" };
 }
 
-export async function startServer(repoRoot, { port = 4173, remote = "origin", host = DEFAULT_HOST, branch = null } = {}) {
+export async function startServer(initialRepoRoot, { port = 4173, remote = "origin", host = DEFAULT_HOST, branch = null } = {}) {
   const peepholeBin = path.join(__dirname, "..", "bin", "peephole.js");
-  const resolved = await resolveStateBranch(repoRoot, remote, branch);
-  const stateBranch = resolved.branch;
-  const stateBranchSource = resolved.source;
-  const remoteUrl = await git.remoteUrl(repoRoot, remote);
-  // The ledger may live outside the repo (a sparse clone) or inside it (the worktree fallback);
-  // everything below reads and writes through whichever was resolved.
-  let ledger = await resolveLedger(repoRoot, stateBranch, { remote });
-  let worktreePath = ledger.path;
-  let localBranch = ledger.localBranch;
-  // The identity a UI-created ticket's "created by" defaults to — this machine's configured git
-  // identity, resolved through .mailmap so it matches the Members panel's naming.
-  const rawGitUser = await git.gitUser(repoRoot);
-  const gitUser = rawGitUser.name && rawGitUser.email
-    ? await git.checkMailmap(repoRoot, rawGitUser.name, rawGitUser.email)
-    : rawGitUser;
+  // Everything about "which project is open" is mutable: one server serves whichever repo is
+  // selected, rather than one server per repo on a port the user has to remember. The queue and
+  // the request handlers close over these bindings, so a switch re-points them all at once.
+  let repoRoot = initialRepoRoot;
+  let branchOverride = branch;
+  let stateBranch;
+  let stateBranchSource;
+  let remoteUrl;
+  let ledger;
+  let worktreePath;
+  let localBranch;
+  let gitUser;
+
+  async function openProject(nextRepoRoot) {
+    repoRoot = nextRepoRoot;
+    const resolved = await resolveStateBranch(repoRoot, remote, branchOverride);
+    stateBranch = resolved.branch;
+    stateBranchSource = resolved.source;
+    remoteUrl = await git.remoteUrl(repoRoot, remote);
+    // The ledger may live outside the repo (a sparse clone) or inside it (the worktree fallback);
+    // everything below reads and writes through whichever was resolved.
+    ledger = await resolveLedger(repoRoot, stateBranch, { remote });
+    worktreePath = ledger.path;
+    localBranch = ledger.localBranch;
+    // The identity a UI-created ticket's "created by" defaults to — this machine's configured git
+    // identity, resolved through .mailmap so it matches the Members panel's naming.
+    const rawGitUser = await git.gitUser(repoRoot);
+    gitUser = rawGitUser.name && rawGitUser.email
+      ? await git.checkMailmap(repoRoot, rawGitUser.name, rawGitUser.email)
+      : rawGitUser;
+    await rememberProject(repoRoot, { remoteUrl, stateBranch });
+  }
+
+  await openProject(initialRepoRoot);
 
   let cache = { config: null, tickets: [], agents: [], issues: [], lastFetchedAt: null, unpushed: 0, coverage: null };
   let queueState = { pending: [], running: null, lastError: null };
   let lastCoverageStamp = null;
+  // publicState() is synchronous, so the menu is refreshed alongside every state refresh rather
+  // than read from disk on each request.
+  let knownProjects = [];
   // Dispatching a ticket claims it for the session that is about to work it, then re-reads, so the
   // board shows in-progress before the agent's first tool call rather than after it.
   const queue = createQueue({
@@ -193,6 +216,7 @@ export async function startServer(repoRoot, { port = 4173, remote = "origin", ho
       stateBranchSource,
       checkoutBranch: cache.checkoutBranch ?? null,
       ledger: { kind: ledger.kind, path: ledger.path, reason: ledger.reason },
+      projects: knownProjects,
       stateBranchOnRemote: cache.stateBranchOnRemote ?? true,
       repoRoot,
       gitUser,
@@ -262,6 +286,7 @@ export async function startServer(repoRoot, { port = 4173, remote = "origin", ho
           return cache.coverage ?? null;
         })
       : cache.coverage ?? null;
+    knownProjects = await listProjects().catch(() => knownProjects);
     cache = { ...state, stats: enrichedStats, coverage, checkoutBranch, stateBranchOnRemote, lastFetchedAt: new Date().toISOString(), unpushed };
     broadcast();
     return cache;
@@ -501,6 +526,31 @@ export async function startServer(repoRoot, { port = 4173, remote = "origin", ho
       if (req.method === "POST" && url.pathname === "/api/execute/stop") {
         queueState = queue.stop();
         return sendJson(res, 200, { queue: queueState, state: publicState() });
+      }
+      if (req.method === "GET" && url.pathname === "/api/projects") {
+        return sendJson(res, 200, { projects: await listProjects(), active: repoRoot });
+      }
+      if (req.method === "POST" && url.pathname === "/api/projects/switch") {
+        const body = await readJsonBody(req);
+        const check = await validateRepo(String(body.repoRoot || ""));
+        if (!check.ok) return sendJson(res, 400, { error: check.error });
+        if (check.repoRoot === repoRoot) return sendJson(res, 200, publicState());
+        // Anything queued belongs to the project being left; dispatching it against another repo
+        // would run a ticket in the wrong codebase.
+        queueState.pending.forEach((p) => queue.cancel(p.ticketId));
+        // An explicit --branch was an answer about ONE repo. Carrying it into another would point
+        // the new board at a branch that has nothing to do with it.
+        branchOverride = null;
+        await openProject(check.repoRoot);
+        cache = { config: null, tickets: [], agents: [], issues: [], lastFetchedAt: null, unpushed: 0, coverage: null };
+        lastCoverageStamp = null;
+        await refresh({ doFetch: false });
+        return sendJson(res, 200, publicState());
+      }
+      if (req.method === "POST" && url.pathname === "/api/projects/forget") {
+        const body = await readJsonBody(req);
+        await forgetProject(String(body.repoRoot || ""));
+        return sendJson(res, 200, { projects: await listProjects(), active: repoRoot });
       }
       if (req.method === "GET" && url.pathname === "/api/sessions") {
         return sendJson(res, 200, { sessions: await listSessions(repoRoot) });

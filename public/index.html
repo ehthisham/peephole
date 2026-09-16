@@ -28,6 +28,18 @@
   .wordmark h1{margin:0; font-size:21px; font-weight:700; letter-spacing:-0.01em; color:var(--accent);}
   .wordmark .project{font-size:13.5px; color:var(--ink-dim);}
   .wordmark .branch{font-size:12px; color:var(--ink-dim);}
+  .project-picker{position:relative;}
+  .project-btn{display:inline-flex; align-items:center; gap:5px; background:none; border:1px solid transparent; border-radius:6px; padding:2px 7px; font:inherit; font-size:13.5px; color:var(--ink-dim); cursor:pointer;}
+  .project-btn:hover{border-color:var(--border); color:var(--ink); background:var(--surface);}
+  .project-btn .caret{font-size:9px; opacity:0.7;}
+  .project-menu{position:absolute; left:0; top:calc(100% + 5px); z-index:30; min-width:260px; max-height:340px; overflow-y:auto;
+    background:var(--surface); border:1px solid var(--border); border-radius:8px; padding:5px; box-shadow:0 8px 24px rgba(32,26,24,0.14);}
+  .project-menu button{display:block; width:100%; text-align:left; background:none; border:none; border-radius:6px; padding:7px 9px; font:inherit; font-size:12.5px; color:var(--ink); cursor:pointer;}
+  .project-menu button:hover:not(:disabled){background:var(--surface-2);}
+  .project-menu button[aria-current="true"]{color:var(--accent); font-weight:600;}
+  .project-menu button:disabled{opacity:0.45; cursor:not-allowed;}
+  .project-menu .pm-path{display:block; font-size:11px; color:var(--ink-dim); font-family:"IBM Plex Mono",ui-monospace,monospace; margin-top:1px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+  .project-menu .pm-note{padding:6px 9px; font-size:11.5px; color:var(--ink-dim);}
   .remote-link{font-size:12px; color:var(--ink-dim); text-decoration:none;}
   .checkout-branch{color:var(--ink-dim);}
   .checkout-branch b{color:var(--ink); font-weight:600;}
@@ -320,7 +332,12 @@
   <header class="top">
     <div class="wordmark">
       <h1>Peephole</h1>
-      <span class="project mono" id="projectName">—</span>
+      <div class="project-picker">
+        <button class="project-btn mono" id="projectBtn" type="button" aria-expanded="false" aria-haspopup="true">
+          <span id="projectName">—</span><span class="caret" aria-hidden="true">▾</span>
+        </button>
+        <div class="project-menu" id="projectMenu" hidden role="menu"></div>
+      </div>
       <a class="remote-link mono" id="remoteLink" href="#" target="_blank" rel="noopener"></a>
       <span class="branch mono" id="branchName"></span>
       <span class="branch mono" id="checkoutBranch"></span>

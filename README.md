@@ -56,6 +56,46 @@ own hooks and creates nothing else.
   **Where the files live**).
 - The server listens on `127.0.0.1` only. See **Executing tickets** before exposing it.
 
+## Several projects, one board
+
+The project name in the header is a menu. Every repo you have ever served is in it — the list is
+built by running the board against a repo, so there is no separate "add project" step, and it is
+kept in `~/.peephole/projects.json`, outside every repo it lists (one developer's local paths have
+no business travelling to another machine in a git repo).
+
+Switching re-points the whole board: ledger, tickets, coverage, agents, queue. Anything queued for
+execution is cancelled first — dispatching it against another repo would run a ticket in the wrong
+codebase. A project whose checkout has moved is shown, disabled, rather than hidden.
+
+## Where the ledger is checked out
+
+Peephole keeps its own sparse clone of the repo at `~/.peephole/ledgers/<slug>`, on the ledger
+branch, with only `.peephole/` checked out — measured on a real repo: 120 files and 512 KB, against
+37 MB for a full worktree. Nothing is added to your repo, and whatever your own checkout is doing
+(dirty, mid-rebase, on another branch) is irrelevant to the board.
+
+It falls back to `<repo>/.peephole-worktree` when a clone cannot serve, and the board says which is
+in use and why:
+
+- the repo has no remote to clone from
+- the ledger branch has never been pushed, so there is nothing to clone yet
+- the worktree still holds unpushed ledger commits — switching would show a board missing them
+
+Pushing a ledger branch for the first time moves the ledger out of the repo on the next fetch, with
+no restart.
+
+## Moving an existing ledger to its own branch
+
+```
+node bin/peephole.js ledger move --repo /path/to/repo --to peephole-state [--push]
+```
+
+The target branch is created FROM the current ledger branch, so tickets travel as commits with
+their full history, comments and all; the old branch is left exactly as it was, and pointing
+`stateBranch` back at it restores the previous board. The command prints the ticket count before
+and after and names anything that failed to make the trip. Both branches end up declaring the new
+home, so teammates follow automatically once it is pushed.
+
 ## Run it (already set up)
 
 ```
