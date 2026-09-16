@@ -61,7 +61,10 @@ const DEFAULT_HOST = "127.0.0.1";
 async function resolveStateBranch(repoRoot, remote, override) {
   const fallback = await git.defaultRemoteBranch(repoRoot, remote);
   if (override) return { branch: override, source: "--branch" };
-  for (const ref of [`${remote}/${fallback}`, fallback]) {
+  // `peephole/<default>` first: that is this machine's own ledger branch, which is always at or
+  // ahead of the remote, so a migration (or any config change) takes effect here immediately and
+  // reaches teammates when it is pushed — rather than a local move appearing to do nothing.
+  for (const ref of [`peephole/${fallback}`, `${remote}/${fallback}`, fallback]) {
     if (!(await git.refExists(repoRoot, ref))) continue;
     const declared = await git.declaredStateBranch(repoRoot, ref).catch(() => null);
     if (declared) return { branch: declared, source: ".peephole/config.yaml" };
@@ -184,6 +187,7 @@ export async function startServer(repoRoot, { port = 4173, remote = "origin", ho
       stateBranch,
       stateBranchSource,
       checkoutBranch: cache.checkoutBranch ?? null,
+      stateBranchOnRemote: cache.stateBranchOnRemote ?? true,
       repoRoot,
       gitUser,
       hookConfigured: hookConfigured(),
@@ -228,6 +232,7 @@ export async function startServer(repoRoot, { port = 4173, remote = "origin", ho
     // working tree, so the figure on the board is whatever this person's branch last produced;
     // two teammates on different branches see the same tickets and different coverage.
     const checkoutBranch = await git.currentBranch(repoRoot).catch(() => null);
+    const stateBranchOnRemote = await git.remoteBranchExists(repoRoot, stateBranch, remote).catch(() => true);
     const enrichedStats = stats
       ? { ...stats, contributorList: await withMemberTokens(state.agents, stats.contributorList) }
       : stats;
@@ -247,7 +252,7 @@ export async function startServer(repoRoot, { port = 4173, remote = "origin", ho
           return cache.coverage ?? null;
         })
       : cache.coverage ?? null;
-    cache = { ...state, stats: enrichedStats, coverage, checkoutBranch, lastFetchedAt: new Date().toISOString(), unpushed };
+    cache = { ...state, stats: enrichedStats, coverage, checkoutBranch, stateBranchOnRemote, lastFetchedAt: new Date().toISOString(), unpushed };
     broadcast();
     return cache;
   }

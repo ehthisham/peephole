@@ -120,26 +120,33 @@ export async function scaffold(repoRoot, remoteBranch, { projectName, remoteUrl,
     }
     created.push("agents/");
   }
+  // CLAUDE.md and README.md belong to the CODE branch — an agent reads CLAUDE.md from the branch
+  // it is working on, and a human opens README.md there. Writing them into the ledger worktree put
+  // them on the ledger branch, where nobody reads them; once the ledger is a dedicated branch that
+  // is simply wrong, and with a sparse ledger checkout they would be stubs in an otherwise empty
+  // tree. They are written into the developer's own checkout instead — and deliberately NOT
+  // committed: that is their working tree and their branch to commit on.
+  const docsWritten = [];
   if (kinds.has("missing-agent-note")) {
-    const claudeMdPath = path.join(worktreePath, "CLAUDE.md");
-    await upsertMarkedSection(claudeMdPath, agentNoteBody({ binPath: peepholeBin, repoRoot, port }), `# ${projectName} — working notes`);
-    paths.push("CLAUDE.md");
-    created.push("CLAUDE.md (Peephole section)");
+    await upsertMarkedSection(
+      path.join(repoRoot, "CLAUDE.md"),
+      agentNoteBody({ binPath: peepholeBin, repoRoot, port }),
+      `# ${projectName} — working notes`,
+    );
+    docsWritten.push("CLAUDE.md");
   }
   if (kinds.has("missing-readme-note")) {
-    const readmePath = path.join(worktreePath, "README.md");
-    await upsertMarkedSection(readmePath, readmeNoteBody(peepholeCmd), `# ${projectName}`);
-    paths.push("README.md");
-    created.push("README.md (Peephole section)");
+    await upsertMarkedSection(path.join(repoRoot, "README.md"), readmeNoteBody(peepholeCmd), `# ${projectName}`);
+    docsWritten.push("README.md");
   }
 
   if (created.length === 0) {
-    return { committed: false, created: [], worktreePath, localBranch, hookSetup };
+    return { committed: false, created: [], docsWritten, worktreePath, localBranch, hookSetup };
   }
 
   const sha = await git.commitAll(worktreePath, `peephole: scaffold ${created.join(", ")}`, paths);
   const unpushed = await git.unpushedCount(worktreePath, localBranch, remoteBranch);
-  return { committed: Boolean(sha), created, sha, unpushed, worktreePath, localBranch, hookSetup };
+  return { committed: Boolean(sha), created, docsWritten, sha, unpushed, worktreePath, localBranch, hookSetup };
 }
 
 /**
@@ -642,6 +649,80 @@ export async function renameTicket(repoRoot, remoteBranch, oldId, newId, actor =
   const sha = await git.commitAll(worktreePath, `peephole: rename ticket ${oldId} -> ${newId}`);
   const unpushed = await git.unpushedCount(worktreePath, localBranch, remoteBranch);
   return { committed: Boolean(sha), sha, unpushed, oldId, newId };
+}
+
+/**
+ * Moves the ledger onto another branch WITHOUT losing anything: the new branch is created from the
+ * current ledger branch, so every ticket, every history entry and every comment is carried as
+ * commits rather than copied as files. The old branch is left exactly as it is — if the migration
+ * turns out wrong, pointing `stateBranch` back at it restores the previous board.
+ *
+ * Returns the ticket count seen before and after, so a caller can prove nothing was dropped.
+ */
+export async function migrateLedger(repoRoot, fromBranch, toBranch, { remote = "origin", push: doPush = false } = {}) {
+  if (!toBranch || toBranch === fromBranch) throw new Error("a different target branch is required");
+  const { worktreePath, localBranch } = await prepWorktree(repoRoot, fromBranch);
+
+  const ticketsDir = path.join(worktreePath, ".peephole", "tickets");
+  const before = (await fs.readdir(ticketsDir).catch(() => [])).filter((f) => f.endsWith(".md"));
+
+  // The target may already exist (a teammate migrated first) — in that case join it rather than
+  // overwrite it, and refuse if it holds a ledger that isn't an ancestor of this one.
+  const targetRemoteRef = `${remote}/${toBranch}`;
+  const targetExists = await git.refExists(worktreePath, targetRemoteRef);
+  if (targetExists) {
+    const merged = await git.isAncestor(worktreePath, localBranch, targetRemoteRef).catch(() => false);
+    if (!merged) {
+      throw new Error(
+        `${targetRemoteRef} already exists and does not contain this ledger — merge them by hand rather than risk losing either`,
+      );
+    }
+  }
+
+  const localTarget = `peephole/${toBranch}`;
+  await git.createBranchAt(worktreePath, localTarget, localBranch);
+  await git.checkoutBranch(worktreePath, localTarget);
+
+  // Declare the new home in the config the branch itself carries, so every teammate resolves it.
+  const configPath = path.join(worktreePath, ".peephole", "config.yaml");
+  const raw = await fs.readFile(configPath, "utf8");
+  const next = raw.match(/^stateBranch:.*$/m)
+    ? raw.replace(/^stateBranch:.*$/m, `stateBranch: ${toBranch}`)
+    : `stateBranch: ${toBranch}\n${raw}`;
+  await fs.writeFile(configPath, next, "utf8");
+  const sha = await git.commitAll(worktreePath, `peephole: move the ledger to ${toBranch}`);
+
+  // Leave a forwarding pointer on the OLD branch as well. Branch resolution reads the config at the
+  // remote's default ref, so a migration that only updated the new branch would be invisible:
+  // everyone would keep resolving the old branch from the old declaration and quietly go on using
+  // the old ledger. Both branches now name the new home; the old one keeps its tickets untouched.
+  await git.checkoutBranch(worktreePath, localBranch);
+  const oldConfig = await fs.readFile(configPath, "utf8");
+  if (!new RegExp(`^stateBranch:\\s*${toBranch}\\s*$`, "m").test(oldConfig)) {
+    await fs.writeFile(
+      configPath,
+      oldConfig.match(/^stateBranch:.*$/m)
+        ? oldConfig.replace(/^stateBranch:.*$/m, `stateBranch: ${toBranch}`)
+        : `stateBranch: ${toBranch}\n${oldConfig}`,
+      "utf8",
+    );
+    await git.commitAll(worktreePath, `peephole: the ledger now lives on ${toBranch}`);
+  }
+  await git.checkoutBranch(worktreePath, localTarget);
+
+  const after = (await fs.readdir(ticketsDir).catch(() => [])).filter((f) => f.endsWith(".md"));
+  let pushed = false;
+  if (doPush) {
+    await git.pushWorktree(worktreePath, localTarget, toBranch, remote);
+    // The forwarding pointer is only useful once it is where teammates look.
+    await git.pushWorktree(worktreePath, localBranch, fromBranch, remote);
+    pushed = true;
+  }
+  return {
+    from: fromBranch, to: toBranch, sha, pushed,
+    ticketsBefore: before.length, ticketsAfter: after.length,
+    missing: before.filter((f) => !after.includes(f)),
+  };
 }
 
 export async function push(repoRoot, remoteBranch) {

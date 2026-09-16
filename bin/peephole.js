@@ -159,6 +159,26 @@ async function cmdTicketEpic(argv) {
   console.log(`"${id}" epic -> ${result.ticket.epic || "none"}`);
 }
 
+async function cmdLedgerMove(argv) {
+  const args = parseArgs(argv);
+  const repoRoot = path.resolve(args.repo || process.cwd());
+  const to = args.to && args.to !== true ? String(args.to) : "peephole-state";
+  const { migrateLedger } = await import("../src/writer.js");
+  const git = await import("../src/git.js");
+  const from = args.from && args.from !== true
+    ? String(args.from)
+    : (await git.declaredStateBranch(repoRoot, await git.defaultRemoteBranch(repoRoot))) || (await git.defaultRemoteBranch(repoRoot));
+
+  console.log(`moving the ledger: ${from} -> ${to}`);
+  const r = await migrateLedger(repoRoot, from, to, { push: args.push === true });
+  console.log(`  tickets before: ${r.ticketsBefore}`);
+  console.log(`  tickets after:  ${r.ticketsAfter}${r.missing.length ? ` (MISSING: ${r.missing.join(", ")})` : ""}`);
+  console.log(`  commit:         ${r.sha || "(nothing to commit)"}`);
+  console.log(`  pushed:         ${r.pushed ? `yes -> origin/${to}` : "no — run with --push, or use Push to remote"}`);
+  console.log(`  old branch:     ${from} left untouched; point stateBranch back at it to undo`);
+  console.log("Restart the board to pick up the new branch.");
+}
+
 async function cmdTicketRisk(argv) {
   const id = argv[0];
   const args = parseArgs(argv.slice(1));
@@ -240,6 +260,7 @@ async function main() {
   if (cmd === "ticket" && argv[1] === "assign") return cmdTicketAssign(argv.slice(2));
   if (cmd === "ticket" && argv[1] === "epic") return cmdTicketEpic(argv.slice(2));
   if (cmd === "ticket" && argv[1] === "risk") return cmdTicketRisk(argv.slice(2));
+  if (cmd === "ledger" && argv[1] === "move") return cmdLedgerMove(argv.slice(2));
   if (cmd === "ticket" && argv[1] === "advance") return cmdTicketAdvance(argv.slice(2));
   if (cmd === "ticket" && argv[1] === "rename") return cmdTicketRename(argv.slice(2));
   if (cmd === "agent" && argv[1] === "heartbeat") return cmdAgentHeartbeat(argv.slice(2));
@@ -254,6 +275,7 @@ async function main() {
     '  peephole ticket assign <id> --to "<person>" | --clear  # reserve it; only that person can claim\n' +
     '  peephole ticket epic <id> --to "<epic>" | --clear      # file it under an epic\n' +
     "  peephole ticket risk <id> --to <reversible|irreversible>\n" +
+    '  peephole ledger move --repo <path> [--to peephole-state] [--push]  # carry the ledger to its own branch\n' +
     "  peephole ticket advance <id> --state <proposed|in-progress|built|verified|shipped|closed>\n" +
     "  peephole ticket rename <id> --to <new-id>\n" +
     "  peephole agent heartbeat --session <id> [--ticket <id>] [--status working|idle|paused|stopped]\n" +

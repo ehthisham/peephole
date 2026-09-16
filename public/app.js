@@ -1363,7 +1363,13 @@
     pushBtn.hidden = false;
     if (state.unpushed > 0) {
       pushBanner.hidden = false;
-      pushText.textContent = state.unpushed + " unpushed commit" + (state.unpushed === 1 ? "" : "s") + " on " + state.stateBranch;
+      // A ledger branch that has never been pushed is a different situation from commits waiting on
+      // a branch everyone already has: nobody else can see ANY of this board until the first push
+      // creates the branch, which is worth saying rather than counting commits at them.
+      pushText.textContent = state.stateBranchOnRemote === false
+        ? state.stateBranch + " is not on the remote yet — Push to remote creates it (" +
+          state.unpushed + " commit" + (state.unpushed === 1 ? "" : "s") + ")"
+        : state.unpushed + " unpushed commit" + (state.unpushed === 1 ? "" : "s") + " on " + state.stateBranch;
     } else {
       pushBanner.hidden = true;
     }

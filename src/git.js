@@ -138,8 +138,7 @@ export async function ensureWorktree(repoRoot, remoteBranch, remote = "origin") 
 /** Paths touched by the commits waiting to be pushed. Used to prove an auto-push would only ever
  *  publish ledger writes — anything else means something unexpected rode along on this branch. */
 export async function pendingPaths(worktreePath, localBranch, remoteBranch, remote = "origin") {
-  const hasRemote = await refExists(worktreePath, `${remote}/${remoteBranch}`);
-  const range = hasRemote ? `${remote}/${remoteBranch}..${localBranch}` : localBranch;
+  const { range } = await pendingRange(worktreePath, localBranch, remoteBranch, remote);
   const out = await run(worktreePath, ["diff", "--name-only", range]);
   return out.split("\n").map((l) => l.trim()).filter(Boolean);
 }
@@ -186,11 +185,51 @@ export async function commitAll(worktreePath, message, paths = [".peephole"]) {
   return commitStaged(worktreePath, message);
 }
 
+/** The range that would actually be published. When the target branch does not exist on the remote
+ *  yet — a ledger branch on its first push — comparing against nothing counts the repo's entire
+ *  history as "unpushed" (653 commits on a migration that added two). Measure from the remote's
+ *  default branch instead: that is where the new branch was cut from, so the difference is the
+ *  ledger work itself. */
+async function pendingRange(worktreePath, localBranch, remoteBranch, remote) {
+  if (await refExists(worktreePath, `${remote}/${remoteBranch}`)) {
+    return { range: `${remote}/${remoteBranch}..${localBranch}`, newBranch: false };
+  }
+  const fallback = await defaultRemoteBranch(worktreePath, remote).catch(() => null);
+  if (fallback && (await refExists(worktreePath, `${remote}/${fallback}`))) {
+    return { range: `${remote}/${fallback}..${localBranch}`, newBranch: true };
+  }
+  return { range: localBranch, newBranch: true };
+}
+
 export async function unpushedCount(worktreePath, localBranch, remoteBranch, remote = "origin") {
-  const hasRemote = await refExists(worktreePath, `${remote}/${remoteBranch}`);
-  const range = hasRemote ? `${remote}/${remoteBranch}..${localBranch}` : localBranch;
+  const { range } = await pendingRange(worktreePath, localBranch, remoteBranch, remote);
   const out = await run(worktreePath, ["rev-list", "--count", range]);
   return parseInt(out.trim(), 10) || 0;
+}
+
+/** Whether the ledger branch exists on the remote at all — the difference between "N commits
+ *  waiting" and "this branch has never been shared". */
+export async function remoteBranchExists(repoRoot, remoteBranch, remote = "origin") {
+  return refExists(repoRoot, `${remote}/${remoteBranch}`);
+}
+
+/** True when `ref` already contains everything in `maybeAncestor` — used to tell "the target branch
+ *  is this ledger, further along" from "the target branch is a different ledger". */
+export async function isAncestor(repoRoot, maybeAncestor, ref) {
+  try {
+    await run(repoRoot, ["merge-base", "--is-ancestor", maybeAncestor, ref]);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export async function createBranchAt(repoRoot, name, startPoint) {
+  await run(repoRoot, ["branch", "-f", name, startPoint]);
+}
+
+export async function checkoutBranch(repoRoot, name) {
+  await run(repoRoot, ["checkout", name]);
 }
 
 export async function pushWorktree(worktreePath, localBranch, remoteBranch, remote = "origin") {
