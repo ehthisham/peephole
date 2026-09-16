@@ -130,7 +130,16 @@ export async function scaffold(repoRoot, remoteBranch, { projectName, remoteUrl,
   // tree. They are written into the developer's own checkout instead — and deliberately NOT
   // committed: that is their working tree and their branch to commit on.
   const docsWritten = [];
-  if (kinds.has("missing-agent-note")) {
+  if (kinds.has("missing-gitignore")) {
+    // In the repo's own .gitignore, uncommitted like the doc sections: it is a change to the code
+    // branch, and that is the developer's commit to make.
+    const ignorePath = path.join(repoRoot, ".gitignore");
+    const current = await fs.readFile(ignorePath, "utf8").catch(() => "");
+    const next = current && !current.endsWith("\n") ? `${current}\n` : current;
+    await fs.writeFile(ignorePath, `${next}.peephole-worktree/\n`, "utf8");
+    docsWritten.push(".gitignore");
+  }
+  if (kinds.has("missing-agent-note") || kinds.has("stale-agent-note")) {
     await upsertMarkedSection(
       path.join(repoRoot, "CLAUDE.md"),
       agentNoteBody({ binPath: peepholeBin, repoRoot, port }),
@@ -138,11 +147,14 @@ export async function scaffold(repoRoot, remoteBranch, { projectName, remoteUrl,
     );
     docsWritten.push("CLAUDE.md");
   }
-  if (kinds.has("missing-readme-note")) {
+  if (kinds.has("missing-readme-note") || kinds.has("stale-readme-note")) {
     await upsertMarkedSection(path.join(repoRoot, "README.md"), readmeNoteBody(peepholeCmd), `# ${projectName}`);
     docsWritten.push("README.md");
   }
 
+  // `created` is what went into the ledger; docsWritten went into the checkout. Either counts as
+  // the scaffold having done something — a run that only refreshed CLAUDE.md must not report
+  // "nothing to do".
   if (created.length === 0) {
     return { committed: false, created: [], docsWritten, worktreePath, localBranch, hookSetup };
   }

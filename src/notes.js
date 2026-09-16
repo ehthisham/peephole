@@ -1,6 +1,13 @@
 import fs from "node:fs/promises";
 
-const START = "<!-- peephole:start -->";
+// Bump when the wording these functions generate changes materially. The number is written into
+// the start marker, so an already-scaffolded repo can be told its section is out of date — a
+// presence check never could, which is why repos kept serving agents the first version of the
+// instructions forever.
+export const NOTE_VERSION = 2;
+
+const START_RE = /<!--\s*peephole:start(?:\s+v=(\d+))?\s*-->/;
+const START = `<!-- peephole:start v=${NOTE_VERSION} -->`;
 const END = "<!-- peephole:end -->";
 
 async function fileExists(p) {
@@ -18,7 +25,8 @@ export async function upsertMarkedSection(filePath, sectionBody, fallbackHeader)
   let existing = "";
   if (await fileExists(filePath)) existing = await fs.readFile(filePath, "utf8");
 
-  const startIdx = existing.indexOf(START);
+  const startMatch = existing.match(START_RE);
+  const startIdx = startMatch ? startMatch.index : -1;
   const endIdx = existing.indexOf(END);
   let next;
   if (startIdx !== -1 && endIdx !== -1) {
@@ -32,7 +40,15 @@ export async function upsertMarkedSection(filePath, sectionBody, fallbackHeader)
 }
 
 export function hasMarkedSection(text) {
-  return Boolean(text && text.includes(START));
+  return Boolean(text && START_RE.test(text));
+}
+
+/** The version of the section in `text`: a number, 1 for an unversioned (pre-versioning) block, or
+ *  null when there is no section at all. */
+export function markedSectionVersion(text) {
+  const m = text && text.match(START_RE);
+  if (!m) return null;
+  return m[1] ? Number(m[1]) : 1;
 }
 
 export function agentNoteBody({ binPath, repoRoot, port }) {

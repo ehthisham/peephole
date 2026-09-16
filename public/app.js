@@ -75,9 +75,12 @@
     );
   }
   var MOVE_ICON = { back: moveIcon("back"), fwd: moveIcon("fwd") };
+  // What Fix it can actually repair. The stale-* and gitignore kinds are repairable too, so they
+  // must be here or the button vanishes exactly when there is something to fix.
   var STRUCTURAL_ISSUES = new Set([
     "missing-config", "missing-tickets-dir", "missing-agents-dir",
     "missing-agent-note", "missing-readme-note", "missing-hook-setup",
+    "stale-agent-note", "stale-readme-note", "missing-gitignore",
   ]);
 
   var board = document.getElementById("board");

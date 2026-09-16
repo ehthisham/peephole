@@ -257,7 +257,7 @@ export async function startServer(initialRepoRoot, { port = 4173, remote = "orig
     }
     const [state, stats] = await Promise.all([
       // Tickets come from the ledger branch — that is the shared record.
-      scan(ledger.kind === "clone" ? ledger.path : repoRoot, localBranch),
+      scan(ledger.kind === "clone" ? ledger.path : repoRoot, localBranch, { repoRoot }),
       // Code stats come from the developer's own checkout (HEAD), not the ledger. They describe
       // the code someone is actually working on: lines, languages, commits, contributors, last
       // commit. Reading them at the ledger branch was tolerable only while that branch WAS the
