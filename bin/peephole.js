@@ -1,6 +1,15 @@
 #!/usr/bin/env node
 import path from "node:path";
 import { startServer } from "../src/server.js";
+import { gitIdentity } from "../hooks/identity.js";
+
+/** The identity a claim is checked against when a ticket is assigned: whatever `--author` says,
+ *  else this machine's global git identity — the same one the SessionStart hook reports, so the
+ *  CLI and the hook can never disagree about who a session belongs to. */
+async function resolveAuthor(args) {
+  if (args.author && args.author !== true) return { name: String(args.author), email: null };
+  return gitIdentity();
+}
 
 function parseArgs(argv) {
   const args = { _: [] };
@@ -45,18 +54,34 @@ async function cmdServe(argv) {
   const args = parseArgs(argv);
   const repoRoot = path.resolve(args.repo || process.cwd());
   const port = requirePort(args);
-  const { stateBranch, remoteUrl } = await startServer(repoRoot, { port, remote: args.remote || "origin" });
+  // Loopback unless asked otherwise: every endpoint is unauthenticated, and they create tickets,
+  // push branches and start agents. `--host 0.0.0.0` exposes all of that to the network.
+  const host = args.host && args.host !== true ? String(args.host) : "127.0.0.1";
+  const branch = args.branch && args.branch !== true ? String(args.branch) : null;
+  const { stateBranch, stateBranchSource, remoteUrl } = await startServer(repoRoot, {
+    port, remote: args.remote || "origin", host, branch,
+  });
   console.log(`peephole watching ${repoRoot}`);
   console.log(`  remote:       ${remoteUrl || "(none)"}`);
-  console.log(`  state branch: ${stateBranch}`);
+  console.log(`  state branch: ${stateBranch} (${stateBranchSource})`);
+  if (stateBranchSource === "remote default") {
+    console.log("                 not declared in .peephole/config.yaml — every machine resolves this on its own;");
+    console.log("                 set stateBranch there (or pass --branch) to pin the ledger to one branch");
+  }
   console.log(`  dashboard:    http://localhost:${port}`);
+  if (host !== "127.0.0.1" && host !== "localhost") {
+    console.log(`  WARNING:      listening on ${host} — anyone who can reach this port can write tickets and start agents`);
+  }
+  if (process.env.PEEPHOLE_ALLOW_BYPASS === "1") {
+    console.log("  WARNING:      PEEPHOLE_ALLOW_BYPASS=1 — dispatched agents may run any tool unattended");
+  }
 }
 
 async function cmdTicketNew(argv) {
   const args = parseArgs(argv);
   const port = requirePort(args);
   if (!args.project || !args.intent) {
-    console.error('usage: peephole ticket new --project <p> --intent "<text>" [--id <id>] [--acceptance "<text>"] [--risk reversible|irreversible] [--owner <sessionId>] [--port 4173]');
+    console.error('usage: peephole ticket new --project <p> --intent "<text>" [--id <id>] [--acceptance "<text>"] [--risk reversible|irreversible] [--owner <sessionId>] [--epic "<epic>"] [--transcript <path>] [--port 4173]');
     process.exit(1);
   }
   const id = args.id || slugify(args.intent);
@@ -67,6 +92,10 @@ async function cmdTicketNew(argv) {
     acceptance: args.acceptance || "",
     risk: args.risk || "reversible",
     owner: args.owner || null,
+    assignee: args.assignee && args.assignee !== true ? String(args.assignee) : null,
+    epic: args.epic && args.epic !== true ? String(args.epic) : null,
+    transcriptPath: args.transcript || null,
+    author: await resolveAuthor(args),
   });
   console.log(`created "${id}" (${result.ticket.state})${result.unpushed ? ` — ${result.unpushed} unpushed` : ""}`);
 }
@@ -76,10 +105,12 @@ async function cmdTicketClaim(argv) {
   const args = parseArgs(argv.slice(1));
   const port = requirePort(args);
   if (!id || !args.owner) {
-    console.error("usage: peephole ticket claim <id> --owner <sessionId> [--port 4173]");
+    console.error("usage: peephole ticket claim <id> --owner <sessionId> [--transcript <path>] [--author <name>] [--port 4173]");
     process.exit(1);
   }
-  const result = await apiCall(port, "POST", `/api/tickets/${encodeURIComponent(id)}/claim`, { owner: args.owner });
+  const result = await apiCall(port, "POST", `/api/tickets/${encodeURIComponent(id)}/claim`, {
+    owner: args.owner, transcriptPath: args.transcript || null, author: await resolveAuthor(args),
+  });
   if (!result.claimed) {
     console.error(`not claimed: ${result.reason}`);
     process.exit(1);
@@ -87,15 +118,88 @@ async function cmdTicketClaim(argv) {
   console.log(`claimed "${id}" as ${args.owner} (${result.ticket.state})`);
 }
 
+async function cmdTicketUnclaim(argv) {
+  const id = argv[0];
+  const args = parseArgs(argv.slice(1));
+  const port = requirePort(args);
+  if (!id) {
+    console.error("usage: peephole ticket unclaim <id> [--actor <who>] [--port 4173]");
+    process.exit(1);
+  }
+  const result = await apiCall(port, "POST", `/api/tickets/${encodeURIComponent(id)}/unclaim`, { actor: args.actor });
+  console.log(`unclaimed "${id}" -> ${result.ticket.state}`);
+}
+
+async function cmdTicketAssign(argv) {
+  const id = argv[0];
+  const args = parseArgs(argv.slice(1));
+  const port = requirePort(args);
+  const clearing = args.clear === true || args.to === "none";
+  if (!id || (!args.to && !clearing)) {
+    console.error('usage: peephole ticket assign <id> --to "<person>" | --clear [--actor <who>] [--port 4173]');
+    process.exit(1);
+  }
+  const assignee = clearing ? null : String(args.to);
+  const result = await apiCall(port, "POST", `/api/tickets/${encodeURIComponent(id)}/assign`, { assignee, actor: args.actor });
+  console.log(`"${id}" assigned -> ${result.ticket.assignee || "unassigned"}`);
+}
+
+async function cmdTicketEpic(argv) {
+  const id = argv[0];
+  const args = parseArgs(argv.slice(1));
+  const port = requirePort(args);
+  const clearing = args.clear === true || args.to === "none";
+  if (!id || (!args.to && !clearing)) {
+    console.error('usage: peephole ticket epic <id> --to "<epic>" | --clear [--port 4173]');
+    process.exit(1);
+  }
+  const result = await apiCall(port, "POST", `/api/tickets/${encodeURIComponent(id)}/epic`, {
+    epic: clearing ? null : String(args.to), actor: args.actor,
+  });
+  console.log(`"${id}" epic -> ${result.ticket.epic || "none"}`);
+}
+
+async function cmdLedgerMove(argv) {
+  const args = parseArgs(argv);
+  const repoRoot = path.resolve(args.repo || process.cwd());
+  const to = args.to && args.to !== true ? String(args.to) : "peephole-state";
+  const { migrateLedger } = await import("../src/writer.js");
+  const git = await import("../src/git.js");
+  const from = args.from && args.from !== true
+    ? String(args.from)
+    : (await git.declaredStateBranch(repoRoot, await git.defaultRemoteBranch(repoRoot))) || (await git.defaultRemoteBranch(repoRoot));
+
+  console.log(`moving the ledger: ${from} -> ${to}`);
+  const r = await migrateLedger(repoRoot, from, to, { push: args.push === true });
+  console.log(`  tickets before: ${r.ticketsBefore}`);
+  console.log(`  tickets after:  ${r.ticketsAfter}${r.missing.length ? ` (MISSING: ${r.missing.join(", ")})` : ""}`);
+  console.log(`  commit:         ${r.sha || "(nothing to commit)"}`);
+  console.log(`  pushed:         ${r.pushed ? `yes -> origin/${to}` : "no — run with --push, or use Push to remote"}`);
+  console.log(`  old branch:     ${from} left untouched; point stateBranch back at it to undo`);
+  console.log("Restart the board to pick up the new branch.");
+}
+
+async function cmdTicketRisk(argv) {
+  const id = argv[0];
+  const args = parseArgs(argv.slice(1));
+  const port = requirePort(args);
+  if (!id || !args.to) {
+    console.error("usage: peephole ticket risk <id> --to <reversible|irreversible> [--port 4173]");
+    process.exit(1);
+  }
+  const result = await apiCall(port, "POST", `/api/tickets/${encodeURIComponent(id)}/risk`, { risk: String(args.to), actor: args.actor });
+  console.log(`"${id}" risk -> ${result.ticket.risk}`);
+}
+
 async function cmdTicketAdvance(argv) {
   const id = argv[0];
   const args = parseArgs(argv.slice(1));
   const port = requirePort(args);
   if (!id || !args.state) {
-    console.error("usage: peephole ticket advance <id> --state <proposed|in-progress|built|verified|shipped|closed> [--port 4173]");
+    console.error("usage: peephole ticket advance <id> --state <proposed|in-progress|built|verified|shipped|closed> [--transcript <path>] [--port 4173]");
     process.exit(1);
   }
-  const result = await apiCall(port, "POST", `/api/tickets/${encodeURIComponent(id)}/state`, { state: args.state, actor: args.actor });
+  const result = await apiCall(port, "POST", `/api/tickets/${encodeURIComponent(id)}/state`, { state: args.state, actor: args.actor, sessionId: args.actor, transcriptPath: args.transcript || null });
   console.log(`"${id}" -> ${result.ticket.state}`);
 }
 
@@ -152,6 +256,11 @@ async function main() {
   if (cmd === "serve") return cmdServe(argv.slice(1));
   if (cmd === "ticket" && argv[1] === "new") return cmdTicketNew(argv.slice(2));
   if (cmd === "ticket" && argv[1] === "claim") return cmdTicketClaim(argv.slice(2));
+  if (cmd === "ticket" && argv[1] === "unclaim") return cmdTicketUnclaim(argv.slice(2));
+  if (cmd === "ticket" && argv[1] === "assign") return cmdTicketAssign(argv.slice(2));
+  if (cmd === "ticket" && argv[1] === "epic") return cmdTicketEpic(argv.slice(2));
+  if (cmd === "ticket" && argv[1] === "risk") return cmdTicketRisk(argv.slice(2));
+  if (cmd === "ledger" && argv[1] === "move") return cmdLedgerMove(argv.slice(2));
   if (cmd === "ticket" && argv[1] === "advance") return cmdTicketAdvance(argv.slice(2));
   if (cmd === "ticket" && argv[1] === "rename") return cmdTicketRename(argv.slice(2));
   if (cmd === "agent" && argv[1] === "heartbeat") return cmdAgentHeartbeat(argv.slice(2));
@@ -159,9 +268,14 @@ async function main() {
 
   console.error(
     "Usage:\n" +
-    "  peephole serve [--repo <path>] [--port 4173]\n" +
+    "  peephole serve [--repo <path>] [--port 4173] [--host 127.0.0.1] [--branch <state branch>]\n" +
     '  peephole ticket new --project <p> --intent "<text>" [--id <id>] [--acceptance "<text>"] [--risk reversible|irreversible] [--owner <sessionId>]\n' +
     "  peephole ticket claim <id> --owner <sessionId>\n" +
+    "  peephole ticket unclaim <id>  # return to proposed, in-progress only\n" +
+    '  peephole ticket assign <id> --to "<person>" | --clear  # reserve it; only that person can claim\n' +
+    '  peephole ticket epic <id> --to "<epic>" | --clear      # file it under an epic\n' +
+    "  peephole ticket risk <id> --to <reversible|irreversible>\n" +
+    '  peephole ledger move --repo <path> [--to peephole-state] [--push]  # carry the ledger to its own branch\n' +
     "  peephole ticket advance <id> --state <proposed|in-progress|built|verified|shipped|closed>\n" +
     "  peephole ticket rename <id> --to <new-id>\n" +
     "  peephole agent heartbeat --session <id> [--ticket <id>] [--status working|idle|paused|stopped]\n" +

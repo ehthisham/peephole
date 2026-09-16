@@ -7,10 +7,80 @@
     { key: "shipped", label: "Shipped" },
     { key: "closed", label: "Closed" },
   ];
-  var CONTROLS = ["run", "pause", "skip", "restart"];
+  var STATE_COLOR = {
+    "proposed": "var(--proposed)",
+    "in-progress": "var(--progress)",
+    "built": "var(--built)",
+    "verified": "var(--verified)",
+    "shipped": "var(--shipped)",
+    "closed": "var(--closed)",
+  };
+  var STATE_BG = {
+    "proposed": "var(--proposed-bg)",
+    "in-progress": "var(--progress-bg)",
+    "built": "var(--built-bg)",
+    "verified": "var(--verified-bg)",
+    "shipped": "var(--shipped-bg)",
+    "closed": "var(--closed-bg)",
+  };
+  // The board shows three lanes, not six. `built`, `verified` and `closed` stay real states in the
+  // schema (the CLI, writer.setState, history and the Insights breakdown all still use them) but
+  // they are PHASES WITHIN a lane rather than lanes of their own: in practice ~85% of tickets go
+  // proposed → shipped without ever stopping in built/verified, so as columns they were two
+  // permanently-empty lanes squeezing the ones that carry the traffic. Each renders as a phase
+  // badge on its card instead — same label, same palette entry, no column of its own.
+  var LANES = [
+    { key: "proposed", label: "Proposed", states: ["proposed"] },
+    { key: "in-progress", label: "In progress", states: ["in-progress", "built", "verified"] },
+    { key: "shipped", label: "Shipped", states: ["shipped", "closed"] },
+  ];
+  // The states that show as a badge because they are not their lane's headline state.
+  var PHASE_STATES = new Set(["built", "verified", "closed"]);
+
+  // No `restart`: it cleared `owner` in the same write that set the blocking value, so the deny
+  // could never reach the session it was aimed at, and it left a stale control that denied the
+  // NEXT claimer instead. Everything it could actually do is covered — pause stops, skip releases,
+  // and the back button returns a ticket to proposed for a fresh attempt. `schema.CONTROLS` still
+  // accepts "restart" so tickets already carrying it keep parsing.
+  //
+  // `run` is gone from the card too, and not because it did nothing: it set control back to the
+  // default, which is what un-pausing means. Pause and skip are toggles now — pressing a lit one
+  // clears it — so the row never needed a button whose icon promised to start something it had no
+  // way of starting.
+  var CONTROLS = ["pause", "skip"];
+  var CONTROL_ICON = { pause: "⏸", skip: "⏭" };
+
+  // Stroked SVGs for the two acts the old ▶ was conflating: marking a ticket for execution, and
+  // actually dispatching one. A checkmark reads as "picked", never as "running".
+  var SELECT_ICON =
+    '<svg class="mv-icon" viewBox="0 0 16 16" width="15" height="15" aria-hidden="true" focusable="false" ' +
+    'fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' +
+    '<path d="M3 8.6 6.3 12 13 4.6"/></svg>';
+  var EXECUTE_ICON =
+    '<svg class="mv-icon" viewBox="0 0 16 16" width="15" height="15" aria-hidden="true" focusable="false" ' +
+    'fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">' +
+    '<circle cx="8" cy="8" r="6.1"/><path d="M6.6 5.5 10.6 8l-4 2.5z" fill="currentColor" stroke="none"/></svg>';
+  // Stroked SVG rather than a text glyph: an arrow driven into a bar ("send to the next lane")
+  // has no Unicode equivalent that renders the same across fonts, and `currentColor` lets one
+  // markup string pick up whichever target-state tint the button carries.
+  function moveIcon(dir) {
+    var fwd = dir === "fwd";
+    var shaft = fwd ? "M2.5 8H10" : "M13.5 8H6";
+    var head = fwd ? "M7.2 4.8 10.4 8 7.2 11.2" : "M8.8 4.8 5.6 8 8.8 11.2";
+    var bar = fwd ? "M13.2 3.4V12.6" : "M2.8 3.4V12.6";
+    return (
+      '<svg class="mv-icon" viewBox="0 0 16 16" width="15" height="15" aria-hidden="true" focusable="false" ' +
+      'fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">' +
+      '<path d="' + shaft + '"/><path d="' + head + '"/><path d="' + bar + '" stroke-width="2"/></svg>'
+    );
+  }
+  var MOVE_ICON = { back: moveIcon("back"), fwd: moveIcon("fwd") };
+  // What Fix it can actually repair. The stale-* and gitignore kinds are repairable too, so they
+  // must be here or the button vanishes exactly when there is something to fix.
   var STRUCTURAL_ISSUES = new Set([
     "missing-config", "missing-tickets-dir", "missing-agents-dir",
     "missing-agent-note", "missing-readme-note", "missing-hook-setup",
+    "stale-agent-note", "stale-readme-note", "missing-gitignore",
   ]);
 
   var board = document.getElementById("board");
@@ -27,17 +97,26 @@
   var hookState = document.getElementById("hookState");
   var lastUpdated = document.getElementById("lastUpdated");
   var projectName = document.getElementById("projectName");
+  var projectBtn = document.getElementById("projectBtn");
+  var projectMenu = document.getElementById("projectMenu");
+  var addProjectBackdrop = document.getElementById("addProjectBackdrop");
+  var addProjectPath = document.getElementById("addProjectPath");
+  var addProjectError = document.getElementById("addProjectError");
+  var addProjectGo = document.getElementById("addProjectGo");
+  var addProjectCancel = document.getElementById("addProjectCancel");
+  var addProjectClose = document.getElementById("addProjectClose");
   var remoteLink = document.getElementById("remoteLink");
   var branchName = document.getElementById("branchName");
+  var checkoutBranchEl = document.getElementById("checkoutBranch");
   var statRow = document.getElementById("statRow");
   var langs = document.getElementById("langs");
   var tokenUsage = document.getElementById("tokenUsage");
   var coverageModulesEl = document.getElementById("coverageModules");
   var memberList = document.getElementById("memberList");
-  var insightsToggle = document.getElementById("insightsToggle");
-  var insightsBody = document.getElementById("insightsBody");
-  var agentsToggle = document.getElementById("agentsToggle");
-  var agentsBody = document.getElementById("agentsBody");
+  var tabButtons = Array.prototype.slice.call(document.querySelectorAll(".tab"));
+  var standardsContent = document.getElementById("standardsContent");
+  var stateChartEl = document.getElementById("stateChart");
+  var configContent = document.getElementById("configContent");
   var ticketModalBackdrop = document.getElementById("ticketModalBackdrop");
   var ticketModalTitle = document.getElementById("ticketModalTitle");
   var ticketModalClose = document.getElementById("ticketModalClose");
@@ -46,6 +125,19 @@
   var newTicketBackdrop = document.getElementById("newTicketBackdrop");
   var newTicketClose = document.getElementById("newTicketClose");
   var newTicketForm = document.getElementById("newTicketForm");
+  var groupToggle = document.getElementById("groupToggle");
+  var filterBtn = document.getElementById("filterBtn");
+  var filterMenu = document.getElementById("filterMenu");
+  var filterCount = document.getElementById("filterCount");
+  var otherProjects = document.getElementById("otherProjects");
+  var epicOptions = document.getElementById("epicOptions");
+  var execSelectedBtn = document.getElementById("execSelectedBtn");
+  var queueBar = document.getElementById("queueBar");
+  var execBackdrop = document.getElementById("execBackdrop");
+  var execTitle = document.getElementById("execTitle");
+  var execModes = document.getElementById("execModes");
+  var execGo = document.getElementById("execGo");
+  var execCancel = document.getElementById("execCancel");
 
   function esc(s) {
     return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) {
@@ -57,9 +149,13 @@
   // code spans are pulled out first so bold/link markers inside them are never touched.
   function mdInline(escapedLine) {
     var codeSpans = [];
+    // The placeholder is wrapped in U+0000, not spaces: a bare " 3 " also matches any ordinary
+    // number in the prose, so a body reading "a 403 response" had its "403" swapped for
+    // codeSpans[403] — i.e. the literal text "undefined". A NUL can never appear in a ticket
+    // file's text, so the round-trip is now unambiguous.
     var withoutCode = escapedLine.replace(/`([^`]+)`/g, function (_, code) {
       codeSpans.push(code);
-      return " " + (codeSpans.length - 1) + " ";
+      return "\u0000" + (codeSpans.length - 1) + "\u0000";
     });
     var withLinks = withoutCode.replace(/\[([^\]]+)\]\(([^)]+)\)/g, function (_, text, url) {
       // Only allow schemes that can't execute script (a ticket body's URL isn't necessarily
@@ -68,7 +164,7 @@
       return '<a href="' + safe + '" target="_blank" rel="noopener noreferrer">' + text + "</a>";
     });
     var withBold = withLinks.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
-    return withBold.replace(/ (\d+) /g, function (_, i) {
+    return withBold.replace(/\u0000(\d+)\u0000/g, function (_, i) {
       return "<code>" + codeSpans[Number(i)] + "</code>";
     });
   }
@@ -182,13 +278,94 @@
     return typeof n === "number" ? n.toLocaleString() : "—";
   }
 
+  function fmtDuration(ms) {
+    if (!(ms >= 0)) return "—";
+    var m = ms / 60000;
+    if (m < 60) return Math.max(1, Math.round(m)) + "m";
+    var h = m / 60;
+    if (h < 24) return Math.floor(h) + "h " + Math.round(m % 60) + "m";
+    var d = h / 24;
+    return Math.floor(d) + "d " + Math.round(h % 24) + "h";
+  }
+
+  /** Cost of one ticket, split into the two spans that mean different things:
+   *
+   *  - `waitMs`  — created until somebody claimed it (or until now, while nobody has). Backlog
+   *    latency: nothing is being spent, the ticket is just sitting there.
+   *  - `workMs`  — first claim until the ticket reached a terminal state (or until now, while
+   *    still open). The only span in which effort was actually going into it.
+   *
+   *  They used to be one number measured from creation, which made a ticket filed 8 minutes ago
+   *  and never touched report "8m in flight" as though someone were working it.
+   *
+   *  Tokens are likewise scoped to THIS ticket rather than the session's lifetime: a transcript
+   *  has no per-ticket boundaries, so writer.js stores a {tokensAtStart, tokensAtLatest} pair per
+   *  session touch and the marginal spend is the sum of the differences. Entries missing either
+   *  bound (a session that never reported tokens) are skipped, not read as zero cost. */
+  function ticketCost(t) {
+    var history = Array.isArray(t.history) ? t.history : [];
+    var createdAt = t.createdAt || (history.length ? history[0].at : null);
+    var claimEntry = history.find(function (h) { return h.to === "in-progress"; });
+    var claimedAt = claimEntry ? claimEntry.at : null;
+    var isTerminal = TERMINAL_STATES.has(t.state);
+    var endedAt = isTerminal && history.length ? history[history.length - 1].at : null;
+    var now = Date.now();
+
+    var waitMs = createdAt ? (claimedAt ? Date.parse(claimedAt) : now) - Date.parse(createdAt) : null;
+    var workMs = claimedAt ? (endedAt ? Date.parse(endedAt) : now) - Date.parse(claimedAt) : null;
+
+    var sessions = Array.isArray(t.sessions) ? t.sessions : [];
+    var scoped = sessions.filter(function (s) { return s.tokensAtStart != null && s.tokensAtLatest != null; });
+    var tokens = scoped.length
+      ? scoped.reduce(function (sum, s) { return sum + Math.max(0, s.tokensAtLatest - s.tokensAtStart); }, 0)
+      : null;
+    return {
+      createdAt: createdAt, waitMs: waitMs, workMs: workMs, tokens: tokens,
+      waiting: !claimedAt, working: Boolean(claimedAt) && !isTerminal,
+    };
+  }
+
+  /** How much of this project's work is finished, as a share of tickets that reached a terminal
+   *  state. Deliberately NOT weighted by a per-state guess (built = 60% done and so on): those
+   *  weights are invented, and a board that claims 71% because several tickets are "nearly built"
+   *  is reporting an opinion as a measurement. Shipped or closed, or not done.
+   *
+   *  Scoped to the project the board is showing, so it matches the lanes rather than the file
+   *  count. Null when there are no tickets at all — 0% of nothing is not progress. */
+  function ticketProgress(tickets) {
+    var mine = forThisProject(tickets || []);
+    if (!mine.length) return null;
+    var done = mine.filter(function (t) { return TERMINAL_STATES.has(t.state); }).length;
+    return { done: done, total: mine.length, pct: (done / mine.length) * 100 };
+  }
+
+  /** Absolute local timestamp to the minute — a board is read against a calendar ("filed Monday
+   *  afternoon"), which a relative age alone can't answer. */
+  function fmtDateTime(iso) {
+    if (!iso) return "—";
+    var d = new Date(iso);
+    if (isNaN(d)) return "—";
+    return d.toLocaleString(undefined, {
+      year: "numeric", month: "short", day: "2-digit", hour: "2-digit", minute: "2-digit",
+    });
+  }
+
   function renderInsights(stats, coverage, agents) {
     if (!stats) {
       statRow.innerHTML = '<p class="empty-note">Insights unavailable.</p>';
       langs.innerHTML = "";
       return;
     }
-    var tiles = [
+    var progress = ticketProgress(latestTickets);
+    var tiles = [];
+    if (progress) {
+      tiles.push({
+        value: progress.pct.toFixed(0) + "%",
+        label: "Progress",
+        sub: fmtNum(progress.done) + " of " + fmtNum(progress.total) + " shipped or closed",
+      });
+    }
+    tiles = tiles.concat([
       { value: fmtNum(stats.linesOfCodeApprox), label: "Lines of code", sub: "approx." },
       { value: fmtNum(stats.totalFiles), label: "Tracked files" },
       { value: fmtNum(stats.commits), label: "Commits" },
@@ -198,14 +375,14 @@
         label: "Last commit",
         sub: stats.lastCommit ? esc(stats.lastCommit.author) : "",
       },
-    ];
+    ]);
     // Grand total across every session, not just ones that matched a git-identity'd member —
     // the same source renderTokenUsage sums per-session, so the two numbers can never disagree.
     var totalTokens = (agents || []).reduce(function (sum, a) {
       return sum + ((a.tokens && a.tokens.totalTokens) || 0);
     }, 0);
     if (totalTokens > 0) {
-      tiles.push({ value: fmtNum(totalTokens), label: "Total tokens", sub: "all sessions" });
+      tiles.push({ value: fmtNum(totalTokens), label: "Total tokens", sub: "all sessions, excl. cached reads" });
     }
     // Only shown when a coverage artifact was actually found (coverage.out / coverage-summary.json)
     // — absent means no test run yet, not zero coverage, so the tile is omitted rather than
@@ -215,6 +392,16 @@
         value: coverage.pct.toFixed(1) + "%",
         label: "Coverage",
         sub: coverage.tool === "go" ? "go test" : "istanbul",
+      });
+    }
+    // Say which branch the code figures describe: they follow the reader's checkout, while the
+    // Progress tile beside them counts tickets from the shared ledger. Same row, two sources.
+    if (latestState && latestState.checkoutBranch) {
+      tiles = tiles.map(function (t) {
+        if (t.label === "Lines of code" || t.label === "Commits" || t.label === "Tracked files") {
+          return { ...t, sub: (t.sub ? t.sub + " · " : "") + latestState.checkoutBranch };
+        }
+        return t;
       });
     }
     statRow.innerHTML = tiles.map(function (t) {
@@ -246,6 +433,44 @@
       }).join("");
   }
 
+  /** Global progress at a glance — a donut of every ticket's current state, pure CSS
+   *  (conic-gradient), no chart library. The count in the middle is the total across every
+   *  state, not just the ones with a nonzero slice. */
+  function renderStateChart(tickets) {
+    if (!tickets || tickets.length === 0) {
+      stateChartEl.innerHTML = "";
+      return;
+    }
+    var counts = STATES.map(function (s) {
+      return { key: s.key, label: s.label, count: tickets.filter(function (t) { return t.state === s.key; }).length };
+    });
+    var total = tickets.length;
+    var stops = [];
+    var acc = 0;
+    counts.forEach(function (c) {
+      if (c.count === 0) return;
+      var start = (acc / total) * 100;
+      acc += c.count;
+      var end = (acc / total) * 100;
+      stops.push(STATE_COLOR[c.key] + " " + start.toFixed(2) + "% " + end.toFixed(2) + "%");
+    });
+    stateChartEl.innerHTML =
+      "<h3>Ticket progress</h3>" +
+      '<div class="state-chart-body">' +
+      '<div class="donut" style="background:conic-gradient(' + stops.join(", ") + ')">' +
+      '<div class="donut-hole"><span class="donut-total mono">' + fmtNum(total) + '</span><span class="donut-total-label">tickets</span></div>' +
+      "</div>" +
+      '<ul class="state-legend">' +
+      counts.map(function (c) {
+        var pct = total > 0 ? Math.round((c.count / total) * 100) : 0;
+        return (
+          "<li><span class=\"swatch\" style=\"background:" + STATE_COLOR[c.key] + '"></span>' +
+          esc(c.label) + '<span class="count">' + fmtNum(c.count) + '</span><span class="pct">' + pct + "%</span></li>"
+        );
+      }).join("") +
+      "</ul></div>";
+  }
+
   function coverageColor(pct) {
     if (pct < 40) return "var(--accent)";
     if (pct < 70) return "var(--proposed)";
@@ -255,12 +480,49 @@
   // Per-package breakdown ("how we developed tests" — module by module, worst-covered first),
   // not just one aggregate percentage. Absent entirely when no coverage.out/-summary.json was
   // found (no test run yet), same "omit, don't show a misleading 0%" rule as the tile above.
+  /** How Peephole is set up for this repo — its own config.yaml plus the live runtime bits
+   *  (hook wiring, auto-fetch, resolved git identity) that aren't in the file but matter just
+   *  as much for understanding "is this actually tracking me." */
+  function renderConfig(state) {
+    var cfg = state.config || {};
+    var gitUser = state.gitUser || {};
+    var rows = [
+      ["Project", esc(cfg.project || state.project || "—")],
+      ["Remote", state.remoteUrl ? '<span class="mono">' + esc(state.remoteUrl) + "</span>" : "—"],
+      ["State branch", state.stateBranch ? '<span class="mono">' + esc(state.stateBranch) + "</span>" : "—"],
+      ["Git identity", gitUser.name || gitUser.email ? esc(gitUser.name || "") + (gitUser.email ? " <" + esc(gitUser.email) + ">" : "") : "—"],
+      ["Hook", state.hookConfigured ? "connected — live" : "not configured"],
+      ["Autosync", state.autoFetch && state.autoFetch.enabled
+        ? "every " + esc(state.autoFetch.intervalMinutes) + " min" + (state.autoFetch.push ? ", fetch + push" : ", fetch only")
+        : "off"],
+      ["State branch", esc(state.stateBranch || "—") + ' <span class="dim">(' + esc(state.stateBranchSource || "?") + ")</span>"],
+      ["States", Array.isArray(cfg.states) ? cfg.states.map(esc).join(" → ") : "—"],
+      ["Control values", Array.isArray(cfg.control) ? cfg.control.map(esc).join(", ") : "—"],
+      ["Risk values", Array.isArray(cfg.risk) ? cfg.risk.map(esc).join(", ") : "—"],
+    ];
+    configContent.innerHTML = rows.map(function (r) {
+      return '<div class="modal-row"><span class="k">' + r[0] + '</span><span class="v">' + r[1] + "</span></div>";
+    }).join("");
+  }
+
   function renderCoverageModules(coverage) {
     if (!coverage || !Array.isArray(coverage.modules) || coverage.modules.length === 0) {
-      coverageModulesEl.innerHTML = "";
+      coverageModulesEl.innerHTML = '<p class="empty-note">No coverage run found yet.</p>';
       return;
     }
+    // The per-package list never added up to anything a reader could quote: packages have wildly
+    // different statement counts, so eyeballing 40 rows says nothing about the project. The
+    // headline is the statement-weighted total — the same figure `go tool cover` reports.
+    var head = typeof coverage.pct === "number"
+      ? '<div class="cov-head"><span class="cov-pct">' + coverage.pct.toFixed(1) + "%</span>" +
+        '<span class="cov-head-label">overall statement coverage<small>' +
+        esc(coverage.tool === "go" ? "go test" : "istanbul") + " · " + esc(coverage.file || "") +
+        (latestState && latestState.checkoutBranch ? " · " + esc(latestState.checkoutBranch) : "") +
+        "</small></span>" +
+        '<span class="cov-head-bar"><span style="width:' + Math.max(0, Math.min(100, coverage.pct)).toFixed(1) + '%"></span></span></div>'
+      : "";
     coverageModulesEl.innerHTML =
+      head +
       "<h3>Coverage by package (" + esc(coverage.tool === "go" ? "go test" : "istanbul") + ")</h3>" +
       '<div class="cov-list">' +
       coverage.modules.map(function (m) {
@@ -281,8 +543,36 @@
     return remote.replace(/\.git$/, "");
   }
 
+  // The project this TAB is looking at, kept per tab. The server holds one context per project, so
+  // two tabs can watch two repos at once; previously "switching" mutated a single server-side
+  // active project and silently repointed every other tab.
+  // sessionStorage, not localStorage: the selection is per TAB, and localStorage is shared across
+  // every tab on the origin — two boards would have gone on overwriting each other's choice, which
+  // is the very thing per-tab contexts exist to stop. localStorage keeps the last choice only as
+  // the default for a NEW tab.
+  var PROJECT_KEY = "peephole.project";
+  var currentProject = null;
+  try { currentProject = sessionStorage.getItem(PROJECT_KEY) || localStorage.getItem(PROJECT_KEY) || null; } catch (e) {}
+
+  function rememberProjectChoice(root) {
+    try {
+      if (root) {
+        sessionStorage.setItem(PROJECT_KEY, root);
+        localStorage.setItem(PROJECT_KEY, root);
+      } else {
+        sessionStorage.removeItem(PROJECT_KEY);
+        localStorage.removeItem(PROJECT_KEY);
+      }
+    } catch (e) {}
+  }
+
+  function withProject(path) {
+    if (!currentProject) return path;
+    return path + (path.indexOf("?") === -1 ? "?" : "&") + "project=" + encodeURIComponent(currentProject);
+  }
+
   async function apiPost(path, body) {
-    var res = await fetch(path, {
+    var res = await fetch(withProject(path), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body || {}),
@@ -304,45 +594,230 @@
     return STATES[idx + 1];
   }
 
+  // The only legal backward move in the whole model: unclaiming an in-progress ticket hands it
+  // back to `proposed` (writer.unclaimTicket). Everything past in-progress represents real work
+  // that already happened, so there is deliberately no "prev" for it — the back button still
+  // renders there, disabled, with the reason in its tooltip, rather than silently vanishing.
+  function prevStateOf(state) {
+    return state === "in-progress" ? STATES[0] : null;
+  }
+
+  // Owners come in two flavours: a human git name, or a raw agent session-id (UUID). Truncating
+  // a UUID to "915b1f55…" made every card touched by one session look identical, so a session
+  // owner instead gets a dot whose hue is derived from the id — two different sessions can never
+  // read as the same agent — plus its first block. Full value stays in the tooltip either way.
+  var SESSION_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-/i;
+
+  // sessionId -> git author name, harvested from the agents/*.json heartbeats (the SessionStart
+  // hook posts the machine's global git identity). Lets a ticket whose `owner` predates
+  // `ownerName` still show a human name, as long as that session is still in the heartbeat set.
+  var authorBySession = {};
+
+  /** The human behind a ticket: the name recorded on the ticket at claim time, else the live
+   *  heartbeat's author, else null — in which case the caller falls back to the raw session id. */
+  function ownerNameOf(t) {
+    if (t.ownerName) return t.ownerName;
+    if (!t.owner) return null;
+    // An `owner` that isn't a session id IS a name — tickets claimed by a human (or by a CLI call
+    // passing a person as --owner) carry one directly, and treating those as nameless made them
+    // invisible to a member filter that was matching on names.
+    if (!SESSION_ID_RE.test(t.owner)) return t.owner;
+    return authorBySession[t.owner] || null;
+  }
+
+  function hueOf(s) {
+    var h = 0;
+    for (var i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0;
+    return h % 360;
+  }
+
+  function ownerChip(t) {
+    var owner = t.owner;
+    var assignee = t.assignee;
+    // Unclaimed but assigned: show who it is waiting for, so nobody else's session takes it.
+    if (!owner) {
+      return assignee
+        ? '<span class="owner-chip assigned" title="assigned to ' + esc(assignee) + ' — only their session can claim it">' +
+          '<span class="owner-dot assigned" aria-hidden="true"></span>' +
+          '<span class="owner-name">' + esc(assignee) + "</span></span>"
+        : "";
+    }
+    var name = ownerNameOf(t);
+    // A person's name is what a board is read for; the session id is machine detail and lives in
+    // the detail modal. The dot's hue is still derived from the session id, so two people (or two
+    // sessions of one person) stay distinguishable at a glance even at chip size.
+    var hue = SESSION_ID_RE.test(owner) ? hueOf(owner) : null;
+    var label = name || (SESSION_ID_RE.test(owner) ? owner.slice(0, 6) : owner);
+    var title = name ? name + " — session " + owner : "agent session " + owner;
+    return '<span class="owner-chip' + (name ? "" : " agent") + '" title="' + esc(title) + '">' +
+      '<span class="owner-dot' + (hue == null ? " human" : "") + '" aria-hidden="true"' +
+      (hue == null ? "" : ' style="background:hsl(' + hue + ' 58% 45%)"') + "></span>" +
+      '<span class="owner-name">' + esc(label) + "</span></span>";
+  }
+
   function cardEl(t) {
     var card = document.createElement("article");
     card.className = "card";
     var risk = t.risk === "irreversible" ? '<span class="badge risk">⚠ irreversible</span>' : "";
     var blocked = t.blockedOn ? '<span class="badge blocked">⛓ ' + esc(t.blockedOn) + "</span>" : "";
-    var owner = t.owner ? '<span class="badge owner">' + esc(t.owner) + "</span>" : "";
+    // The owner used to ride in `.card-top` alongside the project tag, the risk badge and every
+    // ticket tag — four competing chips in one wrapping row. It now sits alone on the footer's
+    // left, opposite the state-move buttons, so it can never crowd the tag row again.
+    var owner = ownerChip(t);
+    // A card sitting in a state that is not its lane's headline state says so on its own face —
+    // "Built"/"Verified" inside the In progress lane, "Closed" inside Shipped — tinted with that
+    // state's palette entry, so the lane stays coarse while the card stays exact.
+    // The project name was the same on every card of a single-project board — pure noise. The
+    // epic is what actually varies and what a reader groups by, so it takes that slot; a ticket
+    // with no epic simply has one less chip.
+    var epicTag = t.epic ? '<span class="epic-tag" title="epic: ' + esc(t.epic) + '">' + esc(t.epic) + "</span>" : "";
+    // A control flag used to change nothing but a faint border tint on one 24px button, so setting
+    // it looked like nothing happened. It now says so on the card's face, like every other state.
+    var controlTag = t.control && t.control !== "run"
+      ? '<span class="badge control-' + esc(t.control) + '">' + (t.control === "pause" ? "⏸ paused" : "⏭ skipped") + "</span>"
+      : "";
+    var queueTag = runningId === t.id
+      ? '<span class="badge queued running">▶ running</span>'
+      : (queuedIds.indexOf(t.id) !== -1 ? '<span class="badge queued">queued</span>' : "");
+    var phaseState = PHASE_STATES.has(t.state) ? STATES.find(function (x) { return x.key === t.state; }) : null;
+    var phase = phaseState
+      ? '<span class="badge phase" style="color:' + STATE_COLOR[phaseState.key] + ";background:" + STATE_BG[phaseState.key] +
+        '">' + esc(phaseState.label) + "</span>"
+      : "";
     var tags = Array.isArray(t.tags) && t.tags.length
       ? t.tags.map(function (tg) { return '<span class="badge tag">' + esc(tg) + "</span>"; }).join("")
       : "";
     var isTerminal = TERMINAL_STATES.has(t.state);
+    // Pause/skip toggle: clicking a lit one writes `run` back, which is what un-pausing is.
     var controls = isTerminal ? "" : CONTROLS.map(function (c) {
+      var on = t.control === c;
       return (
-        '<button class="ctl ' + c + '" data-ctl="' + c + '" data-id="' + esc(t.id) + '" aria-pressed="' +
-        (t.control === c) + '" type="button">' + c + "</button>"
+        '<button class="ctl ' + c + '" data-ctl="' + (on ? "run" : c) + '" data-id="' + esc(t.id) + '" aria-pressed="' +
+        on + '" title="' + (on ? "resume (clear " + c + ")" : c) + '" aria-label="' + (on ? "resume" : c) + '" type="button">' +
+        CONTROL_ICON[c] + "</button>"
       );
     }).join("");
+    // Selecting is queue-building; executing dispatches. Both only make sense before the work has
+    // started, so neither appears once a ticket is past proposed.
+    var selectable = t.state === "proposed";
+    var queued = queuedIds.indexOf(t.id) !== -1;
+    var isRunning = runningId === t.id;
+    // A paused or skipped ticket is not a candidate for execution, so neither button is live on
+    // one — offering them and then refusing the write would be the same contradiction one layer up.
+    // The block itself is cleared with its own (lit) pause/skip button.
+    // NOT named `blocked` — that is already the blockedOn badge's markup a few lines up, and
+    // shadowing it rendered the literal string "true" on every skipped card.
+    var ctlBlocked = t.control && t.control !== "run";
+    var blockedWhy = ctlBlocked ? "This ticket is " + (t.control === "pause" ? "paused" : "skipped") + " — clear that first" : "";
+    var selectBtn = selectable
+      ? '<button class="ctl select" data-select="' + (t.selected ? "off" : "on") + '" data-id="' + esc(t.id) +
+        '" aria-pressed="' + Boolean(t.selected) + '"' + (ctlBlocked ? " disabled" : "") +
+        ' title="' + esc(ctlBlocked ? blockedWhy : (t.selected ? "Selected for execution — click to unselect" : "Select for execution")) +
+        '" aria-label="Select for execution" type="button">' + SELECT_ICON + "</button>"
+      : "";
+    var executeBtn = selectable
+      ? '<button class="ctl execute" data-execute="' + esc(t.id) + '" type="button"' +
+        (queued || isRunning || ctlBlocked ? " disabled" : "") +
+        ' title="' + esc(ctlBlocked ? blockedWhy : (isRunning ? "Running now" : queued ? "Queued for execution" : "Execute now — hand this ticket to a session")) +
+        '" aria-label="Execute this ticket">' + EXECUTE_ICON + "</button>"
+      : "";
     var next = nextStateOf(t.state);
+    var prev = prevStateOf(t.state);
+    // Icon-only, because a 200px lane has no room for two labelled buttons and the lane the card
+    // lands in already says which state it reached. The glyph is an arrow driven INTO a bar —
+    // "push this card to the next lane" — deliberately not the ▶ of the run control right below
+    // it. Meaning that can't fit on the button lives in title/aria-label; the tint still comes
+    // from the TARGET state's palette entry, so the color alone says where a click sends it.
+    // --mv-fg/--mv-bg are custom properties (not the properties themselves) so the stylesheet's
+    // :hover rule can invert them; setting background/color inline would out-specificity :hover.
     var advance = next
-      ? '<button class="advance-btn" data-id="' + esc(t.id) + '" data-state="' + next.key + '" type="button">' +
-        esc(next.label) + " →</button>"
+      ? '<button class="move-btn fwd" data-id="' + esc(t.id) + '" data-state="' + next.key +
+        '" style="--mv-fg:' + STATE_COLOR[next.key] + ";--mv-bg:" + STATE_BG[next.key] +
+        '" title="Move forward to ' + esc(next.label) + '" aria-label="Move forward to ' + esc(next.label) + '" type="button">' +
+        MOVE_ICON.fwd + "</button>"
+      : "";
+    // Ownership is a coordination lock, not a hard one — an agent can hang, crash, or misjudge,
+    // so a human always needs a way to hand a claimed ticket back. This is the one bounded
+    // exception to forward-only state (writer.unclaimTicket): reachable only from in-progress,
+    // never from built/verified/shipped, so it can undo a claim but never rewind real work.
+    // On every other non-terminal state the button still renders, disabled, so the pair reads as
+    // one back/forward control and the absence of a back move is explained instead of invisible.
+    var unclaim = prev
+      ? '<button class="move-btn back" data-id="' + esc(t.id) +
+        '" style="--mv-fg:' + STATE_COLOR[prev.key] + ";--mv-bg:" + STATE_BG[prev.key] +
+        '" title="Move back to ' + esc(prev.label) + ' (unclaim)" aria-label="Move back to ' + esc(prev.label) + ' (unclaim)" type="button">' +
+        MOVE_ICON.back + "</button>"
+      : (isTerminal ? "" :
+        '<button class="move-btn back" disabled title="No way back from ' + esc(t.state) +
+        ' — state only moves forward once work has been built" aria-label="No move back from ' + esc(t.state) + '" type="button">' +
+        MOVE_ICON.back + "</button>");
+    var moves = advance || unclaim ? '<div class="move-group">' + unclaim + advance + "</div>" : "";
+    var ctlGroup = selectBtn || executeBtn || controls
+      ? '<div class="controls">' + selectBtn + executeBtn + controls + "</div>"
+      : "";
+    // One footer row, read left to right as "what the agent is doing" -> "who" -> "where it goes
+    // next": run/pause/skip on the left, owner in the middle (the part that truncates when a lane
+    // is narrow), the state moves on the right. They were two stacked rows, which cost every card
+    // a line of height and split two control groups that are read together.
+    var foot = ctlGroup || owner || moves
+      ? '<div class="card-foot">' + ctlGroup + owner + moves + "</div>"
       : "";
     card.innerHTML =
-      '<div class="card-top"><span class="project-tag">' + esc(t.project || "—") + "</span>" + tags + risk + owner + "</div>" +
+      '<div class="card-top">' + epicTag + queueTag + controlTag + phase + tags + risk + "</div>" +
       '<p class="intent">' + esc(t.intent) + "</p>" +
       (blocked ? "<div>" + blocked + "</div>" : "") +
-      '<div class="card-foot"><span class="id mono">#' + esc(t.id) + "</span>" + advance + "</div>" +
-      (isTerminal ? "" : '<div class="controls">' + controls + "</div>");
-    Array.prototype.forEach.call(card.querySelectorAll(".ctl"), function (btn) {
+      foot;
+    // Scoped to [data-ctl]: the select and execute buttons share the .ctl look but are not control
+    // writes, and an unscoped selector posted `control: undefined` for them — which serialized a
+    // ticket with no `control` field at all and made the file fail validation.
+    Array.prototype.forEach.call(card.querySelectorAll(".ctl[data-ctl]"), function (btn) {
       btn.addEventListener("click", async function (ev) {
         ev.stopPropagation(); // a control click must not also open the detail modal
-        Array.prototype.forEach.call(card.querySelectorAll(".ctl"), function (b) { b.disabled = true; });
+        var control = btn.dataset.ctl;
+        var note = null;
+        if (control !== "run") {
+          // Pausing or skipping is a decision someone else has to understand later; clearing one
+          // back to `run` needs no defence, so only the setting direction asks.
+          note = window.prompt("Why " + control + " this ticket? (saved as a comment — optional)", "");
+          if (note === null) return; // dismissed: do not write the control either
+        }
+        Array.prototype.forEach.call(card.querySelectorAll(".ctl[data-ctl]"), function (b) { b.disabled = true; });
         try {
-          await apiPost("/api/tickets/" + encodeURIComponent(btn.dataset.id) + "/control", { control: btn.dataset.ctl });
+          await apiPost("/api/tickets/" + encodeURIComponent(btn.dataset.id) + "/control", { control: control, note: note });
         } finally {
-          Array.prototype.forEach.call(card.querySelectorAll(".ctl"), function (b) { b.disabled = false; });
+          Array.prototype.forEach.call(card.querySelectorAll(".ctl[data-ctl]"), function (b) { b.disabled = false; });
         }
       });
     });
-    var advanceBtn = card.querySelector(".advance-btn");
+    var selBtn = card.querySelector(".ctl.select:not([disabled])");
+    if (selBtn) {
+      selBtn.addEventListener("click", async function (ev) {
+        ev.stopPropagation();
+        selBtn.disabled = true;
+        try {
+          await apiPost("/api/tickets/" + encodeURIComponent(selBtn.dataset.id) + "/selected", {
+            selected: selBtn.dataset.select === "on", actor: "peephole-ui",
+          });
+        } finally {
+          selBtn.disabled = false;
+        }
+      });
+    }
+    var execBtn = card.querySelector(".ctl.execute:not([disabled])");
+    if (execBtn) {
+      execBtn.addEventListener("click", async function (ev) {
+        ev.stopPropagation();
+        var mode = await askPermissionMode([execBtn.dataset.execute]);
+        if (!mode) return;
+        execBtn.disabled = true;
+        try {
+          await apiPost("/api/tickets/" + encodeURIComponent(execBtn.dataset.execute) + "/execute", { permissionMode: mode });
+        } finally {
+          execBtn.disabled = false;
+        }
+      });
+    }
+    var advanceBtn = card.querySelector(".move-btn.fwd");
     if (advanceBtn) {
       advanceBtn.addEventListener("click", async function (ev) {
         ev.stopPropagation(); // never also open the detail modal
@@ -356,43 +831,216 @@
         }
       });
     }
+    var unclaimBtn = card.querySelector(".move-btn.back:not([disabled])");
+    if (unclaimBtn) {
+      unclaimBtn.addEventListener("click", async function (ev) {
+        ev.stopPropagation();
+        unclaimBtn.disabled = true;
+        try {
+          await apiPost("/api/tickets/" + encodeURIComponent(unclaimBtn.dataset.id) + "/unclaim", { actor: "peephole-ui" });
+        } finally {
+          unclaimBtn.disabled = false;
+        }
+      });
+    }
     card.addEventListener("click", function () { openTicketModal(t); });
     return card;
+  }
+
+  /** Everyone a ticket can be reserved for: the repo's commit authors (the Members panel's own
+   *  mailmap-resolved list), plus whoever is already assigned or currently checked in — so a
+   *  teammate who has a live session but no commits here yet is still assignable. */
+  function knownPeople(t) {
+    var names = ((latestState && latestState.stats && latestState.stats.contributorList) || [])
+      .map(function (c) { return c.name; });
+    Object.keys(authorBySession).forEach(function (sid) { names.push(authorBySession[sid]); });
+    if (t && t.assignee) names.push(t.assignee);
+    return names.filter(function (n, i) { return n && names.indexOf(n) === i; }).sort();
+  }
+
+  /** Every epic any ticket currently carries — the epic list is derived, never declared, so an
+   *  epic exists exactly as long as something is filed under it. */
+  function knownEpics() {
+    var seen = (latestTickets || []).map(function (t) { return t.epic; }).filter(Boolean);
+    return seen.filter(function (e, i) { return seen.indexOf(e) === i; }).sort();
+  }
+
+  /** Assignment is a claim-time gate, not a label (writer.claimTicket refuses a mismatched
+   *  claimant), so it is edited here in the detail view rather than on the card — reserving work
+   *  for a person is a deliberate act, unlike the one-click state moves. */
+  function assignControl(t) {
+    var people = knownPeople(t);
+    return (
+      '<select class="assign-select" data-id="' + esc(t.id) + '" aria-label="Assign this ticket">' +
+      '<option value=""' + (t.assignee ? "" : " selected") + ">Unassigned</option>" +
+      people.map(function (n) {
+        return '<option value="' + esc(n) + '"' + (t.assignee === n ? " selected" : "") + ">" + esc(n) + "</option>";
+      }).join("") +
+      "</select>"
+    );
+  }
+
+  /** Risk is editable here because it is usually learned after the ticket is written — you find out
+   *  the migration is one-way while planning it. Every change is recorded in history. */
+  function riskControl(t) {
+    return (
+      '<select class="risk-select" data-id="' + esc(t.id) + '" aria-label="Risk for this ticket">' +
+      ["reversible", "irreversible"].map(function (r) {
+        return '<option value="' + r + '"' + (t.risk === r ? " selected" : "") + ">" +
+          (r === "irreversible" ? "⚠ irreversible" : "reversible") + "</option>";
+      }).join("") +
+      "</select>"
+    );
+  }
+
+  /** Free text with the existing epics offered as suggestions: a new epic is created by typing
+   *  one, which is the whole ceremony — see writer.setEpic on why epics aren't records. */
+  function epicControl(t) {
+    return (
+      '<input class="epic-input" list="epicOptions" data-id="' + esc(t.id) + '" value="' + esc(t.epic || "") +
+      '" placeholder="none" aria-label="Epic for this ticket">'
+    );
   }
 
   /** Detail popup for one ticket — everything the compact card leaves out, including the
    *  branch it was (or is being) built on, if the ticket ever recorded one. */
   function openTicketModal(t) {
     ticketModalTitle.textContent = "#" + t.id;
+    var cost = ticketCost(t);
     var rows = [
       ["State", esc(t.state || "—")],
-      ["Risk", esc(t.risk || "—")],
+      ["Risk", riskControl(t)],
       ["Tags", Array.isArray(t.tags) && t.tags.length ? t.tags.map(esc).join(", ") : "—"],
-      ["Owner", t.owner ? esc(t.owner) : "—"],
+      // Owner is the human; the session id that did the work is machine detail — useful for
+      // matching against the Agents tab and the transcript, so it keeps a row of its own here
+      // instead of taking the card's only chip.
+      ["Owner", t.owner ? esc(ownerNameOf(t) || "unknown") : "—"],
+      ["Assignee", assignControl(t)],
+      ["Epic", epicControl(t)],
+      ["Session", t.owner ? '<span class="mono">' + esc(t.owner) + "</span>" : "—"],
       ["Created by", t.createdBy ? esc(t.createdBy) : "—"],
       ["Branch", t.branch ? '<span class="mono">' + esc(t.branch) + "</span>" : "—"],
       ["PR", t.pr ? esc(t.pr) : "—"],
       ["Estimate", t.estimate ? esc(t.estimate) : "—"],
       ["Blocked on", t.blockedOn ? esc(t.blockedOn) : "—"],
+      ["Created", cost.createdAt ? esc(fmtDateTime(cost.createdAt)) + ' <span class="dim">(' + relTime(cost.createdAt) + ")</span>" : "—"],
+      ["Waiting", cost.waitMs != null ? fmtDuration(cost.waitMs) + (cost.waiting ? " (unclaimed)" : " before claim") : "—"],
+      ["Work duration", cost.workMs != null ? fmtDuration(cost.workMs) + (cost.working ? " (open)" : "") : "—"],
+      ["Tokens spent", cost.tokens != null ? fmtNum(cost.tokens) : "—"],
     ];
     var rowsHtml = rows.map(function (r) {
       return '<div class="modal-row"><span class="k">' + r[0] + '</span><span class="v">' + r[1] + "</span></div>";
     }).join("");
-    var history = Array.isArray(t.history) ? t.history.slice().reverse() : [];
-    var historyHtml = history.length
-      ? '<ul class="modal-history">' + history.map(function (h) {
+    // History and comments are one story told in two arrays — a state change and the sentence
+    // explaining it are minutes apart and belong on the same timeline, newest first.
+    var events = [];
+    (Array.isArray(t.history) ? t.history : []).forEach(function (h) {
+      events.push({ at: h.at, kind: "event", by: h.by, from: h.from, to: h.to });
+    });
+    (Array.isArray(t.comments) ? t.comments : []).forEach(function (c) {
+      events.push({ at: c.at, kind: "comment", by: c.by, text: c.text, control: c.control });
+    });
+    events.sort(function (a, b) { return Date.parse(b.at || 0) - Date.parse(a.at || 0); });
+    var historyHtml = events.length
+      ? '<ul class="modal-history">' + events.map(function (e) {
+          if (e.kind === "comment") {
+            return (
+              '<li class="ev-comment"><span class="ev-when">' + relTime(e.at) + "</span>" +
+              '<span class="ev-body">' + (e.control ? '<b>' + esc(e.control) + "</b> — " : "") +
+              esc(e.text) + '</span><span class="by">' + esc(e.by || "") + "</span></li>"
+            );
+          }
           return (
-            "<li>" + relTime(h.at) + " — " + esc(h.from || "—") + " → " + esc(h.to || "—") +
-            ' <span class="by">' + esc(h.by || "") + "</span></li>"
+            '<li><span class="ev-when">' + relTime(e.at) + '</span><span class="ev-body">' +
+            esc(e.from || "—") + " → " + esc(e.to || "—") +
+            '</span><span class="by">' + esc(e.by || "") + "</span></li>"
           );
         }).join("") + "</ul>"
-      : '<p class="empty-note">No history yet.</p>';
+      : '<p class="empty-note">Nothing logged yet.</p>';
     ticketModalBody.innerHTML =
       rowsHtml +
       "<h3>Intent</h3><p>" + esc(t.intent || "—") + "</p>" +
       (t.acceptance ? "<h3>Acceptance</h3>" + renderMarkdown(t.acceptance) : "") +
       (t.body ? "<h3>Notes</h3>" + renderMarkdown(t.body) : "") +
-      "<h3>History</h3>" + historyHtml;
+      '<h3>Comments</h3>' +
+      '<div class="comment-add"><textarea id="commentText" rows="2" placeholder="Add a comment — why this is blocked, skipped, or what you decided"></textarea>' +
+      '<button class="ghost" id="commentAdd" type="button" data-id="' + esc(t.id) + '">Comment</button></div>' +
+      "<h3>Activity</h3>" + historyHtml;
+    var riskSelect = ticketModalBody.querySelector(".risk-select");
+    if (riskSelect) {
+      riskSelect.addEventListener("change", async function () {
+        riskSelect.disabled = true;
+        try {
+          var res = await apiPost("/api/tickets/" + encodeURIComponent(riskSelect.dataset.id) + "/risk", {
+            risk: riskSelect.value,
+          });
+          if (res && res.error) { window.alert(res.error); riskSelect.value = t.risk || "reversible"; }
+          else t.risk = riskSelect.value;
+        } finally {
+          riskSelect.disabled = false;
+        }
+      });
+    }
+    var commentBtn = ticketModalBody.querySelector("#commentAdd");
+    var commentText = ticketModalBody.querySelector("#commentText");
+    if (commentBtn && commentText) {
+      commentBtn.addEventListener("click", async function () {
+        var text = commentText.value.trim();
+        if (!text) return;
+        commentBtn.disabled = true;
+        try {
+          var res = await apiPost("/api/tickets/" + encodeURIComponent(commentBtn.dataset.id) + "/comments", { text: text });
+          if (res && res.error) { window.alert(res.error); return; }
+          // Re-open against the stored ticket so the new comment shows without a round trip.
+          var fresh = (latestTickets || []).find(function (x) { return x.id === t.id; });
+          openTicketModal(fresh && fresh.comments ? fresh : (res.ticket || t));
+        } finally {
+          commentBtn.disabled = false;
+        }
+      });
+    }
+    var epicInput = ticketModalBody.querySelector(".epic-input");
+    if (epicInput) {
+      // On change (blur/Enter), not on every keystroke — each write is a commit.
+      epicInput.addEventListener("change", async function () {
+        var value = epicInput.value.trim();
+        epicInput.disabled = true;
+        try {
+          var res = await apiPost("/api/tickets/" + encodeURIComponent(epicInput.dataset.id) + "/epic", {
+            epic: value || null, actor: "peephole-ui",
+          });
+          if (res && res.error) {
+            window.alert(res.error);
+            epicInput.value = t.epic || "";
+          } else {
+            t.epic = value || null;
+          }
+        } finally {
+          epicInput.disabled = false;
+        }
+      });
+    }
+    var assignSelect = ticketModalBody.querySelector(".assign-select");
+    if (assignSelect) {
+      assignSelect.addEventListener("change", async function () {
+        assignSelect.disabled = true;
+        try {
+          var result = await apiPost("/api/tickets/" + encodeURIComponent(assignSelect.dataset.id) + "/assign", {
+            assignee: assignSelect.value || null, actor: "peephole-ui",
+          });
+          // The server refuses to reassign a ticket somebody is actively working; surface that
+          // instead of leaving the select showing a change that never landed.
+          if (result && result.error) {
+            window.alert(result.error);
+            assignSelect.value = t.assignee || "";
+          } else {
+            t.assignee = assignSelect.value || null;
+          }
+        } finally {
+          assignSelect.disabled = false;
+        }
+      });
+    }
     ticketModalBackdrop.hidden = false;
   }
   function closeTicketModal() {
@@ -445,6 +1093,7 @@
         intent: newTicketForm.intent.value.trim(),
         acceptance: newTicketForm.acceptance.value.trim(),
         risk: newTicketForm.risk.value,
+        epic: newTicketForm.epic.value.trim() || null,
         createdBy: createdBy || null,
       });
       if (res && res.error) {
@@ -458,21 +1107,135 @@
     }
   });
 
+  // One shared sort direction across every lane (not per-lane — a ticket's rank should mean the
+  // same thing wherever it's looked at). "desc" (default) = latest-modified-first, the useful
+  // default since it surfaces whatever just changed; "asc" = oldest-modified-first.
+  var LANE_SORT_KEY = "peephole.laneSortDir";
+  function getLaneSortDir() {
+    try { return localStorage.getItem(LANE_SORT_KEY) === "asc" ? "asc" : "desc"; } catch (e) { return "desc"; }
+  }
+  function sortByModified(list, dir) {
+    return list.slice().sort(function (a, b) {
+      var diff = Date.parse(b.updatedAt || 0) - Date.parse(a.updatedAt || 0);
+      return dir === "asc" ? -diff : diff;
+    });
+  }
+
+  // Grouping is a view preference, not ticket data — same treatment as the sort direction.
+  var EPIC_GROUP_KEY = "peephole.groupByEpic";
+  function getGroupByEpic() {
+    try { return localStorage.getItem(EPIC_GROUP_KEY) === "1"; } catch (e) { return false; }
+  }
+  var NO_EPIC = "\u0000none"; // sorts nowhere near a real epic name, can't collide with one
+
+  /** One board = one project. A repo's `.peephole/tickets` can hold tickets filed against other
+   *  projects (Peephole's own tickets living in the repo it watches, say); showing them turned
+   *  the project tag into a permanent chip on every card and mixed two backlogs in one board. */
+  function forThisProject(tickets) {
+    var project = latestState && latestState.project;
+    if (!project) return tickets;
+    return tickets.filter(function (t) { return !t.project || t.project === project; });
+  }
+
+  // Selected member names, persisted like the other view preferences. Empty = no filter at all,
+  // which is a different thing from "nobody selected" — an empty set must never blank the board.
+  var MEMBER_FILTER_KEY = "peephole.memberFilter";
+  // NOT a NUL-prefixed sentinel like NO_EPIC: this one is written into a checkbox's value
+  // attribute, and the HTML parser rewrites a literal NUL to U+FFFD — the value read back never
+  // equalled the constant, so selecting "Unassigned" silently matched nothing.
+  var UNASSIGNED = "__peephole:unassigned__";
+  function getMemberFilter() {
+    try {
+      var raw = JSON.parse(localStorage.getItem(MEMBER_FILTER_KEY) || "[]");
+      return Array.isArray(raw) ? raw : [];
+    } catch (e) { return []; }
+  }
+  function setMemberFilter(list) {
+    try { localStorage.setItem(MEMBER_FILTER_KEY, JSON.stringify(list)); } catch (e) {}
+  }
+
+  /** A ticket belongs to whoever is working it (owner) OR whoever it is reserved for (assignee) —
+   *  both, because a filter on "my work" has to surface the queue waiting for me as well as what
+   *  I already hold. A ticket with neither matches only the explicit "Unassigned" choice. */
+  // "all" | "selected" | "unselected" — a lane full of ticked and unticked cards is hard to scan
+  // when you are building a batch, so the board can narrow to one or the other.
+  var SELECTION_FILTER_KEY = "peephole.selectionFilter";
+  function getSelectionFilter() {
+    try { return localStorage.getItem(SELECTION_FILTER_KEY) || "all"; } catch (e) { return "all"; }
+  }
+  function matchesSelection(t, mode) {
+    if (mode === "selected") return Boolean(t.selected);
+    if (mode === "unselected") return !t.selected;
+    return true;
+  }
+
+  function matchesMembers(t, selected) {
+    if (!selected.length) return true;
+    var owner = ownerNameOf(t);
+    if (owner && selected.indexOf(owner) !== -1) return true;
+    if (t.assignee && selected.indexOf(t.assignee) !== -1) return true;
+    if (!owner && !t.assignee && selected.indexOf(UNASSIGNED) !== -1) return true;
+    return false;
+  }
+
+  // Mirrored from the server's queue so a card can show "queued"/"running" without asking.
+  var queuedIds = [];
+  var runningId = null;
+
+  var latestTickets = [];
   function renderBoard(tickets) {
+    latestTickets = tickets;
+    var dir = getLaneSortDir();
+    var grouped = getGroupByEpic();
+    var selected = getMemberFilter();
+    var selMode = getSelectionFilter();
+    var visible = forThisProject(tickets).filter(function (t) {
+      return matchesMembers(t, selected) && matchesSelection(t, selMode);
+    });
     board.innerHTML = "";
-    STATES.forEach(function (s) {
-      var inLane = tickets.filter(function (t) { return t.state === s.key; });
+    LANES.forEach(function (s) {
+      var inLane = sortByModified(visible.filter(function (t) { return s.states.indexOf(t.state) !== -1; }), dir);
       var lane = document.createElement("section");
       lane.className = "lane";
       lane.innerHTML =
-        "<header><h2>" + s.label + '</h2><span class="count mono">' + inLane.length + "</span></header>" +
+        "<header><h2>" + s.label + '</h2><span class="count mono">' + inLane.length + '</span>' +
+        '<button class="sort-btn" data-lane-sort type="button" title="Sort: ' +
+        (dir === "desc" ? "latest modified first" : "oldest modified first") + '" aria-pressed="' + (dir === "asc") + '">' +
+        (dir === "desc" ? "↓" : "↑") + "</button></header>" +
         '<div class="lane-body"></div>';
       var body = lane.querySelector(".lane-body");
       if (inLane.length === 0) {
         body.innerHTML = '<div class="lane-empty">No tickets</div>';
+      } else if (grouped) {
+        // Epics keep their order across lanes (alphabetical, un-filed last) so one epic's work
+        // reads as a row across the board rather than shuffling per column.
+        var byEpic = {};
+        inLane.forEach(function (t) {
+          var key = t.epic || NO_EPIC;
+          (byEpic[key] = byEpic[key] || []).push(t);
+        });
+        // Alphabetical, but the un-filed pile always sinks to the bottom of the lane: it is the
+        // residue, not a group anyone is tracking. (NO_EPIC's NUL prefix would otherwise sort it
+        // first, above every real epic.)
+        var keys = Object.keys(byEpic).sort().filter(function (k) { return k !== NO_EPIC; });
+        if (byEpic[NO_EPIC]) keys.push(NO_EPIC);
+        keys.forEach(function (key) {
+          var group = document.createElement("div");
+          group.className = "lane-group";
+          group.innerHTML = '<h3 class="group-head">' +
+            (key === NO_EPIC ? '<span class="dim">No epic</span>' : esc(key)) +
+            '<span class="count mono">' + byEpic[key].length + "</span></h3>";
+          byEpic[key].forEach(function (t) { group.appendChild(cardEl(t)); });
+          body.appendChild(group);
+        });
       } else {
         inLane.forEach(function (t) { body.appendChild(cardEl(t)); });
       }
+      lane.querySelector("[data-lane-sort]").addEventListener("click", function () {
+        var next = getLaneSortDir() === "desc" ? "asc" : "desc";
+        try { localStorage.setItem(LANE_SORT_KEY, next); } catch (e) {}
+        renderBoard(latestTickets);
+      });
       board.appendChild(lane);
     });
   }
@@ -490,7 +1253,14 @@
         '<span class="status ' + status + '">' + status + "</span>" +
         (a.activeTicket ? '<div class="ticket mono">#' + esc(a.activeTicket) + "</div>" : "") +
         '<div class="since">last seen ' + relTime(a.lastSeenAt) + "</div>" +
-        (a.tokens ? '<div class="tokens mono">' + fmtNum(a.tokens.totalTokens) + " tokens</div>" : "") +
+        (a.tokens
+          ? '<div class="tokens mono">' + fmtNum(a.tokens.totalTokens) + " tokens" +
+            // Cache reads are excluded from the headline (re-sent context, billed at a fraction),
+            // but at this scale they are 100x the counted total — hiding them entirely made the
+            // number read as "this session's usage", which it is not.
+            (a.tokens.cacheReadTokens ? ' <span class="dim">+ ' + fmtNum(a.tokens.cacheReadTokens) + " cached reads</span>" : "") +
+            "</div>"
+          : "") +
         "</div>"
       );
     }).join("");
@@ -552,21 +1322,72 @@
 
   function render(state) {
     latestState = state;
+    var q = state.queue || { pending: [], running: null };
+    queuedIds = (q.pending || []).map(function (p) { return p.ticketId; });
+    runningId = q.running ? q.running.ticketId : null;
+    renderQueueBar(q);
+    authorBySession = {};
+    (state.agents || []).forEach(function (a) {
+      if (a.sessionId && a.author && a.author.name) authorBySession[a.sessionId] = a.author.name;
+    });
     projectName.textContent = state.project || "—";
+    projectBtn.title = "Switch project — " + (state.repoRoot || "");
     remoteLink.textContent = state.remoteUrl || "";
     remoteLink.href = toHttpUrl(state.remoteUrl);
+    // Where the ledger lives, and on whose authority. A board reading a branch nobody declared is
+    // one `git remote show` away from reading a different one — worth saying out loud.
     branchName.textContent = state.stateBranch ? "branch: " + state.stateBranch : "";
+    branchName.title = state.stateBranchSource
+      ? "ticket ledger branch — resolved from " + state.stateBranchSource
+      : "";
+    branchName.className = "branch mono" + (state.stateBranchSource === "remote default" ? " branch-unpinned" : "");
+    // Two refs feed this page and they are not the same one. Tickets come from the ledger branch,
+    // which everyone shares; coverage is read from THIS machine's working tree, so it reflects
+    // whatever branch the person running the board has checked out. Saying only the first made the
+    // second look like a property of the project rather than of one developer's checkout.
+    if (state.checkoutBranch) {
+      checkoutBranchEl.className = "branch mono checkout-branch";
+      checkoutBranchEl.innerHTML = "checkout: <b>" + esc(state.checkoutBranch) + "</b>";
+      checkoutBranchEl.title = "The checkout Peephole is watching (" + (state.repoRoot || "") +
+        ") — coverage and hook setup are read from it, tickets are not";
+    } else {
+      checkoutBranchEl.textContent = "";
+      checkoutBranchEl.title = "";
+    }
     lastUpdated.textContent = "Updated " + relTime(state.lastFetchedAt);
 
+    // Three states, not two. `hookConfigured` means "a session checked in recently" — liveness —
+    // while `hooksInstalled` means the hooks are actually wired into this machine's
+    // .claude/settings.local.json. Collapsing them told a correctly-configured repo with nothing
+    // running that it was "not configured", and sent people to re-run a setup that was already done.
+    var sync = state.autoFetch && state.autoFetch.enabled
+      ? " · autosync every " + state.autoFetch.intervalMinutes + " min"
+      : "";
     if (state.hookConfigured) {
-      hookState.innerHTML = "Hook: <b>connected — live</b>";
-    } else if (state.autoFetch && state.autoFetch.enabled) {
-      hookState.innerHTML = "Hook: not configured — auto-fetching every <b>" + state.autoFetch.intervalMinutes + " min</b>";
+      hookState.innerHTML = "Hooks: <b>live</b> — a session is checking in" + esc(sync);
+    } else if (state.hooksInstalled) {
+      hookState.innerHTML = "Hooks: <b>wired</b> — no session running right now" + esc(sync);
     } else {
-      hookState.textContent = "Hook: not configured — click Pull to refresh";
+      hookState.innerHTML = "Hooks: <b>not configured</b> — run Fix it to wire them" + esc(sync);
     }
     autoFetchToggle.setAttribute("aria-pressed", String(Boolean(state.autoFetch && state.autoFetch.enabled)));
     if (state.autoFetch) intervalInput.value = state.autoFetch.intervalMinutes;
+
+    groupToggle.setAttribute("aria-pressed", String(getGroupByEpic()));
+    // latestTickets is what the selected-count and the filter menu read; renderBoard sets it too,
+    // but it runs later in this function — without this the toolbar was always one refresh behind.
+    latestTickets = state.tickets || [];
+    renderFilterState();
+    renderExecSelected();
+    // Filtering to one project is silent otherwise — a ticket filed against another project would
+    // simply never appear, with no way to tell that from "never created".
+    var all = state.tickets || [];
+    var hidden = all.length - forThisProject(all).length;
+    otherProjects.hidden = hidden === 0;
+    otherProjects.textContent = hidden
+      ? hidden + (hidden === 1 ? " ticket" : " tickets") + " from other projects hidden"
+      : "";
+    epicOptions.innerHTML = knownEpics().map(function (e) { return '<option value="' + esc(e) + '">'; }).join("");
 
     var issues = state.issues || [];
     if (issues.length) {
@@ -577,18 +1398,36 @@
       issuesBanner.hidden = true;
     }
 
+    var sync = state.autoFetch || {};
+    if (sync.enabled && sync.lastPushError) {
+      // A silent refusal is the worst outcome for a toggle whose whole promise is "you don't have
+      // to think about pushing" — say why nothing went out.
+      pushBanner.hidden = false;
+      pushText.textContent = "Autosync: " + sync.lastPushError;
+      pushBtn.hidden = false;
+      return;
+    }
+    pushBtn.hidden = false;
     if (state.unpushed > 0) {
       pushBanner.hidden = false;
-      pushText.textContent = state.unpushed + " unpushed commit" + (state.unpushed === 1 ? "" : "s") + " on " + state.stateBranch;
+      // A ledger branch that has never been pushed is a different situation from commits waiting on
+      // a branch everyone already has: nobody else can see ANY of this board until the first push
+      // creates the branch, which is worth saying rather than counting commits at them.
+      pushText.textContent = state.stateBranchOnRemote === false
+        ? state.stateBranch + " is not on the remote yet — Push to remote creates it (" +
+          state.unpushed + " commit" + (state.unpushed === 1 ? "" : "s") + ")"
+        : state.unpushed + " unpushed commit" + (state.unpushed === 1 ? "" : "s") + " on " + state.stateBranch;
     } else {
       pushBanner.hidden = true;
     }
 
     renderInsights(state.stats, state.coverage, state.agents);
+    renderStateChart(state.tickets || []);
     renderBoard(state.tickets || []);
     renderAgents(state.agents || []);
     renderTokenUsage(state.agents || []);
     renderMembers((state.stats && state.stats.contributorList) || []);
+    renderConfig(state);
   }
 
   pullBtn.addEventListener("click", async function () {
@@ -602,9 +1441,420 @@
     }
   });
 
+  var PERM_KEY = "peephole.permissionMode";
+  var PERM_MODES = [
+    { key: "acceptEdits", label: "Accept edits", sub: "writes files; bash and network refused" },
+    { key: "plan", label: "Plan only", sub: "investigates and reports, changes nothing" },
+    { key: "bypassPermissions", label: "Bypass all", sub: "any tool, unattended — including bash" },
+  ];
+
+  /** Asked per dispatch rather than configured once: "let an agent edit files unattended" and
+   *  "let it run any command unattended" are different decisions, and which is appropriate depends
+   *  on the ticket. Resolves to null when dismissed — dismissing must never dispatch. */
+  function askPermissionMode(ids) {
+    var list = Array.isArray(ids) ? ids : [];
+    var count = list.length;
+    // An irreversible ticket is one a revert cannot undo — a migration, a deleted column, a pushed
+    // release. Dispatching one starts an agent doing exactly that with nobody watching, so it is
+    // the one case where picking a permission mode is not consent enough.
+    var risky = list
+      .map(function (id) { return (latestTickets || []).find(function (t) { return t.id === id; }); })
+      .filter(function (t) { return t && t.risk === "irreversible"; });
+    var last = "acceptEdits";
+    try { last = localStorage.getItem(PERM_KEY) || last; } catch (e) {}
+    return new Promise(function (resolve) {
+      execTitle.textContent = count > 1 ? "Execute " + count + " tickets" : "Execute ticket";
+      // Only what this server will actually accept: `bypassPermissions` needs PEEPHOLE_ALLOW_BYPASS=1,
+      // and offering a choice the API refuses is worse than not offering it.
+      var allowed = (latestState && latestState.permissionModes) || ["plan", "acceptEdits"];
+      var offered = PERM_MODES.filter(function (m) { return allowed.indexOf(m.key) !== -1; });
+      if (allowed.indexOf(last) === -1) last = "acceptEdits";
+      execModes.innerHTML = offered.map(function (m) {
+        return '<label class="perm-opt"><input type="radio" name="perm" value="' + m.key + '"' +
+          (m.key === last ? " checked" : "") + '><span><b>' + esc(m.label) + "</b><small>" + esc(m.sub) + "</small></span></label>";
+      }).join("") +
+        (allowed.indexOf("bypassPermissions") === -1
+          ? '<p class="perm-note">Unattended “bypass all” dispatch is disabled on this server. ' +
+            "Restart it with <code>PEEPHOLE_ALLOW_BYPASS=1</code> to enable it.</p>"
+          : "") +
+        (risky.length
+          ? '<div class="risk-warn"><b>⚠ ' + risky.length +
+            (risky.length === 1 ? " ticket is marked irreversible" : " tickets are marked irreversible") + "</b>" +
+            "<ul>" + risky.map(function (t) { return "<li>" + esc(t.intent || t.id) + "</li>"; }).join("") + "</ul>" +
+            '<label class="risk-ack"><input type="checkbox" id="riskAck"> Run ' +
+            (risky.length === 1 ? "it" : "them") + " anyway — this work cannot be undone by a revert</label></div>"
+          : "");
+      execBackdrop.hidden = false;
+      // Execute stays disabled until the acknowledgement is ticked; the checkbox is the consent,
+      // not the button.
+      var ack = execModes.querySelector("#riskAck");
+      execGo.disabled = Boolean(risky.length);
+      if (ack) ack.addEventListener("change", function () { execGo.disabled = !ack.checked; });
+
+      function cleanup() {
+        execBackdrop.hidden = true;
+        execGo.removeEventListener("click", go);
+        execCancel.removeEventListener("click", cancel);
+        execBackdrop.removeEventListener("click", backdropClick);
+      }
+      function go() {
+        var picked = execModes.querySelector("input:checked");
+        var mode = picked ? picked.value : "acceptEdits";
+        try { localStorage.setItem(PERM_KEY, mode); } catch (e) {}
+        cleanup();
+        execGo.disabled = false;
+        resolve(mode);
+      }
+      function cancel() { cleanup(); execGo.disabled = false; resolve(null); }
+      function backdropClick(ev) { if (ev.target === execBackdrop) cancel(); }
+      execGo.addEventListener("click", go);
+      execCancel.addEventListener("click", cancel);
+      execBackdrop.addEventListener("click", backdropClick);
+    });
+  }
+
+  /** Every repo this install has served, most recently opened first. The list is built simply by
+   *  running the board against a repo — there is no "add project" step to forget — so the menu is a
+   *  history of what you actually work on. An entry whose checkout has since moved is shown but
+   *  disabled rather than hidden, because a silently missing project looks like a bug. */
+  async function renderProjectMenu() {
+    // Fetched live rather than read from the board's state: the registry is global, while a state
+    // payload is a snapshot of ONE project's last refresh — so a project added from this tab was
+    // missing from the menu until the project it was added from happened to refresh again.
+    var projects = [];
+    try {
+      var listed = await fetch("/api/projects").then(function (r) { return r.json(); });
+      projects = (listed.projects || []).slice().sort(function (a, b) {
+        return String(b.lastOpenedAt || "").localeCompare(String(a.lastOpenedAt || ""));
+      });
+    } catch (e) {
+      projects = ((latestState && latestState.projects) || []).slice();
+    }
+    var addRow = '<button type="button" role="menuitem" class="pm-add" data-add="1">+ Add project…</button>';
+    if (!projects.length) {
+      projectMenu.innerHTML = '<p class="pm-note">No projects yet.</p>' + addRow;
+      wireAddRow();
+      return;
+    }
+    projectMenu.innerHTML = projects.map(function (p) {
+      var active = p.repoRoot === (latestState && latestState.repoRoot);
+      return (
+        '<div class="pm-row' + (active ? " pm-active" : "") + '">' +
+        '<button type="button" role="menuitem" data-root="' + esc(p.repoRoot) + '"' +
+        (active ? ' aria-current="true"' : "") + (p.missing ? " disabled" : "") + ">" +
+        esc(p.name) + (p.missing ? " <span class=\"pm-path\">checkout not found</span>" : "") +
+        '<span class="pm-path">' + esc(p.repoRoot) + "</span></button>" +
+        // Forgetting drops the menu entry only. The repo, its ledger and its tickets are untouched
+        // — opening it again re-adds it — so this needs no confirmation beyond saying as much.
+        '<button type="button" class="pm-forget" data-forget="' + esc(p.repoRoot) +
+        '" title="Remove from this list (the repo and its tickets are untouched)" aria-label="Forget ' +
+        esc(p.name) + '">✕</button></div>'
+      );
+    }).join("") + addRow;
+    wireAddRow();
+    Array.prototype.forEach.call(projectMenu.querySelectorAll("button[data-forget]"), function (btn) {
+      btn.addEventListener("click", async function (ev) {
+        ev.stopPropagation(); // forgetting must not also open the project
+        var root = btn.dataset.forget;
+        // The ✕ sits a few pixels from the row you click to OPEN a project, so a misclick is easy
+        // and the result looks like a deleted project even though nothing but a menu row is gone.
+        // Confirm says exactly what is and is not being removed.
+        if (!window.confirm("Remove " + root + " from this project list?\n\nThe repository, its ledger branch and its tickets are not touched — opening it again re-adds it.")) return;
+        var isActive = root === (latestState && latestState.repoRoot);
+        await apiPost("/api/projects/forget", { repoRoot: root });
+        if (isActive) {
+          // The tab is looking at what it just forgot; fall back to the server's own project.
+          currentProject = null;
+          rememberProjectChoice(null);
+          connectStream();
+        }
+        var fresh = await fetch(withProject("/api/state")).then(function (r) { return r.json(); });
+        render(fresh);
+        renderProjectMenu();
+      });
+    });
+    Array.prototype.forEach.call(projectMenu.querySelectorAll("button[data-root]"), function (btn) {
+      btn.addEventListener("click", function () {
+        projectMenu.hidden = true;
+        projectBtn.setAttribute("aria-expanded", "false");
+        if (btn.getAttribute("aria-current") === "true") return;
+        switchTo(btn.dataset.root, "/api/projects/switch");
+      });
+    });
+  }
+
+  function wireAddRow() {
+    var add = projectMenu.querySelector("[data-add]");
+    if (add) {
+      add.addEventListener("click", function () {
+        projectMenu.hidden = true;
+        projectBtn.setAttribute("aria-expanded", "false");
+        openAddProject();
+      });
+    }
+  }
+
+  /** Switching re-resolves a ledger, which can mean a fetch or a first clone — seconds, not
+   *  milliseconds. Without a visible busy state the board just sat there showing the old project's
+   *  cards, which reads as a broken menu rather than as work in progress. */
+  var switching = false;
+  async function switchTo(repoRoot, endpoint) {
+    if (switching) return null;
+    switching = true;
+    projectBtn.classList.add("busy");
+    projectName.textContent = "opening…";
+    board.innerHTML = '<p class="empty-note">Opening project…</p>';
+    var previous = currentProject;
+    try {
+      // Point this tab at the project first: the POST that registers/validates it is then made
+      // against that project's own context, and so is everything the tab does afterwards.
+      currentProject = repoRoot;
+      var res = await apiPost(endpoint, { repoRoot: repoRoot });
+      if (res && res.error) {
+        currentProject = previous;
+        window.alert(res.error);
+        if (latestState) render(latestState); // put the board that is actually open back on screen
+        return res;
+      }
+      rememberProjectChoice(repoRoot);
+      render(res);
+      connectStream();
+      return res;
+    } finally {
+      switching = false;
+      projectBtn.classList.remove("busy");
+    }
+  }
+
+  function openAddProject() {
+    addProjectError.hidden = true;
+    addProjectPath.value = "";
+    addProjectBackdrop.hidden = false;
+    addProjectPath.focus();
+  }
+  function closeAddProject() { addProjectBackdrop.hidden = true; }
+  addProjectCancel.addEventListener("click", closeAddProject);
+  addProjectClose.addEventListener("click", closeAddProject);
+  addProjectBackdrop.addEventListener("click", function (ev) {
+    if (ev.target === addProjectBackdrop) closeAddProject();
+  });
+  addProjectPath.addEventListener("keydown", function (ev) {
+    if (ev.key === "Enter") addProjectGo.click();
+  });
+  addProjectGo.addEventListener("click", async function () {
+    var value = addProjectPath.value.trim();
+    if (!value) return;
+    addProjectGo.disabled = true;
+    try {
+      var res = await switchTo(value, "/api/projects/add");
+      if (res && res.error) {
+        // Shown in the dialog, not an alert: the path is right there to correct.
+        addProjectError.hidden = false;
+        addProjectError.textContent = res.error;
+        return;
+      }
+      closeAddProject();
+    } finally {
+      addProjectGo.disabled = false;
+    }
+  });
+
+  projectBtn.addEventListener("click", async function (ev) {
+    ev.stopPropagation();
+    var open = projectMenu.hidden;
+    if (open) {
+      projectMenu.innerHTML = '<p class="pm-note">Loading…</p>';
+      projectMenu.hidden = false;
+      projectBtn.setAttribute("aria-expanded", "true");
+      await renderProjectMenu();
+      return;
+    }
+    projectMenu.hidden = true;
+    projectBtn.setAttribute("aria-expanded", "false");
+  });
+  document.addEventListener("click", function (ev) {
+    if (!projectMenu.hidden && !projectMenu.contains(ev.target) && !projectBtn.contains(ev.target)) {
+      projectMenu.hidden = true;
+      projectBtn.setAttribute("aria-expanded", "false");
+    }
+  });
+
+  /** The queue's own strip: what is running, what is waiting, and why nothing started when every
+   *  session in the repo is busy — a queue that holds silently looks identical to one that broke. */
+  function renderQueueBar(q) {
+    var running = q.running;
+    var pending = q.pending || [];
+    if (!running && !pending.length && !q.lastError) {
+      queueBar.hidden = true;
+      return;
+    }
+    queueBar.hidden = false;
+    var bits = [];
+    if (running && running.needsInput) {
+      // An agent that stopped to ask something is not progress and not failure; it needs a person.
+      bits.push('<span class="q-wait-input">⏸ <b>' + esc(running.ticketId) + "</b> is waiting for input — " +
+        '<code>claude attach ' + esc((running.sessionId || "").slice(0, 8)) + "</code></span>");
+    } else if (running) {
+      bits.push('<span class="q-run">▶ running <b>' + esc(running.ticketId) + "</b>" +
+        (running.sessionId ? ' <span class="dim mono">' + esc(running.sessionId.slice(0, 6)) + "</span>" : "") + "</span>");
+    }
+    if (pending.length) {
+      bits.push('<span class="q-wait">' + pending.length + " queued" +
+        (running ? "" : " — waiting for a free session") + "</span>");
+    }
+    if (q.lastError) bits.push('<span class="q-err">' + esc(q.lastError) + "</span>");
+    queueBar.innerHTML = bits.join('<span class="q-sep">·</span>') +
+      (running ? '<button class="ghost q-stop" id="queueStop" type="button">Stop</button>' : "");
+    var stopBtn = document.getElementById("queueStop");
+    if (stopBtn) stopBtn.addEventListener("click", function () { apiPost("/api/execute/stop", {}); });
+  }
+
+  /** The menu is rebuilt from the current ticket set each time it opens, so it never offers a
+   *  person who has nothing on this board — and never hides a selection that is still active. */
+  function renderFilterMenu() {
+    var selected = getMemberFilter();
+    // Candidates come from the tickets themselves first (an owner or assignee who has never
+    // committed to this repo still belongs in the list), then anyone else already known.
+    var pool = [];
+    (latestTickets || []).forEach(function (t) {
+      var owner = ownerNameOf(t);
+      if (owner) pool.push(owner);
+      if (t.assignee) pool.push(t.assignee);
+    });
+    knownPeople(null).forEach(function (n) { pool.push(n); });
+    selected.forEach(function (n) { if (n !== UNASSIGNED) pool.push(n); });
+    var people = pool
+      .filter(function (n, i) { return n && pool.indexOf(n) === i; })
+      .filter(function (name) {
+        return selected.indexOf(name) !== -1 || (latestTickets || []).some(function (t) {
+          return ownerNameOf(t) === name || t.assignee === name;
+        });
+      })
+      .sort();
+    var opts = people.map(function (name) {
+      return { value: name, label: name };
+    });
+    opts.push({ value: UNASSIGNED, label: "Unassigned" });
+    var selMode = getSelectionFilter();
+    filterMenu.innerHTML =
+      '<div class="filter-head">Selected for execution</div>' +
+      [["all", "Show all"], ["selected", "Selected only"], ["unselected", "Not selected only"]].map(function (o) {
+        return '<label><input type="radio" name="selfilter" value="' + o[0] + '"' +
+          (selMode === o[0] ? " checked" : "") + "> " + o[1] + "</label>";
+      }).join("") +
+      '<div class="filter-head">Member</div>' +
+      opts.map(function (o) {
+        return '<label><input type="checkbox" value="' + esc(o.value) + '"' +
+          (selected.indexOf(o.value) !== -1 ? " checked" : "") + "> " + esc(o.label) + "</label>";
+      }).join("") +
+      (selected.length || selMode !== "all"
+        ? '<div class="filter-foot"><button class="clear-filter" type="button">Clear filter</button></div>'
+        : "");
+
+    Array.prototype.forEach.call(filterMenu.querySelectorAll('input[name="selfilter"]'), function (radio) {
+      radio.addEventListener("change", function () {
+        try { localStorage.setItem(SELECTION_FILTER_KEY, radio.value); } catch (e) {}
+        renderFilterState();
+        renderBoard(latestTickets);
+        renderFilterMenu();
+      });
+    });
+
+    Array.prototype.forEach.call(filterMenu.querySelectorAll('input[type="checkbox"]'), function (box) {
+      box.addEventListener("change", function () {
+        var next = getMemberFilter().filter(function (v) { return v !== box.value; });
+        if (box.checked) next.push(box.value);
+        setMemberFilter(next);
+        renderFilterState();
+        renderBoard(latestTickets);
+        renderFilterMenu();
+      });
+    });
+    var clear = filterMenu.querySelector(".clear-filter");
+    if (clear) {
+      clear.addEventListener("click", function () {
+        setMemberFilter([]);
+        try { localStorage.setItem(SELECTION_FILTER_KEY, "all"); } catch (e) {}
+        renderFilterState();
+        renderBoard(latestTickets);
+        renderFilterMenu();
+      });
+    }
+  }
+
+  /** How many people are selected, on the button itself — an active filter that only shows up
+   *  inside a closed menu is how a board ends up silently missing half its tickets. */
+  function renderFilterState() {
+    var n = getMemberFilter().length + (getSelectionFilter() === "all" ? 0 : 1);
+    filterCount.hidden = n === 0;
+    filterCount.textContent = String(n);
+    filterBtn.setAttribute("aria-pressed", String(n > 0));
+  }
+
+  filterBtn.addEventListener("click", function (ev) {
+    ev.stopPropagation();
+    var open = filterMenu.hidden;
+    if (open) renderFilterMenu();
+    filterMenu.hidden = !open;
+    filterBtn.setAttribute("aria-expanded", String(open));
+  });
+  document.addEventListener("click", function (ev) {
+    if (!filterMenu.hidden && !filterMenu.contains(ev.target) && ev.target !== filterBtn) {
+      filterMenu.hidden = true;
+      filterBtn.setAttribute("aria-expanded", "false");
+    }
+  });
+  document.addEventListener("keydown", function (ev) {
+    if (ev.key === "Escape" && !addProjectBackdrop.hidden) closeAddProject();
+    if (ev.key === "Escape" && !filterMenu.hidden) {
+      filterMenu.hidden = true;
+      filterBtn.setAttribute("aria-expanded", "false");
+    }
+  });
+
+  /** Selected tickets in the order the board reads them — lane order, then the lane's own sort —
+   *  so "execute all selected" runs them in the order you see, not the order you clicked. */
+  function selectedInBoardOrder() {
+    var dir = getLaneSortDir();
+    var visible = forThisProject(latestTickets || []);
+    var ids = [];
+    LANES.forEach(function (lane) {
+      sortByModified(visible.filter(function (t) {
+        return lane.states.indexOf(t.state) !== -1 && t.selected && t.state === "proposed";
+      }), dir).forEach(function (t) { ids.push(t.id); });
+    });
+    return ids;
+  }
+
+  function renderExecSelected() {
+    var n = selectedInBoardOrder().length;
+    execSelectedBtn.disabled = n === 0;
+    execSelectedBtn.textContent = n ? "Execute " + n + " selected" : "Execute selected";
+  }
+
+  execSelectedBtn.addEventListener("click", async function () {
+    var ids = selectedInBoardOrder();
+    if (!ids.length) return;
+    var mode = await askPermissionMode(ids);
+    if (!mode) return;
+    execSelectedBtn.disabled = true;
+    try {
+      await apiPost("/api/execute", { ticketIds: ids, permissionMode: mode });
+    } finally {
+      renderExecSelected();
+    }
+  });
+
+  groupToggle.addEventListener("click", function () {
+    var next = !getGroupByEpic();
+    try { localStorage.setItem(EPIC_GROUP_KEY, next ? "1" : "0"); } catch (e) {}
+    groupToggle.setAttribute("aria-pressed", String(next));
+    renderBoard(latestTickets);
+  });
+
   autoFetchToggle.addEventListener("click", async function () {
     var enabled = autoFetchToggle.getAttribute("aria-pressed") !== "true";
-    await apiPost("/api/autofetch", { enabled: enabled, intervalMinutes: Number(intervalInput.value) || 5 });
+    await apiPost("/api/autosync", { enabled: enabled, intervalMinutes: Number(intervalInput.value) || 5, push: true });
   });
 
   intervalInput.addEventListener("change", async function () {
@@ -632,37 +1882,77 @@
     }
   });
 
-  function setInsightsExpanded(expanded) {
-    insightsBody.hidden = !expanded;
-    insightsToggle.setAttribute("aria-expanded", String(expanded));
-    try { localStorage.setItem("peephole.insightsExpanded", expanded ? "1" : "0"); } catch (e) {}
+  // Tabs replace what used to be independently-collapsible sections stacked on one page —
+  // one panel visible at a time instead, persisted so a reload/live-update doesn't reset
+  // whichever one the user was looking at.
+  var ACTIVE_TAB_KEY = "peephole.activeTab";
+  var standardsLoaded = false;
+
+  function setActiveTab(name) {
+    tabButtons.forEach(function (btn) {
+      var active = btn.dataset.tab === name;
+      btn.setAttribute("aria-selected", String(active));
+      var panel = document.getElementById("panel-" + btn.dataset.tab);
+      if (panel) panel.hidden = !active;
+    });
+    try { localStorage.setItem(ACTIVE_TAB_KEY, name); } catch (e) {}
+    if (name === "standards" && !standardsLoaded) loadStandards();
   }
-  insightsToggle.addEventListener("click", function () {
-    setInsightsExpanded(insightsToggle.getAttribute("aria-expanded") !== "true");
+  tabButtons.forEach(function (btn) {
+    btn.addEventListener("click", function () { setActiveTab(btn.dataset.tab); });
   });
-  var storedExpanded = true;
-  try { storedExpanded = localStorage.getItem("peephole.insightsExpanded") !== "0"; } catch (e) {}
-  setInsightsExpanded(storedExpanded);
+  var storedTab = "tasks";
+  try { storedTab = localStorage.getItem(ACTIVE_TAB_KEY) || "tasks"; } catch (e) {}
+  if (!tabButtons.some(function (b) { return b.dataset.tab === storedTab; })) storedTab = "tasks";
+  setActiveTab(storedTab);
 
-  function setAgentsExpanded(expanded) {
-    agentsBody.hidden = !expanded;
-    agentsToggle.setAttribute("aria-expanded", String(expanded));
-    try { localStorage.setItem("peephole.agentsExpanded", expanded ? "1" : "0"); } catch (e) {}
-  }
-  agentsToggle.addEventListener("click", function () {
-    setAgentsExpanded(agentsToggle.getAttribute("aria-expanded") !== "true");
-  });
-  var storedAgentsExpanded = true;
-  try { storedAgentsExpanded = localStorage.getItem("peephole.agentsExpanded") !== "0"; } catch (e) {}
-  setAgentsExpanded(storedAgentsExpanded);
-
-  fetch("/api/state").then(function (r) { return r.json(); }).then(render).catch(function () {});
-
-  var es = new EventSource("/api/events");
-  es.onmessage = function (ev) {
+  /** The project's own ENGINEERING-STANDARDS-GO.md, read at the same git ref repoStats scans —
+   *  fetched once per page load (it doesn't change as often as tickets/agents do), rendered
+   *  with the same small markdown renderer ticket bodies use. */
+  async function loadStandards() {
+    standardsLoaded = true;
     try {
-      var msg = JSON.parse(ev.data);
-      if (msg.type === "state") render(msg.payload);
-    } catch (e) {}
-  };
+      var res = await fetch("/api/standards");
+      var data = await res.json();
+      standardsContent.innerHTML = data.content
+        ? renderMarkdown(data.content)
+        : '<p class="empty-note">No ENGINEERING-STANDARDS-GO.md found in this repo.</p>';
+    } catch (e) {
+      standardsLoaded = false;
+      standardsContent.innerHTML = '<p class="empty-note">Could not load standards doc.</p>';
+    }
+  }
+
+  /** The live stream is per project too: each project broadcasts to its own subscribers, so a tab
+   *  watching repo A never receives repo B's refreshes. Reconnected when the tab changes project. */
+  var es = null;
+  function connectStream() {
+    if (es) es.close();
+    es = new EventSource(withProject("/api/events"));
+    es.onmessage = function (ev) {
+      try {
+        var msg = JSON.parse(ev.data);
+        if (msg.type === "state") render(msg.payload);
+      } catch (e) {}
+    };
+  }
+
+  function loadProject() {
+    fetch(withProject("/api/state"))
+      .then(function (r) { return r.json(); })
+      .then(function (state) {
+        if (state && state.error) {
+          // A remembered project that has since moved must not leave the tab stuck on an error —
+          // forget the selection and fall back to whatever the server was started on.
+          currentProject = null;
+          rememberProjectChoice(null);
+          return loadProject();
+        }
+        render(state);
+        connectStream();
+      })
+      .catch(function () {});
+  }
+
+  loadProject();
 })();

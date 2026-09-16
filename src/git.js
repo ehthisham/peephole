@@ -60,6 +60,17 @@ export async function defaultRemoteBranch(repoRoot, remote = "origin") {
   return currentBranch(repoRoot);
 }
 
+/** Reads `.peephole/config.yaml`'s `stateBranch` at `ref` without checking anything out. Used to
+ *  bootstrap branch resolution: the config that names the branch is itself committed on a branch,
+ *  so it is read from the remote's default ref first and only then followed. */
+export async function declaredStateBranch(repoRoot, ref) {
+  const text = await showFile(repoRoot, ref, ".peephole/config.yaml");
+  if (!text) return null;
+  const m = text.match(/^stateBranch:\s*(.+)$/m);
+  if (!m) return null;
+  return m[1].trim().replace(/^["']|["']$/g, "") || null;
+}
+
 export async function refExists(repoRoot, ref) {
   try {
     await run(repoRoot, ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`]);
@@ -109,10 +120,46 @@ export async function ensureWorktree(repoRoot, remoteBranch, remote = "origin") 
   if (fs.existsSync(`${worktreePath}/.git`)) {
     return { worktreePath, localBranch };
   }
-  const hasRemote = await refExists(repoRoot, `${remote}/${remoteBranch}`);
-  const base = hasRemote ? `${remote}/${remoteBranch}` : "HEAD";
+  // A dedicated ledger branch usually does not exist yet on the first run. Branch it from the
+  // remote's default rather than from HEAD: HEAD is whatever the developer happens to have checked
+  // out, so the ledger would inherit an unrelated feature branch's contents on one machine and not
+  // on another. Created here, shared on the first push.
+  const candidates = [`${remote}/${remoteBranch}`];
+  const fallback = await defaultRemoteBranch(repoRoot, remote).catch(() => null);
+  if (fallback) candidates.push(`${remote}/${fallback}`, fallback);
+  let base = "HEAD";
+  for (const ref of candidates) {
+    if (await refExists(repoRoot, ref)) { base = ref; break; }
+  }
   await run(repoRoot, ["worktree", "add", "-B", localBranch, worktreePath, base]);
   return { worktreePath, localBranch };
+}
+
+/** A ledger clone: history without blobs, one branch, sparse working tree. Cheap enough to keep
+ *  per project — it carries the ticket files and nothing else. */
+export async function cloneLedger(remoteUrl, dir, branch, remote = "origin") {
+  await run(process.cwd(), [
+    "clone", "--quiet", "--filter=blob:none", "--sparse", "--single-branch",
+    "--origin", remote, "--branch", branch, remoteUrl, dir,
+  ]);
+}
+
+/** Only `.peephole/` on disk. `--no-cone` is required: cone mode also materialises every
+ *  root-level file, which is most of what the clone was avoiding. */
+export async function sparseCheckoutLedger(dir) {
+  await run(dir, ["sparse-checkout", "set", "--no-cone", ".peephole"]);
+}
+
+export async function hardResetTo(dir, ref) {
+  await run(dir, ["reset", "--hard", ref]);
+}
+
+/** Paths touched by the commits waiting to be pushed. Used to prove an auto-push would only ever
+ *  publish ledger writes — anything else means something unexpected rode along on this branch. */
+export async function pendingPaths(worktreePath, localBranch, remoteBranch, remote = "origin") {
+  const { range } = await pendingRange(worktreePath, localBranch, remoteBranch, remote);
+  const out = await run(worktreePath, ["diff", "--name-only", range]);
+  return out.split("\n").map((l) => l.trim()).filter(Boolean);
 }
 
 /** Fast-forwards the worktree branch to match the remote — only when nothing local is waiting to be pushed, so an in-flight (unpushed) commit is never discarded. */
@@ -157,11 +204,51 @@ export async function commitAll(worktreePath, message, paths = [".peephole"]) {
   return commitStaged(worktreePath, message);
 }
 
+/** The range that would actually be published. When the target branch does not exist on the remote
+ *  yet — a ledger branch on its first push — comparing against nothing counts the repo's entire
+ *  history as "unpushed" (653 commits on a migration that added two). Measure from the remote's
+ *  default branch instead: that is where the new branch was cut from, so the difference is the
+ *  ledger work itself. */
+async function pendingRange(worktreePath, localBranch, remoteBranch, remote) {
+  if (await refExists(worktreePath, `${remote}/${remoteBranch}`)) {
+    return { range: `${remote}/${remoteBranch}..${localBranch}`, newBranch: false };
+  }
+  const fallback = await defaultRemoteBranch(worktreePath, remote).catch(() => null);
+  if (fallback && (await refExists(worktreePath, `${remote}/${fallback}`))) {
+    return { range: `${remote}/${fallback}..${localBranch}`, newBranch: true };
+  }
+  return { range: localBranch, newBranch: true };
+}
+
 export async function unpushedCount(worktreePath, localBranch, remoteBranch, remote = "origin") {
-  const hasRemote = await refExists(worktreePath, `${remote}/${remoteBranch}`);
-  const range = hasRemote ? `${remote}/${remoteBranch}..${localBranch}` : localBranch;
+  const { range } = await pendingRange(worktreePath, localBranch, remoteBranch, remote);
   const out = await run(worktreePath, ["rev-list", "--count", range]);
   return parseInt(out.trim(), 10) || 0;
+}
+
+/** Whether the ledger branch exists on the remote at all — the difference between "N commits
+ *  waiting" and "this branch has never been shared". */
+export async function remoteBranchExists(repoRoot, remoteBranch, remote = "origin") {
+  return refExists(repoRoot, `${remote}/${remoteBranch}`);
+}
+
+/** True when `ref` already contains everything in `maybeAncestor` — used to tell "the target branch
+ *  is this ledger, further along" from "the target branch is a different ledger". */
+export async function isAncestor(repoRoot, maybeAncestor, ref) {
+  try {
+    await run(repoRoot, ["merge-base", "--is-ancestor", maybeAncestor, ref]);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export async function createBranchAt(repoRoot, name, startPoint) {
+  await run(repoRoot, ["branch", "-f", name, startPoint]);
+}
+
+export async function checkoutBranch(repoRoot, name) {
+  await run(repoRoot, ["checkout", name]);
 }
 
 export async function pushWorktree(worktreePath, localBranch, remoteBranch, remote = "origin") {

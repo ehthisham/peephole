@@ -1,6 +1,13 @@
 import fs from "node:fs/promises";
 
-const START = "<!-- peephole:start -->";
+// Bump when the wording these functions generate changes materially. The number is written into
+// the start marker, so an already-scaffolded repo can be told its section is out of date — a
+// presence check never could, which is why repos kept serving agents the first version of the
+// instructions forever.
+export const NOTE_VERSION = 2;
+
+const START_RE = /<!--\s*peephole:start(?:\s+v=(\d+))?\s*-->/;
+const START = `<!-- peephole:start v=${NOTE_VERSION} -->`;
 const END = "<!-- peephole:end -->";
 
 async function fileExists(p) {
@@ -18,7 +25,8 @@ export async function upsertMarkedSection(filePath, sectionBody, fallbackHeader)
   let existing = "";
   if (await fileExists(filePath)) existing = await fs.readFile(filePath, "utf8");
 
-  const startIdx = existing.indexOf(START);
+  const startMatch = existing.match(START_RE);
+  const startIdx = startMatch ? startMatch.index : -1;
   const endIdx = existing.indexOf(END);
   let next;
   if (startIdx !== -1 && endIdx !== -1) {
@@ -32,29 +40,55 @@ export async function upsertMarkedSection(filePath, sectionBody, fallbackHeader)
 }
 
 export function hasMarkedSection(text) {
-  return Boolean(text && text.includes(START));
+  return Boolean(text && START_RE.test(text));
 }
 
-export function agentNoteBody({ binPath, repoRoot, port }) {
-  const cli = `node ${binPath}`;
+/** The version of the section in `text`: a number, 1 for an unversioned (pre-versioning) block, or
+ *  null when there is no section at all. */
+export function markedSectionVersion(text) {
+  const m = text && text.match(START_RE);
+  if (!m) return null;
+  return m[1] ? Number(m[1]) : 1;
+}
+
+export function agentNoteBody({ port }) {
+  // Portable across machines: the committed CLAUDE.md must not bake in one developer's home /
+  // checkout path, so emit the bare `peephole` command (assumed on PATH) + `--repo .` (relative to
+  // the repo root), not `node /abs/bin/peephole.js --repo /abs/repo`.
+  const cli = `peephole`;
   return `## Working with Peephole (task tracking)
+
+Requires the \`peephole\` CLI on your PATH — install it once from the peephole repo (\`npm i -g .\`
+in that clone, or \`npm link\`). Run every command below **from this repo's root**, so the
+\`--repo .\` and \`.peephole/\` paths resolve to this checkout on any machine.
 
 This repo tracks AI-executed work in \`.peephole/\`. The dashboard must be running for the
 commands below to work — start it once in the background if it isn't already:
-\`${cli} serve --repo ${repoRoot} --port ${port}\`
+\`${cli} serve --repo . --port ${port}\`
 
 Before starting non-trivial work:
 
 1. Check \`.peephole/tickets/*.md\` for a ticket matching the task. If none exists, create one —
-   don't hand-write the YAML, use the CLI so the schema is always valid:
+   **before** starting the work, not after — don't hand-write the YAML, use the CLI so the schema
+   is always valid:
    \`\`\`
-   ${cli} ticket new --project "<this project>" --intent "<one sentence, the why>" --port ${port}
+   ${cli} ticket new --project "<this project>" --intent "<one sentence, the why>" --transcript <your transcript_path> --port ${port}
    \`\`\`
    Add \`--risk irreversible\` if the change is hard to undo. This prints the ticket id it chose.
 2. Claim it before you start work — sets state to in-progress and records you as owner:
    \`\`\`
-   ${cli} ticket claim <id> --owner <your session id> --port ${port}
+   ${cli} ticket claim <id> --owner <your session id> --transcript <your transcript_path> --port ${port}
    \`\`\`
+   A ticket can be reserved for one person (\`assignee\` in its frontmatter, set from the board or
+   with \`${cli} ticket assign <id> --to "<person>"\`). If it is, this claim is REFUSED for anyone
+   else — the CLI sends your machine's git identity automatically and the server matches it
+   against the assignee. Don't work a ticket whose claim was refused; pick another.
+
+   Always pass \`--transcript\` (your own \`transcript_path\`, visible in your session context/hook
+   payloads) on both of the above and on \`ticket advance\`. It's the only thing that links a ticket
+   back to the actual chat that did the work — token usage is computed from it automatically and
+   stored on the ticket (\`ticket.sessions[]\`). Skip it and the ticket is provenance-free: a record
+   that work happened, with no way to trace which conversation produced it or what it cost.
 3. Before continuing work on a claimed ticket, check whether you've been told to stop:
    \`\`\`
    ${cli} control check <id> --port ${port}
@@ -65,7 +99,7 @@ Before starting non-trivial work:
    when it isn't.)
 4. As the work actually progresses, advance \`state\` — never hand-edit it, use the CLI:
    \`\`\`
-   ${cli} ticket advance <id> --state <in-progress|built|verified|shipped|closed> --port ${port}
+   ${cli} ticket advance <id> --state <in-progress|built|verified|shipped|closed> --transcript <your transcript_path> --port ${port}
    \`\`\`
    Only ever move forward (proposed → in-progress → built → verified → shipped) or to \`closed\` —
    never backward, never delete a ticket file. Do this at real milestones (code merged → \`built\`;
@@ -81,7 +115,7 @@ Before starting non-trivial work:
    on...", "Corrected 2026-...", "Found by the audit", "this ticket now...". If something changed,
    say what's true now; the *that it changed* belongs in \`history\`, not the body.
 
-View the live board: \`${cli} serve --repo ${repoRoot} --port ${port}\``;
+View the live board: \`${cli} serve --repo . --port ${port}\``;
 }
 
 export function readmeNoteBody(peepholeCmd) {
@@ -94,5 +128,46 @@ in progress, blocked, shipped — run:
 ${peepholeCmd}
 \`\`\`
 
-then open the printed \`http://localhost:<port>\` link.`;
+then open the printed \`http://localhost:<port>\` link.
+
+### The two \`.peephole\` directories
+
+Both are the same tracked path, seen from two checkouts of this repo:
+
+- \`.peephole/\` — this branch's copy of the ticket files, committed like any other source. The
+  board never reads it, so it is normally behind: it is whatever reached this branch the last time
+  the ticket files were merged in.
+- \`.peephole-worktree/\` — a git worktree (a second checkout sharing this repo's one \`.git\`
+  object store) parked on the branch \`peephole/<stateBranch>\`. Every ticket write happens there,
+  which is why your own branch and uncommitted changes are never touched. Its \`.peephole/\` is the
+  live one the board reads.
+
+This branch catches up only after the board's **Push to remote** and a pull.
+
+Keep \`.peephole-worktree/\` in \`.gitignore\` — git does not ignore a nested worktree on its own,
+so it shows as untracked and one \`git add -A\` would commit the whole duplicate tree.
+
+### Removing Peephole from this repo
+
+Stop the board first (the worktree is in use while it runs), then:
+
+\`\`\`
+git worktree remove --force .peephole-worktree     # the checkout AND its registration
+git branch -D peephole/<stateBranch>               # the local state branch
+\`\`\`
+
+Deleting the folder by hand is not enough — the registration lives in \`.git/worktrees/\`, and git
+keeps reporting a broken worktree until \`git worktree remove\` (or \`git worktree prune\`) clears it.
+
+The ticket data is ordinary tracked content; to drop that too:
+
+\`\`\`
+git rm -r .peephole && git commit -m "Remove Peephole ticket data"
+git push origin <stateBranch>                      # if the branch was already shared
+git push origin --delete peephole/<stateBranch>    # only if that branch was ever pushed
+\`\`\`
+
+Then unwire the per-machine bits, which are not in git history: the \`peephole/hooks/\` entries in
+\`.claude/settings.local.json\`, and the \`peephole:start\`/\`peephole:end\` sections in this file
+and in CLAUDE.md.`;
 }
