@@ -179,6 +179,22 @@ async function cmdLedgerMove(argv) {
   console.log("Restart the board to pick up the new branch.");
 }
 
+async function cmdTicketComment(argv) {
+  const id = argv[0];
+  const args = parseArgs(argv.slice(1));
+  const port = requirePort(args);
+  if (!id || !args.text || args.text === true) {
+    console.error('usage: peephole ticket comment <id> --text "<comment>" [--author <who>] [--port 4173]');
+    process.exit(1);
+  }
+  const author = args.author && args.author !== true ? String(args.author) : (await resolveAuthor(args))?.name;
+  const result = await apiCall(port, "POST", `/api/tickets/${encodeURIComponent(id)}/comments`, {
+    text: String(args.text), author,
+  });
+  const comments = (result.ticket && result.ticket.comments) || [];
+  console.log(`commented on "${id}" (${comments.length} comment${comments.length === 1 ? "" : "s"})`);
+}
+
 async function cmdTicketRisk(argv) {
   const id = argv[0];
   const args = parseArgs(argv.slice(1));
@@ -260,6 +276,7 @@ async function main() {
   if (cmd === "ticket" && argv[1] === "assign") return cmdTicketAssign(argv.slice(2));
   if (cmd === "ticket" && argv[1] === "epic") return cmdTicketEpic(argv.slice(2));
   if (cmd === "ticket" && argv[1] === "risk") return cmdTicketRisk(argv.slice(2));
+  if (cmd === "ticket" && argv[1] === "comment") return cmdTicketComment(argv.slice(2));
   if (cmd === "ledger" && argv[1] === "move") return cmdLedgerMove(argv.slice(2));
   if (cmd === "ticket" && argv[1] === "advance") return cmdTicketAdvance(argv.slice(2));
   if (cmd === "ticket" && argv[1] === "rename") return cmdTicketRename(argv.slice(2));
@@ -275,6 +292,7 @@ async function main() {
     '  peephole ticket assign <id> --to "<person>" | --clear  # reserve it; only that person can claim\n' +
     '  peephole ticket epic <id> --to "<epic>" | --clear      # file it under an epic\n' +
     "  peephole ticket risk <id> --to <reversible|irreversible>\n" +
+    '  peephole ticket comment <id> --text "<comment>"\n' +
     '  peephole ledger move --repo <path> [--to peephole-state] [--push]  # carry the ledger to its own branch\n' +
     "  peephole ticket advance <id> --state <proposed|in-progress|built|verified|shipped|closed>\n" +
     "  peephole ticket rename <id> --to <new-id>\n" +

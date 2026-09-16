@@ -577,6 +577,17 @@ export async function startServer(initialRepoRoot, { port = 4173, remote = "orig
         ids.forEach((id) => { ctx.queueState = ctx.queue.enqueue(String(id), mode); });
         return sendJson(res, 200, { queued: ids.length, queue: ctx.queueState, state: ctx.publicState() });
       }
+      const chatMatch = url.pathname.match(/^\/api\/tickets\/([^/]+)\/chat$/);
+      if (req.method === "POST" && chatMatch) {
+        const body = await readJsonBody(req);
+        // Conversations default to `plan`: the point is to think about the ticket, and a chat that
+        // can edit files is just a dispatch with a friendlier prompt.
+        const mode = PERMISSION_MODES.includes(body.permissionMode) ? body.permissionMode : "plan";
+        if (mode === BYPASS_MODE && !bypassAllowed) return sendJson(res, 403, { error: BYPASS_REFUSED });
+        const result = await ctx.queue.startChat(chatMatch[1], mode);
+        ctx.queueState = ctx.queue.state();
+        return sendJson(res, result.started ? 200 : 400, { ...result, queue: ctx.queueState, state: ctx.publicState() });
+      }
       const dequeueMatch = url.pathname.match(/^\/api\/tickets\/([^/]+)\/dequeue$/);
       if (req.method === "POST" && dequeueMatch) {
         ctx.queueState = ctx.queue.cancel(dequeueMatch[1]);

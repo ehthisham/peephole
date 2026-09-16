@@ -56,6 +56,10 @@
     '<svg class="mv-icon" viewBox="0 0 16 16" width="15" height="15" aria-hidden="true" focusable="false" ' +
     'fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' +
     '<path d="M3 8.6 6.3 12 13 4.6"/></svg>';
+  var CHAT_ICON =
+    '<svg class="mv-icon" viewBox="0 0 16 16" width="15" height="15" aria-hidden="true" focusable="false" ' +
+    'fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">' +
+    '<path d="M13.5 9.5a1.6 1.6 0 0 1-1.6 1.6H6.2L3.1 13.6V4.1A1.6 1.6 0 0 1 4.7 2.5h7.2a1.6 1.6 0 0 1 1.6 1.6z"/></svg>';
   var EXECUTE_ICON =
     '<svg class="mv-icon" viewBox="0 0 16 16" width="15" height="15" aria-hidden="true" focusable="false" ' +
     'fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">' +
@@ -107,6 +111,7 @@
   var addProjectClose = document.getElementById("addProjectClose");
   var checkoutBranchEl = document.getElementById("checkoutBranch");
   var statRow = document.getElementById("statRow");
+  var completionEl = document.getElementById("completion");
   var langs = document.getElementById("langs");
   var tokenUsage = document.getElementById("tokenUsage");
   var coverageModulesEl = document.getElementById("coverageModules");
@@ -346,6 +351,49 @@
     return d.toLocaleString(undefined, {
       year: "numeric", month: "short", day: "2-digit", hour: "2-digit", minute: "2-digit",
     });
+  }
+
+  /** Completion as a project reads it: one bar for the whole thing, then a line per epic. The
+   *  Progress tile answers "how far along"; this answers "far along at WHAT", which is the question
+   *  anyone planning the next week actually has. Unfiled work is shown last and named, because an
+   *  epic list that quietly omits a third of the tickets is worse than no epic list. */
+  function renderCompletion(tickets) {
+    var mine = forThisProject(tickets || []);
+    if (!mine.length) {
+      completionEl.innerHTML = "";
+      return;
+    }
+    function tally(list) {
+      var done = list.filter(function (t) { return TERMINAL_STATES.has(t.state); }).length;
+      var working = list.filter(function (t) { return !TERMINAL_STATES.has(t.state) && t.state !== "proposed"; }).length;
+      return { done: done, working: working, total: list.length, pct: (done / list.length) * 100 };
+    }
+    var all = tally(mine);
+
+    var byEpic = {};
+    mine.forEach(function (t) {
+      var key = t.epic || NO_EPIC;
+      (byEpic[key] = byEpic[key] || []).push(t);
+    });
+    var keys = Object.keys(byEpic).sort().filter(function (k) { return k !== NO_EPIC; });
+    if (byEpic[NO_EPIC]) keys.push(NO_EPIC);
+
+    completionEl.innerHTML =
+      "<h3>Completion</h3>" +
+      '<div class="done-head"><span class="done-pct">' + all.pct.toFixed(0) + "%</span>" +
+      '<span class="done-label">' + fmtNum(all.done) + " of " + fmtNum(all.total) + " shipped or closed" +
+      (all.working ? '<small>' + fmtNum(all.working) + " in flight</small>" : "<small>nothing in flight</small>") +
+      "</span></div>" +
+      keys.map(function (key) {
+        var t = tally(byEpic[key]);
+        return (
+          '<div class="done-row"><span class="name" title="' + esc(key === NO_EPIC ? "No epic" : key) + '">' +
+          (key === NO_EPIC ? '<span class="dim">No epic</span>' : esc(key)) + "</span>" +
+          '<span class="bar-track"><span class="bar-fill" style="width:' + t.pct.toFixed(1) +
+          '%;background:' + (t.pct === 100 ? "var(--built)" : "var(--accent)") + '"></span></span>' +
+          '<span class="amount mono">' + t.done + "/" + t.total + "</span></div>"
+        );
+      }).join("");
   }
 
   function renderInsights(stats, coverage, agents) {
@@ -723,6 +771,14 @@
         ' title="' + esc(ctlBlocked ? blockedWhy : (t.selected ? "Selected for execution — click to unselect" : "Select for execution")) +
         '" aria-label="Select for execution" type="button">' + SELECT_ICON + "</button>"
       : "";
+    // Talking about a ticket is not a smaller version of doing it — it claims nothing, queues
+    // nothing and is available whatever the ticket's state, because the ticket most worth
+    // discussing is often one somebody already started.
+    var chatting = (chatSessions[t.id] || null);
+    var chatBtn =
+      '<button class="ctl chat" data-chat="' + esc(t.id) + '" type="button" title="' +
+      esc(chatting ? "Being discussed — claude attach " + chatting.slice(0, 8) : "Talk about this ticket (no changes made)") +
+      '" aria-label="Talk about this ticket"' + (chatting ? ' aria-pressed="true"' : "") + ">" + CHAT_ICON + "</button>";
     var executeBtn = selectable
       ? '<button class="ctl execute" data-execute="' + esc(t.id) + '" type="button"' +
         (queued || isRunning || ctlBlocked ? " disabled" : "") +
@@ -760,9 +816,7 @@
         ' — state only moves forward once work has been built" aria-label="No move back from ' + esc(t.state) + '" type="button">' +
         MOVE_ICON.back + "</button>");
     var moves = advance || unclaim ? '<div class="move-group">' + unclaim + advance + "</div>" : "";
-    var ctlGroup = selectBtn || executeBtn || controls
-      ? '<div class="controls">' + selectBtn + executeBtn + controls + "</div>"
-      : "";
+    var ctlGroup = '<div class="controls">' + selectBtn + executeBtn + chatBtn + controls + "</div>";
     // One footer row, read left to right as "what the agent is doing" -> "who" -> "where it goes
     // next": run/pause/skip on the left, owner in the middle (the part that truncates when a lane
     // is narrow), the state moves on the right. They were two stacked rows, which cost every card
@@ -808,6 +862,20 @@
           });
         } finally {
           selBtn.disabled = false;
+        }
+      });
+    }
+    var chatBtnEl = card.querySelector(".ctl.chat");
+    if (chatBtnEl) {
+      chatBtnEl.addEventListener("click", async function (ev) {
+        ev.stopPropagation();
+        chatBtnEl.disabled = true;
+        try {
+          var res = await apiPost("/api/tickets/" + encodeURIComponent(chatBtnEl.dataset.chat) + "/chat", {});
+          if (res && res.error) window.alert(res.error);
+          else if (res && res.reason) window.alert("Could not start the conversation: " + res.reason);
+        } finally {
+          chatBtnEl.disabled = false;
         }
       });
     }
@@ -1189,6 +1257,7 @@
   // Mirrored from the server's queue so a card can show "queued"/"running" without asking.
   var queuedIds = [];
   var runningId = null;
+  var chatSessions = {}; // ticketId -> sessionId of an open conversation
 
   var latestTickets = [];
   function renderBoard(tickets) {
@@ -1255,11 +1324,19 @@
     }
     agentList.innerHTML = agents.map(function (a) {
       var status = a.stale ? "stale" : (a.status || "idle");
+      // The heartbeat has carried the git identity since SessionStart started reporting it; the
+      // panel was still showing only a UUID, so "who is running this" was unanswerable from the
+      // one screen whose entire job is answering it.
+      var author = a.author || {};
+      var who = author.name || a.sessionId || "?";
       return (
         '<div class="agent">' +
-        '<span class="who">' + esc(a.sessionId || "?") + '</span>' +
+        '<span class="who">' + esc(who) + "</span>" +
+        (author.email ? ' <span class="email dim">' + esc(author.email) + "</span>" : "") +
         '<span class="status ' + status + '">' + status + "</span>" +
         (a.activeTicket ? '<div class="ticket mono">#' + esc(a.activeTicket) + "</div>" : "") +
+        '<div class="session mono dim">' + esc(a.sessionId || "?") +
+        (a.host ? " · " + esc(a.host) : "") + "</div>" +
         '<div class="since">last seen ' + relTime(a.lastSeenAt) + "</div>" +
         (a.tokens
           ? '<div class="tokens mono">' + fmtNum(a.tokens.totalTokens) + " tokens" +
@@ -1333,6 +1410,8 @@
     var q = state.queue || { pending: [], running: null };
     queuedIds = (q.pending || []).map(function (p) { return p.ticketId; });
     runningId = q.running ? q.running.ticketId : null;
+    chatSessions = {};
+    (q.chats || []).forEach(function (c) { chatSessions[c.ticketId] = c.sessionId; });
     renderQueueBar(q);
     authorBySession = {};
     (state.agents || []).forEach(function (a) {
@@ -1421,6 +1500,7 @@
     }
 
     renderInsights(state.stats, state.coverage, state.agents);
+    renderCompletion(state.tickets);
     renderStateChart(state.tickets || []);
     renderBoard(state.tickets || []);
     renderAgents(state.agents || []);
@@ -1683,7 +1763,7 @@
   function renderQueueBar(q) {
     var running = q.running;
     var pending = q.pending || [];
-    if (!running && !pending.length && !q.lastError) {
+    if (!running && !pending.length && !(q.chats || []).length && !q.lastError) {
       queueBar.hidden = true;
       return;
     }
@@ -1701,6 +1781,10 @@
       bits.push('<span class="q-wait">' + pending.length + " queued" +
         (running ? "" : " — waiting for a free session") + "</span>");
     }
+    (q.chats || []).forEach(function (c) {
+      bits.push('<span class="q-chat">💬 discussing <b>' + esc(c.ticketId) + "</b> — " +
+        '<code>claude attach ' + esc((c.sessionId || "").slice(0, 8)) + "</code></span>");
+    });
     if (q.lastError) bits.push('<span class="q-err">' + esc(q.lastError) + "</span>");
     queueBar.innerHTML = bits.join('<span class="q-sep">·</span>') +
       (running ? '<button class="ghost q-stop" id="queueStop" type="button">Stop</button>' : "");

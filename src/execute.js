@@ -109,6 +109,30 @@ function promptFor(ticket, { binPath, port }) {
   return parts.join("\n");
 }
 
+/** The prompt for talking ABOUT a ticket rather than doing it: the agent reads the ticket and the
+ *  code around it, then asks and answers rather than editing. It writes its conclusion back as a
+ *  ticket comment, so a conversation nobody else saw still leaves something on the board. */
+function chatPromptFor(ticket, { binPath, port }) {
+  const cli = `node ${binPath}`;
+  const parts = [
+    `Let's talk about Peephole ticket "${ticket.id}" before anyone builds it. Do not change any files.`,
+    "",
+    `Intent: ${ticket.intent}`,
+  ];
+  if (ticket.acceptance) parts.push("", `Acceptance criteria: ${ticket.acceptance}`);
+  if (ticket.body) parts.push("", "Ticket notes:", ticket.body);
+  parts.push(
+    "",
+    "Read enough of the repo to have an informed opinion, then tell me: what this ticket is really",
+    "asking for, what is ambiguous or missing, what you would do, and what could go wrong.",
+    "Ask me questions rather than guessing — this is a conversation, not an implementation.",
+    "",
+    "When we reach a conclusion, record it on the ticket so it is not lost:",
+    `  ${cli} ticket comment ${ticket.id} --text "<what we decided>" --port ${port}`,
+  );
+  return parts.join("\n");
+}
+
 /**
  * The execution queue: one ticket at a time, dispatched into an EXISTING idle session wherever
  * possible (`claude -p --resume <id>` continues that session under its own id, so the Agents panel
@@ -126,8 +150,63 @@ export function createQueue({ repoRoot, binPath, port, claimTicket, readTicket, 
   let timer = null;
   let lastError = null;
 
+  /** Conversations opened about tickets. Deliberately outside the queue: a chat claims nothing,
+   *  blocks nothing and does not take a turn from the worker — it is a person thinking out loud
+   *  with an agent, and the board's job is only to say where it is so it can be joined. */
+  const chats = [];
+
+  async function startChat(ticketId, permissionMode = "plan") {
+    const ticket = readTicket(ticketId);
+    if (!ticket) return { started: false, reason: `ticket "${ticketId}" not found` };
+
+    const prompt = chatPromptFor(ticket, { binPath, port });
+    let out = "";
+    try {
+      const code = await new Promise((resolve, reject) => {
+        const child = spawn("claude", ["--background", "--permission-mode", permissionMode, prompt], {
+          cwd: repoRoot,
+          stdio: ["ignore", "pipe", "pipe"],
+        });
+        child.stdout.on("data", (d) => { out += String(d); });
+        child.on("error", reject);
+        child.on("exit", resolve);
+      });
+      if (code !== 0) return { started: false, reason: `claude exited ${code}` };
+    } catch (e) {
+      return { started: false, reason: e.message };
+    }
+
+    const sessionId = await resolveSpawnedSession(out, repoRoot);
+    if (!sessionId) return { started: false, reason: "started a session but could not identify it" };
+    const existing = chats.findIndex((c) => c.ticketId === ticketId);
+    const entry = { ticketId, sessionId, startedAt: new Date().toISOString() };
+    if (existing === -1) chats.push(entry);
+    else chats[existing] = entry;
+    announce();
+    watchChats();
+    return { started: true, sessionId };
+  }
+
+  /** Drops finished conversations from the board. A chat that has exited is no longer joinable, and
+   *  leaving it listed would offer an attach command that fails. */
+  function watchChats() {
+    if (!chats.length) return;
+    setTimeout(async () => {
+      if (!chats.length) return;
+      const sessions = await listSessions(repoRoot);
+      const live = new Set(sessions.map((s) => s.sessionId));
+      const before = chats.length;
+      for (let i = chats.length - 1; i >= 0; i--) {
+        if (!live.has(chats[i].sessionId)) chats.splice(i, 1);
+      }
+      if (chats.length !== before) announce();
+      watchChats();
+    }, POLL_MS).unref?.();
+  }
+
   function state() {
     return {
+      chats: chats.map((c) => ({ ...c })),
       pending: pending.map((p) => ({ ticketId: p.ticketId, queuedAt: p.queuedAt })),
       running: running
         ? {
@@ -349,5 +428,5 @@ export function createQueue({ repoRoot, binPath, port, claimTicket, readTicket, 
     return state();
   }
 
-  return { enqueue, cancel, stop, state, tick };
+  return { enqueue, cancel, stop, state, tick, startChat };
 }

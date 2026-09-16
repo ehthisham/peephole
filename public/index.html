@@ -88,6 +88,18 @@
   .langs{background:var(--surface); border:1px solid var(--border); border-radius:8px; padding:12px 14px;}
   .langs h3{margin:0 0 8px; font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:0.05em; color:var(--ink-dim);}
 
+  .completion{background:var(--surface); border:1px solid var(--border); border-radius:8px; padding:14px 16px; margin-bottom:10px;}
+  .completion:empty{display:none;}
+  .completion h3{margin:0 0 12px; font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:0.05em; color:var(--ink-dim);}
+  .done-head{display:flex; align-items:center; gap:12px; padding-bottom:12px; margin-bottom:10px; border-bottom:1px solid var(--border);}
+  .done-head .done-pct{font-size:30px; font-weight:700; color:var(--accent); font-variant-numeric:tabular-nums; line-height:1;}
+  .done-head .done-label{font-size:12.5px; color:var(--ink-dim); display:flex; flex-direction:column; gap:2px;}
+  .done-head small{font-size:11px; opacity:0.85;}
+  .done-row{display:flex; align-items:center; gap:10px; font-size:12.5px; margin-bottom:5px;}
+  .done-row .name{width:150px; flex:none; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+  .done-row .bar-track{flex:1; background:var(--surface-2); border-radius:4px; height:8px; overflow:hidden;}
+  .done-row .bar-fill{display:block; height:100%; border-radius:4px;}
+  .done-row .amount{width:60px; flex:none; text-align:right; color:var(--ink-dim); font-size:11.5px;}
   .state-chart{background:var(--surface); border:1px solid var(--border); border-radius:8px; padding:14px 16px; margin-bottom:10px;}
   .state-chart h3{margin:0 0 12px; font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:0.05em; color:var(--ink-dim);}
   .state-chart-body{display:flex; align-items:center; gap:24px; flex-wrap:wrap;}
@@ -258,6 +270,12 @@
   .agent .status.idle{color:var(--ink-dim); background:var(--surface-2);}
   .agent .status.paused{color:var(--proposed); background:var(--proposed-bg);}
   .agent .status.stale{color:var(--closed); background:var(--closed-bg);}
+  .agent .email{font-size:11px;}
+  .agent .session{font-size:10.5px; margin-top:2px;}
+  .ctl.chat{border-color:var(--verified); color:var(--verified);}
+  .ctl.chat:hover{background:var(--verified-bg);}
+  .ctl.chat[aria-pressed="true"]{background:var(--verified); color:var(--accent-ink); border-color:var(--verified);}
+  .queue-bar .q-chat{color:var(--verified);}
   .agent .ticket{color:var(--ink-dim); font-size:11.5px; margin-top:2px;}
   .agent .since{color:var(--ink-dim); font-size:11px; margin-top:2px;}
   .agent .tokens{color:var(--ink-dim); font-size:11px; margin-top:2px;}
@@ -415,6 +433,7 @@
   <div class="tab-panel" id="panel-insights" hidden>
     <div class="state-chart" id="stateChart"></div>
     <div class="stat-row" id="statRow"></div>
+    <div class="completion" id="completion"></div>
     <div class="langs" id="langs"></div>
     <div class="tokens" id="tokenUsage"></div>
   </div>
