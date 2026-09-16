@@ -883,11 +883,11 @@
     if (execBtn) {
       execBtn.addEventListener("click", async function (ev) {
         ev.stopPropagation();
-        var mode = await askPermissionMode([execBtn.dataset.execute]);
-        if (!mode) return;
+        var choice = await askPermissionMode([execBtn.dataset.execute]);
+        if (!choice) return;
         execBtn.disabled = true;
         try {
-          await apiPost("/api/tickets/" + encodeURIComponent(execBtn.dataset.execute) + "/execute", { permissionMode: mode });
+          await apiPost("/api/tickets/" + encodeURIComponent(execBtn.dataset.execute) + "/execute", choice);
         } finally {
           execBtn.disabled = false;
         }
@@ -1548,7 +1548,17 @@
       var allowed = (latestState && latestState.permissionModes) || ["plan", "acceptEdits"];
       var offered = PERM_MODES.filter(function (m) { return allowed.indexOf(m.key) !== -1; });
       if (allowed.indexOf(last) === -1) last = "acceptEdits";
-      execModes.innerHTML = offered.map(function (m) {
+      var LAUNCH_KEY = "peephole.launchMode";
+      var lastLaunch = "terminal";
+      try { lastLaunch = localStorage.getItem(LAUNCH_KEY) || lastLaunch; } catch (e) {}
+      var launchHtml =
+        '<div class="launch-row">' +
+        [["terminal", "In a terminal", "you sit with it and can interrupt at any point"],
+         ["background", "In the background", "unattended; join later with claude attach"]].map(function (l) {
+          return '<label class="perm-opt"><input type="radio" name="launch" value="' + l[0] + '"' +
+            (l[0] === lastLaunch ? " checked" : "") + "><span><b>" + esc(l[1]) + "</b><small>" + esc(l[2]) + "</small></span></label>";
+        }).join("") + "</div>";
+      execModes.innerHTML = launchHtml + '<div class="perm-head">Permissions</div>' + offered.map(function (m) {
         return '<label class="perm-opt"><input type="radio" name="perm" value="' + m.key + '"' +
           (m.key === last ? " checked" : "") + '><span><b>' + esc(m.label) + "</b><small>" + esc(m.sub) + "</small></span></label>";
       }).join("") +
@@ -1577,12 +1587,17 @@
         execBackdrop.removeEventListener("click", backdropClick);
       }
       function go() {
-        var picked = execModes.querySelector("input:checked");
+        var picked = execModes.querySelector('input[name="perm"]:checked');
         var mode = picked ? picked.value : "acceptEdits";
-        try { localStorage.setItem(PERM_KEY, mode); } catch (e) {}
+        var launchPick = execModes.querySelector('input[name="launch"]:checked');
+        var launch = launchPick ? launchPick.value : "terminal";
+        try {
+          localStorage.setItem(PERM_KEY, mode);
+          localStorage.setItem(LAUNCH_KEY, launch);
+        } catch (e) {}
         cleanup();
         execGo.disabled = false;
-        resolve(mode);
+        resolve({ permissionMode: mode, launch: launch });
       }
       function cancel() { cleanup(); execGo.disabled = false; resolve(null); }
       function backdropClick(ev) { if (ev.target === execBackdrop) cancel(); }
@@ -1773,6 +1788,10 @@
       // An agent that stopped to ask something is not progress and not failure; it needs a person.
       bits.push('<span class="q-wait-input">⏸ <b>' + esc(running.ticketId) + "</b> is waiting for input — " +
         '<code>claude attach ' + esc((running.sessionId || "").slice(0, 8)) + "</code></span>");
+    } else if (running && running.launch === "terminal") {
+      bits.push('<span class="q-run">▶ <b>' + esc(running.ticketId) + "</b> is open in a terminal" +
+        '<span class="dim"> — waiting for it to reach shipped or closed</span>' +
+        '<span class="dim mono"> ' + esc((running.sessionId || "").slice(0, 8)) + "</span></span>");
     } else if (running) {
       bits.push('<span class="q-run">▶ running <b>' + esc(running.ticketId) + "</b>" +
         (running.sessionId ? ' <span class="dim mono">' + esc(running.sessionId.slice(0, 6)) + "</span>" : "") + "</span>");
@@ -1786,10 +1805,23 @@
         '<code>claude attach ' + esc((c.sessionId || "").slice(0, 8)) + "</code></span>");
     });
     if (q.lastError) bits.push('<span class="q-err">' + esc(q.lastError) + "</span>");
+    var auto = q.autoContinue !== false;
     queueBar.innerHTML = bits.join('<span class="q-sep">·</span>') +
-      (running ? '<button class="ghost q-stop" id="queueStop" type="button">Stop</button>' : "");
+      '<span class="q-actions">' +
+      (pending.length || running
+        ? '<button class="ghost q-auto" id="queueAuto" type="button" aria-pressed="' + auto + '">' +
+          (auto ? "Continuing automatically" : "Holding after each ticket") + "</button>"
+        : "") +
+      (running ? '<button class="ghost q-stop" id="queueStop" type="button">Stop</button>' : "") +
+      "</span>";
     var stopBtn = document.getElementById("queueStop");
     if (stopBtn) stopBtn.addEventListener("click", function () { apiPost("/api/execute/stop", {}); });
+    var autoBtn = document.getElementById("queueAuto");
+    if (autoBtn) {
+      autoBtn.addEventListener("click", function () {
+        apiPost("/api/execute/continue", { autoContinue: !auto });
+      });
+    }
   }
 
   /** The menu is rebuilt from the current ticket set each time it opens, so it never offers a
@@ -1918,11 +1950,11 @@
   execSelectedBtn.addEventListener("click", async function () {
     var ids = selectedInBoardOrder();
     if (!ids.length) return;
-    var mode = await askPermissionMode(ids);
-    if (!mode) return;
+    var choice = await askPermissionMode(ids);
+    if (!choice) return;
     execSelectedBtn.disabled = true;
     try {
-      await apiPost("/api/execute", { ticketIds: ids, permissionMode: mode });
+      await apiPost("/api/execute", { ticketIds: ids, permissionMode: choice.permissionMode, launch: choice.launch });
     } finally {
       renderExecSelected();
     }

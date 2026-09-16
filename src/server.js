@@ -565,7 +565,8 @@ export async function startServer(initialRepoRoot, { port = 4173, remote = "orig
         const body = await readJsonBody(req);
         if (body.permissionMode === BYPASS_MODE && !bypassAllowed) return sendJson(res, 403, { error: BYPASS_REFUSED });
         const mode = PERMISSION_MODES.includes(body.permissionMode) ? body.permissionMode : "acceptEdits";
-        ctx.queueState = ctx.queue.enqueue(executeMatch[1], mode);
+        const launch = body.launch === "terminal" ? "terminal" : "background";
+        ctx.queueState = ctx.queue.enqueue(executeMatch[1], mode, launch);
         return sendJson(res, 200, { queued: true, queue: ctx.queueState, state: ctx.publicState() });
       }
       if (req.method === "POST" && url.pathname === "/api/execute") {
@@ -574,7 +575,8 @@ export async function startServer(initialRepoRoot, { port = 4173, remote = "orig
         const mode = PERMISSION_MODES.includes(body.permissionMode) ? body.permissionMode : "acceptEdits";
         // Lane order, not click order: "run the selected ones" means the order they are read in.
         const ids = Array.isArray(body.ticketIds) ? body.ticketIds : [];
-        ids.forEach((id) => { ctx.queueState = ctx.queue.enqueue(String(id), mode); });
+        const batchLaunch = body.launch === "terminal" ? "terminal" : "background";
+        ids.forEach((id) => { ctx.queueState = ctx.queue.enqueue(String(id), mode, batchLaunch); });
         return sendJson(res, 200, { queued: ids.length, queue: ctx.queueState, state: ctx.publicState() });
       }
       const chatMatch = url.pathname.match(/^\/api\/tickets\/([^/]+)\/chat$/);
@@ -591,6 +593,11 @@ export async function startServer(initialRepoRoot, { port = 4173, remote = "orig
       const dequeueMatch = url.pathname.match(/^\/api\/tickets\/([^/]+)\/dequeue$/);
       if (req.method === "POST" && dequeueMatch) {
         ctx.queueState = ctx.queue.cancel(dequeueMatch[1]);
+        return sendJson(res, 200, { queue: ctx.queueState, state: ctx.publicState() });
+      }
+      if (req.method === "POST" && url.pathname === "/api/execute/continue") {
+        const body = await readJsonBody(req);
+        ctx.queueState = ctx.queue.setAutoContinue(body.autoContinue !== false);
         return sendJson(res, 200, { queue: ctx.queueState, state: ctx.publicState() });
       }
       if (req.method === "POST" && url.pathname === "/api/execute/stop") {

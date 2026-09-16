@@ -168,7 +168,7 @@
   .queue-bar .q-wait-input{color:var(--proposed);}
   .queue-bar code{font-family:"IBM Plex Mono",ui-monospace,monospace; font-size:11.5px; background:var(--surface); padding:1px 5px; border-radius:4px;}
   .queue-bar .q-sep{color:var(--ink-dim);}
-  .queue-bar .q-stop{margin-left:auto; padding:4px 10px; font-size:12px;}
+  .queue-bar .q-stop{padding:4px 10px; font-size:12px;}
 
   .ctl:disabled{opacity:0.35; cursor:not-allowed;}
   .ctl.select[aria-pressed="true"]{border-color:var(--built); color:var(--built); background:var(--built-bg);}
@@ -191,6 +191,11 @@
 
   .exec-modal{max-width:440px;}
   .exec-note{margin:0 0 14px; font-size:12.5px; line-height:1.5; color:var(--ink-dim);}
+  .launch-row{margin-bottom:6px;}
+  .perm-head{font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:0.05em; color:var(--ink-dim); margin:14px 0 6px;}
+  .queue-bar .q-actions{margin-left:auto; display:flex; gap:6px;}
+  .queue-bar .q-auto{padding:4px 10px; font-size:12px;}
+  .queue-bar .q-auto[aria-pressed="false"]{border-color:var(--proposed); color:var(--proposed);}
   .perm-opt{display:flex; align-items:flex-start; gap:9px; padding:9px 10px; border:1px solid var(--border); border-radius:7px; margin-bottom:7px; cursor:pointer;}
   .perm-opt:hover{border-color:var(--ink-dim);}
   .perm-opt input{margin-top:2px;}

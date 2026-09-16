@@ -1,4 +1,8 @@
 import { execFile, spawn } from "node:child_process";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { randomUUID } from "node:crypto";
 import { promisify } from "node:util";
 
 const execFileP = promisify(execFile);
@@ -87,6 +91,41 @@ function hasBackgroundSession(sessions) {
   return sessions.some((s) => s.kind === "background");
 }
 
+/**
+ * Opens the ticket in a terminal the developer can sit in, rather than a headless session they can
+ * only watch. The session is interactive from its first token: they can interrupt, redirect, answer
+ * a question, or take the keyboard entirely — which is the thing a background dispatch cannot offer
+ * and the reason `claude attach` existed as a workaround.
+ *
+ * The prompt goes through a file rather than the command line: gnome-terminal is a thin client to
+ * gnome-terminal-server, so environment variables set here do not reach the shell it starts, and a
+ * multi-line prompt full of quotes has no business being escaped through two layers of shell.
+ */
+async function openInTerminal({ repoRoot, sessionId, permissionMode, prompt }) {
+  const promptFile = path.join(os.tmpdir(), `peephole-${sessionId}.txt`);
+  await fs.writeFile(promptFile, prompt, "utf8");
+  // `exec bash` keeps the window alive when the session ends: the developer is left in the repo,
+  // in a shell, where they were already working — not staring at a closed window.
+  const line =
+    `claude --session-id ${sessionId} --permission-mode ${permissionMode} "$(cat ${promptFile})"; ` +
+    `rm -f ${promptFile}; exec bash`;
+
+  for (const [cmd, args] of [
+    ["gnome-terminal", [`--working-directory=${repoRoot}`, "--", "bash", "-lc", line]],
+    ["x-terminal-emulator", ["-e", `bash -lc '${line.replace(/'/g, "'\\''")}'`]],
+    ["xterm", ["-e", "bash", "-lc", line]],
+  ]) {
+    try {
+      const child = spawn(cmd, args, { cwd: repoRoot, detached: true, stdio: "ignore" });
+      child.unref();
+      return { opened: true, terminal: cmd };
+    } catch {
+      /* try the next emulator */
+    }
+  }
+  return { opened: false, reason: "no terminal emulator found (tried gnome-terminal, x-terminal-emulator, xterm)" };
+}
+
 /** The instruction handed to the agent. Deliberately points at the CLI rather than describing the
  *  work in prose: the ticket file is the source of truth, and the agent must drive state through
  *  `peephole ticket advance` so the board reflects reality rather than this prompt's assumptions. */
@@ -154,6 +193,9 @@ export function createQueue({ repoRoot, binPath, port, claimTicket, readTicket, 
    *  blocks nothing and does not take a turn from the worker — it is a person thinking out loud
    *  with an agent, and the board's job is only to say where it is so it can be joined. */
   const chats = [];
+  /** Whether finishing one ticket starts the next by itself. */
+  let autoContinue = true;
+  const TERMINAL_TICKET_STATES = new Set(["shipped", "closed"]);
 
   async function startChat(ticketId, permissionMode = "plan") {
     const ticket = readTicket(ticketId);
@@ -208,12 +250,14 @@ export function createQueue({ repoRoot, binPath, port, claimTicket, readTicket, 
     return {
       chats: chats.map((c) => ({ ...c })),
       pending: pending.map((p) => ({ ticketId: p.ticketId, queuedAt: p.queuedAt })),
+      autoContinue,
       running: running
         ? {
             ticketId: running.ticketId,
             sessionId: running.sessionId,
             startedAt: running.startedAt,
             needsInput: Boolean(running.needsInput),
+            launch: running.launch || "background",
           }
         : null,
       lastError,
@@ -224,10 +268,10 @@ export function createQueue({ repoRoot, binPath, port, claimTicket, readTicket, 
     if (onChange) onChange(state());
   }
 
-  function enqueue(ticketId, permissionMode) {
+  function enqueue(ticketId, permissionMode, launch = "background") {
     if (running && running.ticketId === ticketId) return state();
     if (pending.some((p) => p.ticketId === ticketId)) return state();
-    pending.push({ ticketId, permissionMode, queuedAt: new Date().toISOString() });
+    pending.push({ ticketId, permissionMode, launch, queuedAt: new Date().toISOString() });
     announce();
     tick().catch((e) => console.error("queue tick failed:", e.message));
     return state();
@@ -281,6 +325,35 @@ export function createQueue({ repoRoot, binPath, port, claimTicket, readTicket, 
 
     pending.shift();
     const prompt = promptFor(ticket, { binPath, port });
+
+    if (next.launch === "terminal") {
+      // The id is minted here rather than read back, because an interactive session accepts
+      // --session-id (only --background refuses it). Knowing it up front means the ticket can be
+      // claimed for exactly the session the developer is about to be sitting in.
+      const sessionId = randomUUID();
+      const opened = await openInTerminal({ repoRoot, sessionId, permissionMode: next.permissionMode, prompt });
+      if (!opened.opened) {
+        lastError = `${next.ticketId}: ${opened.reason}`;
+        announce();
+        return;
+      }
+      try {
+        const claim = await claimTicket(next.ticketId, sessionId);
+        if (!claim || claim.claimed === false) {
+          lastError = `${next.ticketId}: opened a terminal, but not claimed — ${(claim && claim.reason) || "unknown"}`;
+        }
+      } catch (e) {
+        lastError = `${next.ticketId}: opened a terminal, but not claimed — ${e.message}`;
+      }
+      running = {
+        ticketId: next.ticketId, sessionId, startedAt: new Date().toISOString(),
+        launch: "terminal", terminal: opened.terminal,
+      };
+      announce();
+      watchRunning();
+      return;
+    }
+
     // `--background` is the whole point: the dispatched turn outlives this request, and the session
     // stays attachable (`claude attach <id>`) so a human can take over what an agent started.
     //
@@ -382,8 +455,28 @@ export function createQueue({ repoRoot, binPath, port, claimTicket, readTicket, 
     if (!running) return;
     setTimeout(async () => {
       if (!running) return;
+      // A ticket worked in a terminal ends when the TICKET says so — the developer may keep the
+      // session open for hours afterwards, and an interactive session that goes quiet between
+      // messages is not a finished one. The agent is told to advance state as it goes, so a
+      // terminal state on the ticket is the completion signal for both launch modes.
+      const current = readTicket(running.ticketId);
+      if (current && TERMINAL_TICKET_STATES.has(current.state)) {
+        running = null;
+        announce();
+        if (autoContinue) tick().catch((e) => console.error("queue tick failed:", e.message));
+        return;
+      }
+
       const sessions = await listSessions(repoRoot);
       const live = sessions.find((s) => s.sessionId === running.sessionId);
+      if (running.launch === "terminal") {
+        // Watch the ticket and ONLY the ticket. A freshly started interactive session does not
+        // appear in `claude agents --json` at all — verified: the process is running with the right
+        // prompt while the listing shows nothing — so absence there says nothing about whether the
+        // developer is still working. If they abandon it, the ticket simply stays claimed and
+        // in-progress on the board, which is both true and visible.
+        return watchRunning();
+      }
       if (live && live.status === "busy") {
         if (running.needsInput) { running.needsInput = false; announce(); }
         return watchRunning();
@@ -397,7 +490,9 @@ export function createQueue({ repoRoot, binPath, port, claimTicket, readTicket, 
       }
       running = null;
       announce();
-      tick().catch((e) => console.error("queue tick failed:", e.message));
+      // "Continue to the next one" is a choice: an unattended queue should drain itself, while a
+      // developer working in a terminal usually wants to decide what they pick up next.
+      if (autoContinue) tick().catch((e) => console.error("queue tick failed:", e.message));
     }, POLL_MS).unref?.();
   }
 
@@ -414,6 +509,15 @@ export function createQueue({ repoRoot, binPath, port, claimTicket, readTicket, 
    *  which is the difference between cancelling work and killing somebody's session. */
   function stop() {
     if (!running) return state();
+    if (running.launch === "terminal") {
+      // Never kill a terminal somebody is sitting in. Stop here means "the queue stops waiting on
+      // this one" — the window, and whatever they are doing in it, is theirs.
+      const id = running.ticketId;
+      running = null;
+      lastError = `${id}: stopped waiting — its terminal is still open and the ticket is still claimed`;
+      announce();
+      return state();
+    }
     // The dispatched turn runs in a background session we no longer own a handle to, so it is
     // stopped the way the CLI stops one. Its conversation survives — `claude attach <id>` still
     // opens it — which is the difference between cancelling work and destroying it.
@@ -428,5 +532,12 @@ export function createQueue({ repoRoot, binPath, port, claimTicket, readTicket, 
     return state();
   }
 
-  return { enqueue, cancel, stop, state, tick, startChat };
+  function setAutoContinue(value) {
+    autoContinue = Boolean(value);
+    announce();
+    if (autoContinue && !running) tick().catch((e) => console.error("queue tick failed:", e.message));
+    return state();
+  }
+
+  return { enqueue, cancel, stop, state, tick, startChat, setAutoContinue };
 }
