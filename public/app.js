@@ -1279,7 +1279,13 @@
     projectName.textContent = state.project || "—";
     remoteLink.textContent = state.remoteUrl || "";
     remoteLink.href = toHttpUrl(state.remoteUrl);
+    // Where the ledger lives, and on whose authority. A board reading a branch nobody declared is
+    // one `git remote show` away from reading a different one — worth saying out loud.
     branchName.textContent = state.stateBranch ? "branch: " + state.stateBranch : "";
+    branchName.title = state.stateBranchSource
+      ? "ticket ledger branch — resolved from " + state.stateBranchSource
+      : "";
+    branchName.className = "branch mono" + (state.stateBranchSource === "remote default" ? " branch-unpinned" : "");
     lastUpdated.textContent = "Updated " + relTime(state.lastFetchedAt);
 
     if (state.hookConfigured) {

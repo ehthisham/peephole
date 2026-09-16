@@ -116,6 +116,22 @@ your `<repo>/.peephole/`.
 Add `.peephole-worktree/` to the watched repo's `.gitignore`. Git does not ignore a nested worktree
 on its own, so it shows up as untracked and one `git add -A` would commit the whole duplicate tree.
 
+### Which branch the ledger lives on
+
+Resolved in this order: `--branch` on the command line, then `stateBranch` in the repo's committed
+`.peephole/config.yaml`, then the remote's default branch.
+
+Declare it in `config.yaml` and keep it generic — `main`, or a dedicated `peephole` branch. The
+last resort is whatever a git host happens to report as default, which is not necessarily stable: a
+repo whose default is set to a feature branch pins the entire ticket ledger to that branch, and
+when it merges and is deleted the tickets leave the default line with it. It is also per-machine —
+if `git remote show` fails (offline, no auth) each machine falls back to its own checked-out branch
+and quietly reads a different board. A board resolved that way says so in the startup line and
+marks the branch in the header.
+
+Changing `stateBranch` later points the board at a different branch; it does not move the tickets.
+Merge or cherry-pick `.peephole/` onto the new branch first, or the board opens empty.
+
 ## Removing it from a repo
 
 Stop the server first (the worktree is in use while it runs), then, in the watched repo:

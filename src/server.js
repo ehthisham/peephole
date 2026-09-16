@@ -44,9 +44,36 @@ const PERMISSION_MODES = bypassAllowed ? [...BASE_PERMISSION_MODES, BYPASS_MODE]
  *  It used to bind every interface, which put all of that on whatever network the laptop was on. */
 const DEFAULT_HOST = "127.0.0.1";
 
-export async function startServer(repoRoot, { port = 4173, remote = "origin", host = DEFAULT_HOST } = {}) {
+/**
+ * Which branch the ticket ledger lives on, in order of authority:
+ *
+ *   1. `--branch` on the command line — one run, one answer.
+ *   2. `stateBranch` in the repo's own `.peephole/config.yaml` — committed, so every teammate
+ *      resolves the same branch instead of each machine deciding for itself.
+ *   3. the remote's default branch, as a last resort.
+ *
+ * (3) alone was the old behaviour and it silently pinned the ledger to whatever a host happened to
+ * call default — here, a feature branch (`feat/versioning-v1-lineage`). When such a branch merges
+ * and is deleted, the tickets leave the default line with it, and anyone whose `git remote show`
+ * fails falls back to their own checked-out branch and quietly reads a different board.
+ */
+async function resolveStateBranch(repoRoot, remote, override) {
+  const fallback = await git.defaultRemoteBranch(repoRoot, remote);
+  if (override) return { branch: override, source: "--branch" };
+  for (const ref of [`${remote}/${fallback}`, fallback]) {
+    if (!(await git.refExists(repoRoot, ref))) continue;
+    const declared = await git.declaredStateBranch(repoRoot, ref).catch(() => null);
+    if (declared) return { branch: declared, source: ".peephole/config.yaml" };
+    break;
+  }
+  return { branch: fallback, source: "remote default" };
+}
+
+export async function startServer(repoRoot, { port = 4173, remote = "origin", host = DEFAULT_HOST, branch = null } = {}) {
   const peepholeBin = path.join(__dirname, "..", "bin", "peephole.js");
-  const stateBranch = await git.defaultRemoteBranch(repoRoot, remote);
+  const resolved = await resolveStateBranch(repoRoot, remote, branch);
+  const stateBranch = resolved.branch;
+  const stateBranchSource = resolved.source;
   const remoteUrl = await git.remoteUrl(repoRoot, remote);
   const { worktreePath, localBranch } = await git.ensureWorktree(repoRoot, stateBranch, remote);
   // The identity a UI-created ticket's "created by" defaults to — this machine's configured git
@@ -147,6 +174,7 @@ export async function startServer(repoRoot, { port = 4173, remote = "origin", ho
       remoteUrl,
       remote,
       stateBranch,
+      stateBranchSource,
       gitUser,
       hookConfigured: hookConfigured(),
       autoFetch,
@@ -507,5 +535,5 @@ export async function startServer(repoRoot, { port = 4173, remote = "origin", ho
   await refresh({ doFetch: true });
 
   await new Promise((resolve) => server.listen(port, host, resolve));
-  return { server, port, stateBranch, remoteUrl, worktreePath };
+  return { server, port, stateBranch, stateBranchSource, remoteUrl, worktreePath };
 }

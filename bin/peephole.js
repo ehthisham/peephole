@@ -57,10 +57,17 @@ async function cmdServe(argv) {
   // Loopback unless asked otherwise: every endpoint is unauthenticated, and they create tickets,
   // push branches and start agents. `--host 0.0.0.0` exposes all of that to the network.
   const host = args.host && args.host !== true ? String(args.host) : "127.0.0.1";
-  const { stateBranch, remoteUrl } = await startServer(repoRoot, { port, remote: args.remote || "origin", host });
+  const branch = args.branch && args.branch !== true ? String(args.branch) : null;
+  const { stateBranch, stateBranchSource, remoteUrl } = await startServer(repoRoot, {
+    port, remote: args.remote || "origin", host, branch,
+  });
   console.log(`peephole watching ${repoRoot}`);
   console.log(`  remote:       ${remoteUrl || "(none)"}`);
-  console.log(`  state branch: ${stateBranch}`);
+  console.log(`  state branch: ${stateBranch} (${stateBranchSource})`);
+  if (stateBranchSource === "remote default") {
+    console.log("                 not declared in .peephole/config.yaml — every machine resolves this on its own;");
+    console.log("                 set stateBranch there (or pass --branch) to pin the ledger to one branch");
+  }
   console.log(`  dashboard:    http://localhost:${port}`);
   if (host !== "127.0.0.1" && host !== "localhost") {
     console.log(`  WARNING:      listening on ${host} — anyone who can reach this port can write tickets and start agents`);
@@ -240,7 +247,7 @@ async function main() {
 
   console.error(
     "Usage:\n" +
-    "  peephole serve [--repo <path>] [--port 4173] [--host 127.0.0.1]\n" +
+    "  peephole serve [--repo <path>] [--port 4173] [--host 127.0.0.1] [--branch <state branch>]\n" +
     '  peephole ticket new --project <p> --intent "<text>" [--id <id>] [--acceptance "<text>"] [--risk reversible|irreversible] [--owner <sessionId>]\n' +
     "  peephole ticket claim <id> --owner <sessionId>\n" +
     "  peephole ticket unclaim <id>  # return to proposed, in-progress only\n" +

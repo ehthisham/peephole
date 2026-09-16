@@ -60,6 +60,17 @@ export async function defaultRemoteBranch(repoRoot, remote = "origin") {
   return currentBranch(repoRoot);
 }
 
+/** Reads `.peephole/config.yaml`'s `stateBranch` at `ref` without checking anything out. Used to
+ *  bootstrap branch resolution: the config that names the branch is itself committed on a branch,
+ *  so it is read from the remote's default ref first and only then followed. */
+export async function declaredStateBranch(repoRoot, ref) {
+  const text = await showFile(repoRoot, ref, ".peephole/config.yaml");
+  if (!text) return null;
+  const m = text.match(/^stateBranch:\s*(.+)$/m);
+  if (!m) return null;
+  return m[1].trim().replace(/^["']|["']$/g, "") || null;
+}
+
 export async function refExists(repoRoot, ref) {
   try {
     await run(repoRoot, ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`]);
