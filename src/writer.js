@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import * as git from "./git.js";
 import { defaultConfig, serializeConfig, serializeTicket } from "./schema.js";
 import { upsertMarkedSection, agentNoteBody, readmeNoteBody } from "./notes.js";
+import { resolveLedger } from "./ledger.js";
 
 const PEEPHOLE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -22,10 +23,12 @@ function ticketPath(dir, id, label) {
   return file;
 }
 
+/** The one place every ledger write resolves its checkout — a sparse clone outside the repo when
+ *  that is possible, the in-repo worktree when it is not (see src/ledger.js). Callers are unchanged
+ *  either way: they get a directory holding `.peephole/**` and the branch to commit on. */
 async function prepWorktree(repoRoot, remoteBranch) {
-  const { worktreePath, localBranch } = await git.ensureWorktree(repoRoot, remoteBranch);
-  await git.syncWorktreeIfClean(worktreePath, localBranch, remoteBranch);
-  return { worktreePath, localBranch };
+  const ledger = await resolveLedger(repoRoot, remoteBranch);
+  return { worktreePath: ledger.path, localBranch: ledger.localBranch, ledgerKind: ledger.kind };
 }
 
 async function ensureDir(p) {
@@ -725,13 +728,17 @@ export async function migrateLedger(repoRoot, fromBranch, toBranch, { remote = "
   };
 }
 
+// Both of these used git.ensureWorktree directly, which bypasses the ledger resolver: with the
+// ledger in a clone, the write landed in the clone while the push published the in-repo worktree —
+// reporting success having sent nothing, and creating a worktree in a repo that had none. Every
+// ledger operation goes through prepWorktree.
 export async function push(repoRoot, remoteBranch) {
-  const { worktreePath, localBranch } = await git.ensureWorktree(repoRoot, remoteBranch);
+  const { worktreePath, localBranch } = await prepWorktree(repoRoot, remoteBranch);
   await git.pushWorktree(worktreePath, localBranch, remoteBranch);
   return { pushed: true };
 }
 
 export async function pendingPush(repoRoot, remoteBranch) {
-  const { worktreePath, localBranch } = await git.ensureWorktree(repoRoot, remoteBranch);
+  const { worktreePath, localBranch } = await prepWorktree(repoRoot, remoteBranch);
   return git.unpushedCount(worktreePath, localBranch, remoteBranch);
 }

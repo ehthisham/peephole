@@ -9,6 +9,7 @@ import * as writer from "./writer.js";
 import * as tokenUsage from "./tokens.js";
 import { createQueue, listSessions } from "./execute.js";
 import { DEFAULT_STATE_BRANCH } from "./schema.js";
+import { resolveLedger } from "./ledger.js";
 import { detectCoverage } from "./coverage.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -86,7 +87,11 @@ export async function startServer(repoRoot, { port = 4173, remote = "origin", ho
   const stateBranch = resolved.branch;
   const stateBranchSource = resolved.source;
   const remoteUrl = await git.remoteUrl(repoRoot, remote);
-  const { worktreePath, localBranch } = await git.ensureWorktree(repoRoot, stateBranch, remote);
+  // The ledger may live outside the repo (a sparse clone) or inside it (the worktree fallback);
+  // everything below reads and writes through whichever was resolved.
+  let ledger = await resolveLedger(repoRoot, stateBranch, { remote });
+  let worktreePath = ledger.path;
+  let localBranch = ledger.localBranch;
   // The identity a UI-created ticket's "created by" defaults to — this machine's configured git
   // identity, resolved through .mailmap so it matches the Members panel's naming.
   const rawGitUser = await git.gitUser(repoRoot);
@@ -187,6 +192,7 @@ export async function startServer(repoRoot, { port = 4173, remote = "origin", ho
       stateBranch,
       stateBranchSource,
       checkoutBranch: cache.checkoutBranch ?? null,
+      ledger: { kind: ledger.kind, path: ledger.path, reason: ledger.reason },
       stateBranchOnRemote: cache.stateBranchOnRemote ?? true,
       repoRoot,
       gitUser,
@@ -212,11 +218,15 @@ export async function startServer(repoRoot, { port = 4173, remote = "origin", ho
   async function refresh({ doFetch }) {
     if (doFetch) {
       await git.fetch(repoRoot, remote);
-      await git.syncWorktreeIfClean(worktreePath, localBranch, stateBranch, remote);
+      // Re-resolve rather than assume: pushing a ledger branch for the first time is exactly when
+      // the clone becomes possible, and nobody should have to restart the board to get it.
+      ledger = await resolveLedger(repoRoot, stateBranch, { remote });
+      worktreePath = ledger.path;
+      localBranch = ledger.localBranch;
     }
     const [state, stats] = await Promise.all([
       // Tickets come from the ledger branch — that is the shared record.
-      scan(repoRoot, localBranch),
+      scan(ledger.kind === "clone" ? ledger.path : repoRoot, localBranch),
       // Code stats come from the developer's own checkout (HEAD), not the ledger. They describe
       // the code someone is actually working on: lines, languages, commits, contributors, last
       // commit. Reading them at the ledger branch was tolerable only while that branch WAS the

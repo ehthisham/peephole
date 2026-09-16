@@ -135,6 +135,25 @@ export async function ensureWorktree(repoRoot, remoteBranch, remote = "origin") 
   return { worktreePath, localBranch };
 }
 
+/** A ledger clone: history without blobs, one branch, sparse working tree. Cheap enough to keep
+ *  per project — it carries the ticket files and nothing else. */
+export async function cloneLedger(remoteUrl, dir, branch, remote = "origin") {
+  await run(process.cwd(), [
+    "clone", "--quiet", "--filter=blob:none", "--sparse", "--single-branch",
+    "--origin", remote, "--branch", branch, remoteUrl, dir,
+  ]);
+}
+
+/** Only `.peephole/` on disk. `--no-cone` is required: cone mode also materialises every
+ *  root-level file, which is most of what the clone was avoiding. */
+export async function sparseCheckoutLedger(dir) {
+  await run(dir, ["sparse-checkout", "set", "--no-cone", ".peephole"]);
+}
+
+export async function hardResetTo(dir, ref) {
+  await run(dir, ["reset", "--hard", ref]);
+}
+
 /** Paths touched by the commits waiting to be pushed. Used to prove an auto-push would only ever
  *  publish ledger writes — anything else means something unexpected rode along on this branch. */
 export async function pendingPaths(worktreePath, localBranch, remoteBranch, remote = "origin") {
