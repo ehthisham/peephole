@@ -11,6 +11,24 @@ repo you are tracking, and the repo gains no dependency on this one. What lands 
 data (`.peephole/`) plus two documentation sections; what stays on your machine is the hook wiring
 and a git worktree.
 
+### Install the CLI on your PATH (so the committed blocks work)
+
+The `CLAUDE.md` / `README.md` sections Peephole writes into a tracked repo are **committed and shared**,
+so they must not carry one developer's home path. They emit the **bare `peephole` command** with
+**`--repo .`** (relative to the repo root), e.g. `peephole serve --repo . --port 4173` — portable on
+any machine, provided `peephole` is on your PATH. Install it once from this clone:
+
+```
+cd ~/workx/peephole   # (wherever you cloned it)
+npm install
+npm link              # or: npm i -g .   → puts `peephole` on your PATH
+peephole --help
+```
+
+Then run every command **from the tracked repo's root**, so `--repo .` and `.peephole/` resolve to
+that checkout. (Without a PATH install you can still invoke it as `node <peephole>/bin/peephole.js …`
+— but then you're typing the absolute path the committed blocks deliberately avoid.)
+
 ### A repo that has never used it
 
 ```

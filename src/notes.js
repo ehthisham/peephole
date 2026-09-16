@@ -51,13 +51,20 @@ export function markedSectionVersion(text) {
   return m[1] ? Number(m[1]) : 1;
 }
 
-export function agentNoteBody({ binPath, repoRoot, port }) {
-  const cli = `node ${binPath}`;
+export function agentNoteBody({ port }) {
+  // Portable across machines: the committed CLAUDE.md must not bake in one developer's home /
+  // checkout path, so emit the bare `peephole` command (assumed on PATH) + `--repo .` (relative to
+  // the repo root), not `node /abs/bin/peephole.js --repo /abs/repo`.
+  const cli = `peephole`;
   return `## Working with Peephole (task tracking)
+
+Requires the \`peephole\` CLI on your PATH — install it once from the peephole repo (\`npm i -g .\`
+in that clone, or \`npm link\`). Run every command below **from this repo's root**, so the
+\`--repo .\` and \`.peephole/\` paths resolve to this checkout on any machine.
 
 This repo tracks AI-executed work in \`.peephole/\`. The dashboard must be running for the
 commands below to work — start it once in the background if it isn't already:
-\`${cli} serve --repo ${repoRoot} --port ${port}\`
+\`${cli} serve --repo . --port ${port}\`
 
 Before starting non-trivial work:
 
@@ -108,7 +115,7 @@ Before starting non-trivial work:
    on...", "Corrected 2026-...", "Found by the audit", "this ticket now...". If something changed,
    say what's true now; the *that it changed* belongs in \`history\`, not the body.
 
-View the live board: \`${cli} serve --repo ${repoRoot} --port ${port}\``;
+View the live board: \`${cli} serve --repo . --port ${port}\``;
 }
 
 export function readmeNoteBody(peepholeCmd) {

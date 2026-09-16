@@ -543,8 +543,36 @@
     return remote.replace(/\.git$/, "");
   }
 
+  // The project this TAB is looking at, kept per tab. The server holds one context per project, so
+  // two tabs can watch two repos at once; previously "switching" mutated a single server-side
+  // active project and silently repointed every other tab.
+  // sessionStorage, not localStorage: the selection is per TAB, and localStorage is shared across
+  // every tab on the origin — two boards would have gone on overwriting each other's choice, which
+  // is the very thing per-tab contexts exist to stop. localStorage keeps the last choice only as
+  // the default for a NEW tab.
+  var PROJECT_KEY = "peephole.project";
+  var currentProject = null;
+  try { currentProject = sessionStorage.getItem(PROJECT_KEY) || localStorage.getItem(PROJECT_KEY) || null; } catch (e) {}
+
+  function rememberProjectChoice(root) {
+    try {
+      if (root) {
+        sessionStorage.setItem(PROJECT_KEY, root);
+        localStorage.setItem(PROJECT_KEY, root);
+      } else {
+        sessionStorage.removeItem(PROJECT_KEY);
+        localStorage.removeItem(PROJECT_KEY);
+      }
+    } catch (e) {}
+  }
+
+  function withProject(path) {
+    if (!currentProject) return path;
+    return path + (path.indexOf("?") === -1 ? "?" : "&") + "project=" + encodeURIComponent(currentProject);
+  }
+
   async function apiPost(path, body) {
-    var res = await fetch(path, {
+    var res = await fetch(withProject(path), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body || {}),
@@ -1489,10 +1517,19 @@
    *  running the board against a repo — there is no "add project" step to forget — so the menu is a
    *  history of what you actually work on. An entry whose checkout has since moved is shown but
    *  disabled rather than hidden, because a silently missing project looks like a bug. */
-  function renderProjectMenu() {
-    var projects = ((latestState && latestState.projects) || []).slice().sort(function (a, b) {
-      return String(b.lastOpenedAt || "").localeCompare(String(a.lastOpenedAt || ""));
-    });
+  async function renderProjectMenu() {
+    // Fetched live rather than read from the board's state: the registry is global, while a state
+    // payload is a snapshot of ONE project's last refresh — so a project added from this tab was
+    // missing from the menu until the project it was added from happened to refresh again.
+    var projects = [];
+    try {
+      var listed = await fetch("/api/projects").then(function (r) { return r.json(); });
+      projects = (listed.projects || []).slice().sort(function (a, b) {
+        return String(b.lastOpenedAt || "").localeCompare(String(a.lastOpenedAt || ""));
+      });
+    } catch (e) {
+      projects = ((latestState && latestState.projects) || []).slice();
+    }
     var addRow = '<button type="button" role="menuitem" class="pm-add" data-add="1">+ Add project…</button>';
     if (!projects.length) {
       projectMenu.innerHTML = '<p class="pm-note">No projects yet.</p>' + addRow;
@@ -1502,13 +1539,36 @@
     projectMenu.innerHTML = projects.map(function (p) {
       var active = p.repoRoot === (latestState && latestState.repoRoot);
       return (
+        '<div class="pm-row' + (active ? " pm-active" : "") + '">' +
         '<button type="button" role="menuitem" data-root="' + esc(p.repoRoot) + '"' +
         (active ? ' aria-current="true"' : "") + (p.missing ? " disabled" : "") + ">" +
         esc(p.name) + (p.missing ? " <span class=\"pm-path\">checkout not found</span>" : "") +
-        '<span class="pm-path">' + esc(p.repoRoot) + "</span></button>"
+        '<span class="pm-path">' + esc(p.repoRoot) + "</span></button>" +
+        // Forgetting drops the menu entry only. The repo, its ledger and its tickets are untouched
+        // — opening it again re-adds it — so this needs no confirmation beyond saying as much.
+        '<button type="button" class="pm-forget" data-forget="' + esc(p.repoRoot) +
+        '" title="Remove from this list (the repo and its tickets are untouched)" aria-label="Forget ' +
+        esc(p.name) + '">✕</button></div>'
       );
     }).join("") + addRow;
     wireAddRow();
+    Array.prototype.forEach.call(projectMenu.querySelectorAll("button[data-forget]"), function (btn) {
+      btn.addEventListener("click", async function (ev) {
+        ev.stopPropagation(); // forgetting must not also open the project
+        var root = btn.dataset.forget;
+        var isActive = root === (latestState && latestState.repoRoot);
+        await apiPost("/api/projects/forget", { repoRoot: root });
+        if (isActive) {
+          // The tab is looking at what it just forgot; fall back to the server's own project.
+          currentProject = null;
+          rememberProjectChoice(null);
+          connectStream();
+        }
+        var fresh = await fetch(withProject("/api/state")).then(function (r) { return r.json(); });
+        render(fresh);
+        renderProjectMenu();
+      });
+    });
     Array.prototype.forEach.call(projectMenu.querySelectorAll("button[data-root]"), function (btn) {
       btn.addEventListener("click", function () {
         projectMenu.hidden = true;
@@ -1540,14 +1600,21 @@
     projectBtn.classList.add("busy");
     projectName.textContent = "opening…";
     board.innerHTML = '<p class="empty-note">Opening project…</p>';
+    var previous = currentProject;
     try {
+      // Point this tab at the project first: the POST that registers/validates it is then made
+      // against that project's own context, and so is everything the tab does afterwards.
+      currentProject = repoRoot;
       var res = await apiPost(endpoint, { repoRoot: repoRoot });
       if (res && res.error) {
+        currentProject = previous;
         window.alert(res.error);
         if (latestState) render(latestState); // put the board that is actually open back on screen
         return res;
       }
+      rememberProjectChoice(repoRoot);
       render(res);
+      connectStream();
       return res;
     } finally {
       switching = false;
@@ -1588,12 +1655,18 @@
     }
   });
 
-  projectBtn.addEventListener("click", function (ev) {
+  projectBtn.addEventListener("click", async function (ev) {
     ev.stopPropagation();
     var open = projectMenu.hidden;
-    if (open) renderProjectMenu();
-    projectMenu.hidden = !open;
-    projectBtn.setAttribute("aria-expanded", String(open));
+    if (open) {
+      projectMenu.innerHTML = '<p class="pm-note">Loading…</p>';
+      projectMenu.hidden = false;
+      projectBtn.setAttribute("aria-expanded", "true");
+      await renderProjectMenu();
+      return;
+    }
+    projectMenu.hidden = true;
+    projectBtn.setAttribute("aria-expanded", "false");
   });
   document.addEventListener("click", function (ev) {
     if (!projectMenu.hidden && !projectMenu.contains(ev.target) && !projectBtn.contains(ev.target)) {
@@ -1846,13 +1919,36 @@
     }
   }
 
-  fetch("/api/state").then(function (r) { return r.json(); }).then(render).catch(function () {});
+  /** The live stream is per project too: each project broadcasts to its own subscribers, so a tab
+   *  watching repo A never receives repo B's refreshes. Reconnected when the tab changes project. */
+  var es = null;
+  function connectStream() {
+    if (es) es.close();
+    es = new EventSource(withProject("/api/events"));
+    es.onmessage = function (ev) {
+      try {
+        var msg = JSON.parse(ev.data);
+        if (msg.type === "state") render(msg.payload);
+      } catch (e) {}
+    };
+  }
 
-  var es = new EventSource("/api/events");
-  es.onmessage = function (ev) {
-    try {
-      var msg = JSON.parse(ev.data);
-      if (msg.type === "state") render(msg.payload);
-    } catch (e) {}
-  };
+  function loadProject() {
+    fetch(withProject("/api/state"))
+      .then(function (r) { return r.json(); })
+      .then(function (state) {
+        if (state && state.error) {
+          // A remembered project that has since moved must not leave the tab stuck on an error —
+          // forget the selection and fall back to whatever the server was started on.
+          currentProject = null;
+          rememberProjectChoice(null);
+          return loadProject();
+        }
+        render(state);
+        connectStream();
+      })
+      .catch(function () {});
+  }
+
+  loadProject();
 })();

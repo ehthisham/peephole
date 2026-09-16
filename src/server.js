@@ -87,272 +87,323 @@ export async function startServer(initialRepoRoot, { port = 4173, remote = "orig
   // Everything about "which project is open" is mutable: one server serves whichever repo is
   // selected, rather than one server per repo on a port the user has to remember. The queue and
   // the request handlers close over these bindings, so a switch re-points them all at once.
-  let repoRoot = initialRepoRoot;
-  let branchOverride = branch;
-  let stateBranch;
-  let stateBranchSource;
-  let remoteUrl;
-  let ledger;
-  let worktreePath;
-  let localBranch;
-  let gitUser;
+  /**
+   * One project's world: its ledger, cache, queue, autosync timer and SSE subscribers. Each open
+   * project gets its own, so two browser tabs can watch two repos at once — previously the server
+   * held exactly one set of these and "switching" mutated it under everyone, meaning a second tab
+   * silently repointed the first.
+   */
+  const projects = new Map();
 
-  async function openProject(nextRepoRoot) {
-    repoRoot = nextRepoRoot;
-    const resolved = await resolveStateBranch(repoRoot, remote, branchOverride);
-    stateBranch = resolved.branch;
-    stateBranchSource = resolved.source;
-    remoteUrl = await git.remoteUrl(repoRoot, remote);
-    // The ledger may live outside the repo (a sparse clone) or inside it (the worktree fallback);
-    // everything below reads and writes through whichever was resolved.
-    ledger = await resolveLedger(repoRoot, stateBranch, { remote });
-    worktreePath = ledger.path;
-    localBranch = ledger.localBranch;
-    // The identity a UI-created ticket's "created by" defaults to — this machine's configured git
-    // identity, resolved through .mailmap so it matches the Members panel's naming.
-    const rawGitUser = await git.gitUser(repoRoot);
-    gitUser = rawGitUser.name && rawGitUser.email
-      ? await git.checkMailmap(repoRoot, rawGitUser.name, rawGitUser.email)
-      : rawGitUser;
-    await rememberProject(repoRoot, { remoteUrl, stateBranch });
-  }
+  async function createProject(initialRoot, { branch: branchArg = null } = {}) {
+    let repoRoot = initialRoot;
+    let branchOverride = branchArg;
+    let stateBranch;
+    let stateBranchSource;
+    let remoteUrl;
+    let ledger;
+    let worktreePath;
+    let localBranch;
+    let gitUser;
 
-  await openProject(initialRepoRoot);
-
-  let cache = { config: null, tickets: [], agents: [], issues: [], lastFetchedAt: null, unpushed: 0, coverage: null };
-  let queueState = { pending: [], running: null, lastError: null };
-  let lastCoverageStamp = null;
-  // publicState() is synchronous, so the menu is refreshed alongside every state refresh rather
-  // than read from disk on each request.
-  let knownProjects = [];
-  // Dispatching a ticket claims it for the session that is about to work it, then re-reads, so the
-  // board shows in-progress before the agent's first tool call rather than after it.
-  const queue = createQueue({
-    repoRoot,
-    binPath: peepholeBin,
-    port,
-    // Reading the ticket the board already has avoids a git round trip just to check whether a
-    // dispatch is still appropriate.
-    readTicket: (ticketId) => (cache.tickets || []).find((t) => t.id === ticketId) || null,
-    claimTicket: async (ticketId, sessionId) => {
-      const result = await writer.claimTicket(repoRoot, stateBranch, ticketId, sessionId, "peephole-queue", {
-        sessionId, transcriptPath: null, tokens: null, author: gitUser && gitUser.name ? gitUser : null,
-      });
-      await refresh({ doFetch: false });
-      return result;
-    },
-    onChange: (next) => {
-      queueState = next;
-      broadcast();
-    },
-  });
-  let autoFetch = { enabled: false, intervalMinutes: 5, push: false, lastPushAt: null, lastPushError: null };
-  let autoFetchTimer = null;
-  const sseClients = new Set();
-  // Last time each session's PreToolUse hook checked in (every call) — drives the honest
-  // "Hook: connected" indicator. Separate from the git-heartbeat write throttle below.
-  const sessionLastCheckin = new Map();
-  // Last time each session's heartbeat was actually committed to git — only this one gates writes.
-  const sessionLastHeartbeatWrite = new Map();
-  const HEARTBEAT_WRITE_INTERVAL_MS = 60 * 1000;
-  const HOOK_LIVE_WINDOW_MS = 10 * 60 * 1000;
-
-  /** Joins each agent's token usage onto the Members list by (mailmap-resolved) author name —
-   *  the piece that was missing: token tracking existed per SESSION, but a session has no
-   *  visible link to a person until this. An agent with no `author` (an older heartbeat, or a
-   *  machine with no global git identity set) simply contributes nothing here; it still shows
-   *  in the Agents panel and the per-session "Tokens by session" list, just not per-member. */
-  async function withMemberTokens(agents, contributorList) {
-    if (!contributorList) return contributorList;
-    const totals = new Map();
-    for (const a of agents || []) {
-      if (!a.author || !a.tokens || !a.tokens.totalTokens) continue;
-      const resolved = await git.checkMailmap(repoRoot, a.author.name, a.author.email);
-      totals.set(resolved.name, (totals.get(resolved.name) || 0) + a.tokens.totalTokens);
-    }
-    return contributorList.map((c) => ({ ...c, tokens: totals.get(c.name) || 0 }));
-  }
-
-  /** The git identity a session already reported through its heartbeat, so a CLI call that didn't
-   *  pass --author still resolves to a person. Null when that session has never checked in. */
-  function agentAuthor(sessionId) {
-    const agent = (cache.agents || []).find((a) => a.sessionId === sessionId);
-    return agent && agent.author ? agent.author : null;
-  }
-
-  /** Turns a ticket-write request body into the {sessionId, transcriptPath, tokens} a ticket file
-   *  can carry — the durable link from a ticket back to the actual chat effort (transcript +
-   *  tokens) that produced it, so "who/what session did this" doesn't require hunting the
-   *  separate, overwritable agents/*.json heartbeat. Callers pass whichever id field the route
-   *  already treats as the acting session (owner for claim, actor for state, etc). Null if
-   *  nothing to link (no session id at all — e.g. a human clicking the UI). */
-  async function sessionFromBody(body, sessionId) {
-    if (!sessionId) return null;
-    const tokens = body.transcriptPath ? await tokenUsage.sessionTokenUsage(body.transcriptPath).catch(() => null) : null;
-    return {
-      sessionId, transcriptPath: body.transcriptPath || null, tokens: tokens?.totalTokens ?? null,
-      // Git identity of whoever is claiming — the same {name,email} the SessionStart hook reports.
-      // It is what an `assignee` is matched against, and what the board shows instead of a UUID.
-      author: body.author || (sessionId ? agentAuthor(sessionId) : null),
-    };
-  }
-
-  function broadcast() {
-    const payload = JSON.stringify({ type: "state", payload: publicState() });
-    for (const res of sseClients) res.write(`data: ${payload}\n\n`);
-  }
-
-  function hookConfigured() {
-    const now = Date.now();
-    for (const last of sessionLastCheckin.values()) {
-      if (now - last < HOOK_LIVE_WINDOW_MS) return true;
-    }
-    return false;
-  }
-
-  function publicState() {
-    return {
-      // The project's own name, as its committed config declares it — NOT the directory name. The
-      // board filters tickets by project, and a checkout whose folder is named differently from the
-      // project (a clone into `work/`, a second checkout) had every ticket filtered out as
-      // belonging to "another project", leaving an empty board and no hint why.
-      project: (cache.config && cache.config.project) || path.basename(repoRoot),
-      remoteUrl,
-      remote,
-      stateBranch,
-      stateBranchSource,
-      checkoutBranch: cache.checkoutBranch ?? null,
-      hooksInstalled: cache.hooksInstalled ?? false,
-      ledger: { kind: ledger.kind, path: ledger.path, reason: ledger.reason },
-      projects: knownProjects,
-      stateBranchOnRemote: cache.stateBranchOnRemote ?? true,
-      repoRoot,
-      gitUser,
-      hookConfigured: hookConfigured(),
-      autoFetch,
-      queue: queueState,
-      permissionModes: PERMISSION_MODES,
-      ...cache,
-    };
-  }
-
-  /** Cheap change-detector for the coverage profile: size + mtime, no parsing. Null when no
-   *  profile exists, which is itself a change worth noticing (a deleted profile clears coverage). */
-  async function coverageStamp(root) {
-    try {
-      const st = await fs.stat(path.join(root, "coverage.out"));
-      return `${st.size}:${st.mtimeMs}`;
-    } catch {
-      return null;
-    }
-  }
-
-  async function refresh({ doFetch }) {
-    if (doFetch) {
-      await git.fetch(repoRoot, remote);
-      // Re-resolve rather than assume: pushing a ledger branch for the first time is exactly when
-      // the clone becomes possible, and nobody should have to restart the board to get it.
+    async function openProject(nextRepoRoot) {
+      repoRoot = nextRepoRoot;
+      const resolved = await resolveStateBranch(repoRoot, remote, branchOverride);
+      stateBranch = resolved.branch;
+      stateBranchSource = resolved.source;
+      remoteUrl = await git.remoteUrl(repoRoot, remote);
+      // The ledger may live outside the repo (a sparse clone) or inside it (the worktree fallback);
+      // everything below reads and writes through whichever was resolved.
       ledger = await resolveLedger(repoRoot, stateBranch, { remote });
       worktreePath = ledger.path;
       localBranch = ledger.localBranch;
+      // The identity a UI-created ticket's "created by" defaults to — this machine's configured git
+      // identity, resolved through .mailmap so it matches the Members panel's naming.
+      const rawGitUser = await git.gitUser(repoRoot);
+      gitUser = rawGitUser.name && rawGitUser.email
+        ? await git.checkMailmap(repoRoot, rawGitUser.name, rawGitUser.email)
+        : rawGitUser;
+      await rememberProject(repoRoot, { remoteUrl, stateBranch });
     }
-    const [state, stats] = await Promise.all([
-      // Tickets come from the ledger branch — that is the shared record.
-      scan(ledger.kind === "clone" ? ledger.path : repoRoot, localBranch, { repoRoot }),
-      // Code stats come from the developer's own checkout (HEAD), not the ledger. They describe
-      // the code someone is actually working on: lines, languages, commits, contributors, last
-      // commit. Reading them at the ledger branch was tolerable only while that branch WAS the
-      // code branch; on a dedicated ledger branch they would describe a snapshot taken when the
-      // branch was created and drift further from the work with every commit.
-      repoStats(repoRoot, "HEAD").catch((e) => {
-        console.error("repoStats failed:", e.message);
-        return null;
-      }),
-    ]);
-    const unpushed = await git.unpushedCount(worktreePath, localBranch, stateBranch, remote).catch(() => 0);
-    // The developer's own checkout — NOT where the tickets live. Coverage is read from this
-    // working tree, so the figure on the board is whatever this person's branch last produced;
-    // two teammates on different branches see the same tickets and different coverage.
-    const checkoutBranch = await git.currentBranch(repoRoot).catch(() => null);
-    const stateBranchOnRemote = await git.remoteBranchExists(repoRoot, stateBranch, remote).catch(() => true);
-    const enrichedStats = stats
-      ? { ...stats, contributorList: await withMemberTokens(state.agents, stats.contributorList) }
-      : stats;
-    // Coverage is a live-filesystem check (a test-run artifact, not committed — see coverage.js),
-    // so it is recomputed on a real fetch cycle OR whenever the profile itself has changed on
-    // disk. Fetch-only was wrong: a test run rewrites coverage.out without touching git, so the
-    // board kept reporting a figure from before the run — 56% while `go tool cover` said 80% —
-    // and only a Pull latest would correct it.
-    const coverageChanged = await coverageStamp(repoRoot).then((stamp) => {
-      if (stamp === lastCoverageStamp) return false;
-      lastCoverageStamp = stamp;
-      return true;
+
+    await openProject(initialRepoRoot);
+
+    let cache = { config: null, tickets: [], agents: [], issues: [], lastFetchedAt: null, unpushed: 0, coverage: null };
+    let queueState = { pending: [], running: null, lastError: null };
+    let lastCoverageStamp = null;
+    // publicState() is synchronous, so the menu is refreshed alongside every state refresh rather
+    // than read from disk on each request.
+    let knownProjects = [];
+    // Dispatching a ticket claims it for the session that is about to work it, then re-reads, so the
+    // board shows in-progress before the agent's first tool call rather than after it.
+    const queue = createQueue({
+      repoRoot,
+      binPath: peepholeBin,
+      port,
+      // Reading the ticket the board already has avoids a git round trip just to check whether a
+      // dispatch is still appropriate.
+      readTicket: (ticketId) => (cache.tickets || []).find((t) => t.id === ticketId) || null,
+      claimTicket: async (ticketId, sessionId) => {
+        const result = await writer.claimTicket(repoRoot, stateBranch, ticketId, sessionId, "peephole-queue", {
+          sessionId, transcriptPath: null, tokens: null, author: gitUser && gitUser.name ? gitUser : null,
+        });
+        await refresh({ doFetch: false });
+        return result;
+      },
+      onChange: (next) => {
+        queueState = next;
+        broadcast();
+      },
     });
-    const coverage = doFetch || coverageChanged || cache.coverage == null
-      ? await detectCoverage(repoRoot).catch((e) => {
-          console.error("coverage detection failed:", e.message);
-          return cache.coverage ?? null;
-        })
-      : cache.coverage ?? null;
-    knownProjects = await listProjects().catch(() => knownProjects);
-    cache = { ...state, stats: enrichedStats, coverage, checkoutBranch, stateBranchOnRemote, lastFetchedAt: new Date().toISOString(), unpushed };
-    broadcast();
-    return cache;
-  }
+    let autoFetch = { enabled: false, intervalMinutes: 5, push: false, lastPushAt: null, lastPushError: null };
+    let autoFetchTimer = null;
+    const sseClients = new Set();
+    // Last time each session's PreToolUse hook checked in (every call) — drives the honest
+    // "Hook: connected" indicator. Separate from the git-heartbeat write throttle below.
+    const sessionLastCheckin = new Map();
+    // Last time each session's heartbeat was actually committed to git — only this one gates writes.
+    const sessionLastHeartbeatWrite = new Map();
+    const HEARTBEAT_WRITE_INTERVAL_MS = 60 * 1000;
+    const HOOK_LIVE_WINDOW_MS = 10 * 60 * 1000;
 
-  /**
-   * Pushes the waiting ledger commits, but only after proving they ARE ledger commits: every path
-   * in the pending range must sit under `.peephole/`. The state branch can be an ordinary code
-   * branch (that is still the default for repos set up before the dedicated branch existed), and
-   * an unattended push of somebody's code — or of a commit that rode along on that branch — is not
-   * something a toggle should be able to do.
-   */
-  async function autoPush() {
-    const pending = await git.unpushedCount(worktreePath, localBranch, stateBranch, remote).catch(() => 0);
-    if (pending === 0) return;
-    const paths = await git.pendingPaths(worktreePath, localBranch, stateBranch, remote).catch(() => null);
-    const foreign = (paths || []).filter((f) => !f.startsWith(".peephole/"));
-    if (paths === null || foreign.length) {
-      autoFetch.lastPushError = foreign.length
-        ? `not pushed — ${foreign.length} non-ledger file(s) waiting, e.g. ${foreign[0]}`
-        : "not pushed — could not read what is waiting";
-      return;
+    /** Joins each agent's token usage onto the Members list by (mailmap-resolved) author name —
+     *  the piece that was missing: token tracking existed per SESSION, but a session has no
+     *  visible link to a person until this. An agent with no `author` (an older heartbeat, or a
+     *  machine with no global git identity set) simply contributes nothing here; it still shows
+     *  in the Agents panel and the per-session "Tokens by session" list, just not per-member. */
+    async function withMemberTokens(agents, contributorList) {
+      if (!contributorList) return contributorList;
+      const totals = new Map();
+      for (const a of agents || []) {
+        if (!a.author || !a.tokens || !a.tokens.totalTokens) continue;
+        const resolved = await git.checkMailmap(repoRoot, a.author.name, a.author.email);
+        totals.set(resolved.name, (totals.get(resolved.name) || 0) + a.tokens.totalTokens);
+      }
+      return contributorList.map((c) => ({ ...c, tokens: totals.get(c.name) || 0 }));
     }
-    await writer.push(repoRoot, stateBranch);
-    autoFetch.lastPushAt = new Date().toISOString();
-    autoFetch.lastPushError = null;
-  }
 
-  async function syncTick() {
-    try {
-      if (autoFetch.push) await autoPush();
-    } catch (e) {
-      autoFetch.lastPushError = e.message;
-      console.error("auto-push failed:", e.message);
+    /** The git identity a session already reported through its heartbeat, so a CLI call that didn't
+     *  pass --author still resolves to a person. Null when that session has never checked in. */
+    function agentAuthor(sessionId) {
+      const agent = (cache.agents || []).find((a) => a.sessionId === sessionId);
+      return agent && agent.author ? agent.author : null;
     }
-    // Fetch after pushing, so the refresh that follows sees the branch as it now stands and the
-    // unpushed banner clears in the same tick rather than one interval later.
-    await refresh({ doFetch: true }).catch((e) => console.error("auto-fetch failed:", e.message));
-  }
 
-  function setAutoFetch(enabled, intervalMinutes, push) {
-    autoFetch = {
-      ...autoFetch,
-      enabled,
-      intervalMinutes: Math.max(1, Number(intervalMinutes) || 5),
-      push: push === undefined ? autoFetch.push : Boolean(push),
-    };
-    if (autoFetchTimer) clearInterval(autoFetchTimer);
-    autoFetchTimer = null;
-    if (autoFetch.enabled) {
-      autoFetchTimer = setInterval(() => {
+    /** Turns a ticket-write request body into the {sessionId, transcriptPath, tokens} a ticket file
+     *  can carry — the durable link from a ticket back to the actual chat effort (transcript +
+     *  tokens) that produced it, so "who/what session did this" doesn't require hunting the
+     *  separate, overwritable agents/*.json heartbeat. Callers pass whichever id field the route
+     *  already treats as the acting session (owner for claim, actor for state, etc). Null if
+     *  nothing to link (no session id at all — e.g. a human clicking the UI). */
+    async function sessionFromBody(body, sessionId) {
+      if (!sessionId) return null;
+      const tokens = body.transcriptPath ? await tokenUsage.sessionTokenUsage(body.transcriptPath).catch(() => null) : null;
+      return {
+        sessionId, transcriptPath: body.transcriptPath || null, tokens: tokens?.totalTokens ?? null,
+        // Git identity of whoever is claiming — the same {name,email} the SessionStart hook reports.
+        // It is what an `assignee` is matched against, and what the board shows instead of a UUID.
+        author: body.author || (sessionId ? agentAuthor(sessionId) : null),
+      };
+    }
+
+    function broadcast() {
+      const payload = JSON.stringify({ type: "state", payload: publicState() });
+      for (const res of sseClients) res.write(`data: ${payload}\n\n`);
+    }
+
+    function hookConfigured() {
+      const now = Date.now();
+      for (const last of sessionLastCheckin.values()) {
+        if (now - last < HOOK_LIVE_WINDOW_MS) return true;
+      }
+      return false;
+    }
+
+    function publicState() {
+      return {
+        // The project's own name, as its committed config declares it — NOT the directory name. The
+        // board filters tickets by project, and a checkout whose folder is named differently from the
+        // project (a clone into `work/`, a second checkout) had every ticket filtered out as
+        // belonging to "another project", leaving an empty board and no hint why.
+        project: (cache.config && cache.config.project) || path.basename(repoRoot),
+        remoteUrl,
+        remote,
+        stateBranch,
+        stateBranchSource,
+        checkoutBranch: cache.checkoutBranch ?? null,
+        hooksInstalled: cache.hooksInstalled ?? false,
+        ledger: { kind: ledger.kind, path: ledger.path, reason: ledger.reason },
+        projects: knownProjects,
+        stateBranchOnRemote: cache.stateBranchOnRemote ?? true,
+        repoRoot,
+        gitUser,
+        hookConfigured: hookConfigured(),
+        autoFetch,
+        queue: queueState,
+        permissionModes: PERMISSION_MODES,
+        ...cache,
+      };
+    }
+
+    /** Cheap change-detector for the coverage profile: size + mtime, no parsing. Null when no
+     *  profile exists, which is itself a change worth noticing (a deleted profile clears coverage). */
+    async function coverageStamp(root) {
+      try {
+        const st = await fs.stat(path.join(root, "coverage.out"));
+        return `${st.size}:${st.mtimeMs}`;
+      } catch {
+        return null;
+      }
+    }
+
+    async function refresh({ doFetch }) {
+      if (doFetch) {
+        await git.fetch(repoRoot, remote);
+        // Re-resolve rather than assume: pushing a ledger branch for the first time is exactly when
+        // the clone becomes possible, and nobody should have to restart the board to get it.
+        ledger = await resolveLedger(repoRoot, stateBranch, { remote });
+        worktreePath = ledger.path;
+        localBranch = ledger.localBranch;
+      }
+      const [state, stats] = await Promise.all([
+        // Tickets come from the ledger branch — that is the shared record.
+        scan(ledger.kind === "clone" ? ledger.path : repoRoot, localBranch, { repoRoot }),
+        // Code stats come from the developer's own checkout (HEAD), not the ledger. They describe
+        // the code someone is actually working on: lines, languages, commits, contributors, last
+        // commit. Reading them at the ledger branch was tolerable only while that branch WAS the
+        // code branch; on a dedicated ledger branch they would describe a snapshot taken when the
+        // branch was created and drift further from the work with every commit.
+        repoStats(repoRoot, "HEAD").catch((e) => {
+          console.error("repoStats failed:", e.message);
+          return null;
+        }),
+      ]);
+      const unpushed = await git.unpushedCount(worktreePath, localBranch, stateBranch, remote).catch(() => 0);
+      // The developer's own checkout — NOT where the tickets live. Coverage is read from this
+      // working tree, so the figure on the board is whatever this person's branch last produced;
+      // two teammates on different branches see the same tickets and different coverage.
+      const checkoutBranch = await git.currentBranch(repoRoot).catch(() => null);
+      const stateBranchOnRemote = await git.remoteBranchExists(repoRoot, stateBranch, remote).catch(() => true);
+      const enrichedStats = stats
+        ? { ...stats, contributorList: await withMemberTokens(state.agents, stats.contributorList) }
+        : stats;
+      // Coverage is a live-filesystem check (a test-run artifact, not committed — see coverage.js),
+      // so it is recomputed on a real fetch cycle OR whenever the profile itself has changed on
+      // disk. Fetch-only was wrong: a test run rewrites coverage.out without touching git, so the
+      // board kept reporting a figure from before the run — 56% while `go tool cover` said 80% —
+      // and only a Pull latest would correct it.
+      const coverageChanged = await coverageStamp(repoRoot).then((stamp) => {
+        if (stamp === lastCoverageStamp) return false;
+        lastCoverageStamp = stamp;
+        return true;
+      });
+      const coverage = doFetch || coverageChanged || cache.coverage == null
+        ? await detectCoverage(repoRoot).catch((e) => {
+            console.error("coverage detection failed:", e.message);
+            return cache.coverage ?? null;
+          })
+        : cache.coverage ?? null;
+      knownProjects = await listProjects().catch(() => knownProjects);
+      cache = { ...state, stats: enrichedStats, coverage, checkoutBranch, stateBranchOnRemote, lastFetchedAt: new Date().toISOString(), unpushed };
+      broadcast();
+      return cache;
+    }
+
+    /**
+     * Pushes the waiting ledger commits, but only after proving they ARE ledger commits: every path
+     * in the pending range must sit under `.peephole/`. The state branch can be an ordinary code
+     * branch (that is still the default for repos set up before the dedicated branch existed), and
+     * an unattended push of somebody's code — or of a commit that rode along on that branch — is not
+     * something a toggle should be able to do.
+     */
+    async function autoPush() {
+      const pending = await git.unpushedCount(worktreePath, localBranch, stateBranch, remote).catch(() => 0);
+      if (pending === 0) return;
+      const paths = await git.pendingPaths(worktreePath, localBranch, stateBranch, remote).catch(() => null);
+      const foreign = (paths || []).filter((f) => !f.startsWith(".peephole/"));
+      if (paths === null || foreign.length) {
+        autoFetch.lastPushError = foreign.length
+          ? `not pushed — ${foreign.length} non-ledger file(s) waiting, e.g. ${foreign[0]}`
+          : "not pushed — could not read what is waiting";
+        return;
+      }
+      await writer.push(repoRoot, stateBranch);
+      autoFetch.lastPushAt = new Date().toISOString();
+      autoFetch.lastPushError = null;
+    }
+
+    async function syncTick() {
+      try {
+        if (autoFetch.push) await autoPush();
+      } catch (e) {
+        autoFetch.lastPushError = e.message;
+        console.error("auto-push failed:", e.message);
+      }
+      // Fetch after pushing, so the refresh that follows sees the branch as it now stands and the
+      // unpushed banner clears in the same tick rather than one interval later.
+      await refresh({ doFetch: true }).catch((e) => console.error("auto-fetch failed:", e.message));
+    }
+
+    function setAutoFetch(enabled, intervalMinutes, push) {
+      autoFetch = {
+        ...autoFetch,
+        enabled,
+        intervalMinutes: Math.max(1, Number(intervalMinutes) || 5),
+        push: push === undefined ? autoFetch.push : Boolean(push),
+      };
+      if (autoFetchTimer) clearInterval(autoFetchTimer);
+      autoFetchTimer = null;
+      if (autoFetch.enabled) {
+        autoFetchTimer = setInterval(() => {
+          syncTick().catch((e) => console.error("autosync failed:", e.message));
+        }, autoFetch.intervalMinutes * 60 * 1000);
+        if (autoFetchTimer.unref) autoFetchTimer.unref();
+        // Run once immediately: a toggle that does nothing for five minutes reads as broken.
         syncTick().catch((e) => console.error("autosync failed:", e.message));
-      }, autoFetch.intervalMinutes * 60 * 1000);
-      if (autoFetchTimer.unref) autoFetchTimer.unref();
-      // Run once immediately: a toggle that does nothing for five minutes reads as broken.
-      syncTick().catch((e) => console.error("autosync failed:", e.message));
+      }
+      broadcast();
     }
-    broadcast();
+
+
+    await openProject(initialRoot);
+    await refresh({ doFetch: false }).catch((e) => console.error("initial refresh failed:", e.message));
+
+    return {
+      get repoRoot() { return repoRoot; },
+      get stateBranch() { return stateBranch; },
+      get worktreePath() { return worktreePath; },
+      get localBranch() { return localBranch; },
+      get ledger() { return ledger; },
+      get gitUser() { return gitUser; },
+      get cache() { return cache; },
+      get queueState() { return queueState; },
+      set queueState(v) { queueState = v; },
+      queue,
+      sseClients,
+      sessionLastCheckin,
+      sessionLastHeartbeatWrite,
+      HEARTBEAT_WRITE_INTERVAL_MS,
+      publicState,
+      refresh,
+      setAutoFetch,
+      sessionFromBody,
+      agentAuthor,
+      peepholeBin,
+    };
+  }
+
+  /** The project a request is about: `?project=<repoRoot>`, else the one the server was started on.
+   *  Contexts are built once and kept, so switching back to a project is instant and its queue and
+   *  autosync setting survive the trip. */
+  async function contextFor(url) {
+    const asked = url.searchParams.get("project");
+    const root = asked ? path.resolve(asked) : initialRepoRoot;
+    if (!projects.has(root)) {
+      const check = await validateRepo(root);
+      if (!check.ok) throw Object.assign(new Error(check.error), { statusCode: 400 });
+      projects.set(root, await createProject(check.repoRoot, { branch: root === initialRepoRoot ? branch : null }));
+    }
+    return projects.get(root);
   }
 
   async function readJsonBody(req) {
@@ -388,17 +439,17 @@ export async function startServer(initialRepoRoot, { port = 4173, remote = "orig
     const url = new URL(req.url, `http://localhost:${port}`);
 
     try {
-      if (req.method === "GET" && url.pathname === "/") {
-        return serveStatic(res, path.join(publicDir, "index.html"));
+      // Static assets are project-independent; resolving a context for them would build a project
+      // just to serve app.js.
+      if (req.method === "GET" && (url.pathname === "/" || url.pathname === "/app.js")) {
+        return serveStatic(res, path.join(publicDir, url.pathname === "/" ? "index.html" : "app.js"));
       }
-      if (req.method === "GET" && url.pathname === "/app.js") {
-        return serveStatic(res, path.join(publicDir, "app.js"));
-      }
+      const ctx = await contextFor(url);
       if (req.method === "GET" && url.pathname === "/api/state") {
-        return sendJson(res, 200, publicState());
+        return sendJson(res, 200, ctx.publicState());
       }
       if (req.method === "GET" && url.pathname === "/api/standards") {
-        const content = await git.showFile(repoRoot, localBranch, "ENGINEERING-STANDARDS-GO.md");
+        const content = await git.showFile(ctx.repoRoot, ctx.localBranch, "ENGINEERING-STANDARDS-GO.md");
         return sendJson(res, 200, { content });
       }
       if (req.method === "GET" && url.pathname === "/api/events") {
@@ -407,115 +458,115 @@ export async function startServer(initialRepoRoot, { port = 4173, remote = "orig
           "Cache-Control": "no-cache",
           Connection: "keep-alive",
         });
-        res.write(`data: ${JSON.stringify({ type: "state", payload: publicState() })}\n\n`);
-        sseClients.add(res);
+        res.write(`data: ${JSON.stringify({ type: "state", payload: ctx.publicState() })}\n\n`);
+        ctx.sseClients.add(res);
         const ping = setInterval(() => res.write(": ping\n\n"), 20000);
         req.on("close", () => {
           clearInterval(ping);
-          sseClients.delete(res);
+          ctx.sseClients.delete(res);
         });
         return;
       }
       if (req.method === "POST" && url.pathname === "/api/pull") {
-        await refresh({ doFetch: true });
-        return sendJson(res, 200, publicState());
+        await ctx.refresh({ doFetch: true });
+        return sendJson(res, 200, ctx.publicState());
       }
       if (req.method === "POST" && (url.pathname === "/api/autofetch" || url.pathname === "/api/autosync")) {
         const body = await readJsonBody(req);
         // /api/autosync sets both halves; /api/autofetch stays for anything still calling it and
         // leaves the push setting alone.
         const push = url.pathname === "/api/autosync" ? body.push !== false : undefined;
-        setAutoFetch(Boolean(body.enabled), body.intervalMinutes, push);
-        return sendJson(res, 200, publicState());
+        ctx.setAutoFetch(Boolean(body.enabled), body.intervalMinutes, push);
+        return sendJson(res, 200, ctx.publicState());
       }
       if (req.method === "POST" && url.pathname === "/api/scaffold") {
-        const binPath = peepholeBin;
-        const result = await writer.scaffold(repoRoot, stateBranch, {
-          projectName: path.basename(repoRoot),
+        const binPath = ctx.peepholeBin;
+        const result = await writer.scaffold(ctx.repoRoot, ctx.stateBranch, {
+          projectName: path.basename(ctx.repoRoot),
           remoteUrl,
-          issues: cache.issues,
-          peepholeCmd: `node ${binPath} serve --repo ${repoRoot}`,
+          issues: ctx.cache.issues,
+          peepholeCmd: `peephole serve --repo . --port ${port}`,
           peepholeBin: binPath,
           port,
         });
-        await refresh({ doFetch: false });
-        return sendJson(res, 200, { ...result, state: publicState() });
+        await ctx.refresh({ doFetch: false });
+        return sendJson(res, 200, { ...result, state: ctx.publicState() });
       }
       if (req.method === "POST" && url.pathname === "/api/push") {
-        await writer.push(repoRoot, stateBranch);
-        await refresh({ doFetch: true });
-        return sendJson(res, 200, { pushed: true, state: publicState() });
+        await writer.push(ctx.repoRoot, ctx.stateBranch);
+        await ctx.refresh({ doFetch: true });
+        return sendJson(res, 200, { pushed: true, state: ctx.publicState() });
       }
       const controlMatch = url.pathname.match(/^\/api\/tickets\/([^/]+)\/control$/);
       if (req.method === "POST" && controlMatch) {
         const body = await readJsonBody(req);
         const result = await writer.setControl(
-          repoRoot, stateBranch, controlMatch[1], body.control,
-          body.actor || (gitUser && gitUser.name) || "peephole-ui", body.note,
+          ctx.repoRoot, ctx.stateBranch, controlMatch[1], body.control,
+          body.actor || (ctx.gitUser && ctx.gitUser.name) || "peephole-ui", body.note,
         );
-        // Dropping the selection is not enough on its own: a ticket already sitting in the queue
+        // Dropping the selection is not enough on its own: a ticket already sitting in the ctx.queue
         // would still be dispatched when a worker frees up.
-        if (body.control !== "run") queueState = queue.cancel(controlMatch[1]);
-        await refresh({ doFetch: false });
-        return sendJson(res, 200, { ...result, state: publicState() });
+        if (body.control !== "run") ctx.queueState = ctx.queue.cancel(controlMatch[1]);
+        await ctx.refresh({ doFetch: false });
+        return sendJson(res, 200, { ...result, state: ctx.publicState() });
       }
       if (req.method === "POST" && url.pathname === "/api/tickets") {
         const body = await readJsonBody(req);
         const id = body.id || slugify(body.intent || "ticket");
-        const session = await sessionFromBody(body, body.owner || body.createdBy || body.actor);
-        const result = await writer.createTicket(repoRoot, stateBranch, { ...body, id, session });
-        await refresh({ doFetch: false });
-        return sendJson(res, 200, { ...result, state: publicState() });
+        const session = await ctx.sessionFromBody(body, body.owner || body.createdBy || body.actor);
+        const result = await writer.createTicket(ctx.repoRoot, ctx.stateBranch, { ...body, id, session });
+        await ctx.refresh({ doFetch: false });
+        return sendJson(res, 200, { ...result, state: ctx.publicState() });
       }
       const claimMatch = url.pathname.match(/^\/api\/tickets\/([^/]+)\/claim$/);
       if (req.method === "POST" && claimMatch) {
         const body = await readJsonBody(req);
-        const session = await sessionFromBody(body, body.owner);
-        const result = await writer.claimTicket(repoRoot, stateBranch, claimMatch[1], body.owner, body.actor, session);
-        await refresh({ doFetch: false });
-        return sendJson(res, 200, { ...result, state: publicState() });
+        const session = await ctx.sessionFromBody(body, body.owner);
+        const result = await writer.claimTicket(ctx.repoRoot, ctx.stateBranch, claimMatch[1], body.owner, body.actor, session);
+        await ctx.refresh({ doFetch: false });
+        return sendJson(res, 200, { ...result, state: ctx.publicState() });
       }
       const unclaimMatch = url.pathname.match(/^\/api\/tickets\/([^/]+)\/unclaim$/);
       if (req.method === "POST" && unclaimMatch) {
         const body = await readJsonBody(req);
-        const result = await writer.unclaimTicket(repoRoot, stateBranch, unclaimMatch[1], body.actor);
-        await refresh({ doFetch: false });
-        return sendJson(res, 200, { ...result, state: publicState() });
+        const result = await writer.unclaimTicket(ctx.repoRoot, ctx.stateBranch, unclaimMatch[1], body.actor);
+        await ctx.refresh({ doFetch: false });
+        return sendJson(res, 200, { ...result, state: ctx.publicState() });
       }
       const riskMatch = url.pathname.match(/^\/api\/tickets\/([^/]+)\/risk$/);
       if (req.method === "POST" && riskMatch) {
         const body = await readJsonBody(req);
         const result = await writer.setRisk(
-          repoRoot, stateBranch, riskMatch[1], body.risk,
-          body.actor || (gitUser && gitUser.name) || "peephole-ui",
+          ctx.repoRoot, ctx.stateBranch, riskMatch[1], body.risk,
+          body.actor || (ctx.gitUser && ctx.gitUser.name) || "peephole-ui",
         );
-        await refresh({ doFetch: false });
-        return sendJson(res, 200, { ...result, state: publicState() });
+        await ctx.refresh({ doFetch: false });
+        return sendJson(res, 200, { ...result, state: ctx.publicState() });
       }
       const commentMatch = url.pathname.match(/^\/api\/tickets\/([^/]+)\/comments$/);
       if (req.method === "POST" && commentMatch) {
         const body = await readJsonBody(req);
         // Authorship defaults to this machine's git identity, so a comment is attributable without
         // the UI having to ask who is typing.
-        const author = body.author || (gitUser && gitUser.name) || "peephole-ui";
-        const result = await writer.addComment(repoRoot, stateBranch, commentMatch[1], body.text, author);
-        await refresh({ doFetch: false });
-        return sendJson(res, 200, { ...result, state: publicState() });
+        const author = body.author || (ctx.gitUser && ctx.gitUser.name) || "peephole-ui";
+        const result = await writer.addComment(ctx.repoRoot, ctx.stateBranch, commentMatch[1], body.text, author);
+        await ctx.refresh({ doFetch: false });
+        return sendJson(res, 200, { ...result, state: ctx.publicState() });
       }
       const selectMatch = url.pathname.match(/^\/api\/tickets\/([^/]+)\/selected$/);
       if (req.method === "POST" && selectMatch) {
         const body = await readJsonBody(req);
-        const result = await writer.setSelected(repoRoot, stateBranch, selectMatch[1], body.selected, body.actor);
-        await refresh({ doFetch: false });
-        return sendJson(res, 200, { ...result, state: publicState() });
+        const result = await writer.setSelected(ctx.repoRoot, ctx.stateBranch, selectMatch[1], body.selected, body.actor);
+        await ctx.refresh({ doFetch: false });
+        return sendJson(res, 200, { ...result, state: ctx.publicState() });
       }
       const executeMatch = url.pathname.match(/^\/api\/tickets\/([^/]+)\/execute$/);
       if (req.method === "POST" && executeMatch) {
         const body = await readJsonBody(req);
         if (body.permissionMode === BYPASS_MODE && !bypassAllowed) return sendJson(res, 403, { error: BYPASS_REFUSED });
         const mode = PERMISSION_MODES.includes(body.permissionMode) ? body.permissionMode : "acceptEdits";
-        queueState = queue.enqueue(executeMatch[1], mode);
-        return sendJson(res, 200, { queued: true, queue: queueState, state: publicState() });
+        ctx.queueState = ctx.queue.enqueue(executeMatch[1], mode);
+        return sendJson(res, 200, { queued: true, queue: ctx.queueState, state: ctx.publicState() });
       }
       if (req.method === "POST" && url.pathname === "/api/execute") {
         const body = await readJsonBody(req);
@@ -523,94 +574,74 @@ export async function startServer(initialRepoRoot, { port = 4173, remote = "orig
         const mode = PERMISSION_MODES.includes(body.permissionMode) ? body.permissionMode : "acceptEdits";
         // Lane order, not click order: "run the selected ones" means the order they are read in.
         const ids = Array.isArray(body.ticketIds) ? body.ticketIds : [];
-        ids.forEach((id) => { queueState = queue.enqueue(String(id), mode); });
-        return sendJson(res, 200, { queued: ids.length, queue: queueState, state: publicState() });
+        ids.forEach((id) => { ctx.queueState = ctx.queue.enqueue(String(id), mode); });
+        return sendJson(res, 200, { queued: ids.length, queue: ctx.queueState, state: ctx.publicState() });
       }
       const dequeueMatch = url.pathname.match(/^\/api\/tickets\/([^/]+)\/dequeue$/);
       if (req.method === "POST" && dequeueMatch) {
-        queueState = queue.cancel(dequeueMatch[1]);
-        return sendJson(res, 200, { queue: queueState, state: publicState() });
+        ctx.queueState = ctx.queue.cancel(dequeueMatch[1]);
+        return sendJson(res, 200, { queue: ctx.queueState, state: ctx.publicState() });
       }
       if (req.method === "POST" && url.pathname === "/api/execute/stop") {
-        queueState = queue.stop();
-        return sendJson(res, 200, { queue: queueState, state: publicState() });
+        ctx.queueState = ctx.queue.stop();
+        return sendJson(res, 200, { queue: ctx.queueState, state: ctx.publicState() });
       }
       if (req.method === "GET" && url.pathname === "/api/projects") {
-        return sendJson(res, 200, { projects: await listProjects(), active: repoRoot });
+        return sendJson(res, 200, { projects: await listProjects(), active: ctx.repoRoot });
       }
-      if (req.method === "POST" && url.pathname === "/api/projects/switch") {
+      // Switching and adding are the same server-side act now: make sure the project exists and is
+      // registered, and hand back its state. The CHOICE of project lives in the browser tab (it
+      // sends ?project=), so one tab changing project cannot repoint another — which is what
+      // switching used to do, by mutating the single active project every client shared.
+      if (req.method === "POST" && (url.pathname === "/api/projects/switch" || url.pathname === "/api/projects/add")) {
         const body = await readJsonBody(req);
         const check = await validateRepo(String(body.repoRoot || ""));
         if (!check.ok) return sendJson(res, 400, { error: check.error });
-        if (check.repoRoot === repoRoot) return sendJson(res, 200, publicState());
-        // Anything queued belongs to the project being left; dispatching it against another repo
-        // would run a ticket in the wrong codebase.
-        queueState.pending.forEach((p) => queue.cancel(p.ticketId));
-        // An explicit --branch was an answer about ONE repo. Carrying it into another would point
-        // the new board at a branch that has nothing to do with it.
-        branchOverride = null;
-        await openProject(check.repoRoot);
-        cache = { config: null, tickets: [], agents: [], issues: [], lastFetchedAt: null, unpushed: 0, coverage: null };
-        lastCoverageStamp = null;
-        await refresh({ doFetch: false });
-        return sendJson(res, 200, publicState());
-      }
-      if (req.method === "POST" && url.pathname === "/api/projects/add") {
-        const body = await readJsonBody(req);
-        const check = await validateRepo(String(body.repoRoot || ""));
-        if (!check.ok) return sendJson(res, 400, { error: check.error });
-        // Adding and opening are the same act: a project you added but are not looking at would
-        // just be a row in a file. Registration happens inside openProject.
-        queueState.pending.forEach((p) => queue.cancel(p.ticketId));
-        branchOverride = null;
-        await openProject(check.repoRoot);
-        cache = { config: null, tickets: [], agents: [], issues: [], lastFetchedAt: null, unpushed: 0, coverage: null };
-        lastCoverageStamp = null;
-        await refresh({ doFetch: false });
+        const target = await contextFor(new URL(`http://localhost:${port}/?project=${encodeURIComponent(check.repoRoot)}`));
         // The self-check in the response tells the UI whether this repo still needs scaffolding —
         // that IS the per-project setup, and it is the same one an existing project gets.
-        return sendJson(res, 200, publicState());
+        return sendJson(res, 200, target.publicState());
       }
       if (req.method === "POST" && url.pathname === "/api/projects/forget") {
         const body = await readJsonBody(req);
         await forgetProject(String(body.repoRoot || ""));
-        return sendJson(res, 200, { projects: await listProjects(), active: repoRoot });
+        return sendJson(res, 200, { projects: await listProjects(), active: ctx.repoRoot });
       }
       if (req.method === "GET" && url.pathname === "/api/sessions") {
-        return sendJson(res, 200, { sessions: await listSessions(repoRoot) });
+        return sendJson(res, 200, { sessions: await listSessions(ctx.repoRoot) });
       }
       const epicMatch = url.pathname.match(/^\/api\/tickets\/([^/]+)\/epic$/);
       if (req.method === "POST" && epicMatch) {
         const body = await readJsonBody(req);
-        const result = await writer.setEpic(repoRoot, stateBranch, epicMatch[1], body.epic ?? null, body.actor);
-        await refresh({ doFetch: false });
-        return sendJson(res, 200, { ...result, state: publicState() });
+        const result = await writer.setEpic(ctx.repoRoot, ctx.stateBranch, epicMatch[1], body.epic ?? null, body.actor);
+        await ctx.refresh({ doFetch: false });
+        return sendJson(res, 200, { ...result, state: ctx.publicState() });
       }
       const assignMatch = url.pathname.match(/^\/api\/tickets\/([^/]+)\/assign$/);
       if (req.method === "POST" && assignMatch) {
         const body = await readJsonBody(req);
-        const result = await writer.assignTicket(repoRoot, stateBranch, assignMatch[1], body.assignee ?? null, body.actor);
-        await refresh({ doFetch: false });
-        return sendJson(res, 200, { ...result, state: publicState() });
+        const result = await writer.assignTicket(ctx.repoRoot, ctx.stateBranch, assignMatch[1], body.assignee ?? null, body.actor);
+        await ctx.refresh({ doFetch: false });
+        return sendJson(res, 200, { ...result, state: ctx.publicState() });
       }
       const stateMatch = url.pathname.match(/^\/api\/tickets\/([^/]+)\/state$/);
       if (req.method === "POST" && stateMatch) {
         const body = await readJsonBody(req);
-        const session = await sessionFromBody(body, body.sessionId || body.actor);
-        const result = await writer.setState(repoRoot, stateBranch, stateMatch[1], body.state, body.actor, session);
-        await refresh({ doFetch: false });
-        return sendJson(res, 200, { ...result, state: publicState() });
+        const session = await ctx.sessionFromBody(body, body.sessionId || body.actor);
+        const result = await writer.setState(ctx.repoRoot, ctx.stateBranch, stateMatch[1], body.state, body.actor, session);
+        await ctx.refresh({ doFetch: false });
+        return sendJson(res, 200, { ...result, state: ctx.publicState() });
       }
       const renameMatch = url.pathname.match(/^\/api\/tickets\/([^/]+)\/rename$/);
       if (req.method === "POST" && renameMatch) {
         const body = await readJsonBody(req);
-        const result = await writer.renameTicket(repoRoot, stateBranch, renameMatch[1], body.newId, body.actor, body.tags);
-        await refresh({ doFetch: false });
-        return sendJson(res, 200, { ...result, state: publicState() });
+        const result = await writer.renameTicket(ctx.repoRoot, ctx.stateBranch, renameMatch[1], body.newId, body.actor, body.tags);
+        await ctx.refresh({ doFetch: false });
+        return sendJson(res, 200, { ...result, state: ctx.publicState() });
       }
       const getTicketMatch = url.pathname.match(/^\/api\/tickets\/([^/]+)$/);
       if (req.method === "GET" && getTicketMatch) {
-        const t = (cache.tickets || []).find((x) => x.id === getTicketMatch[1]);
+        const t = (ctx.cache.tickets || []).find((x) => x.id === getTicketMatch[1]);
         if (!t) {
           res.writeHead(404);
           return res.end("not found");
@@ -621,12 +652,12 @@ export async function startServer(initialRepoRoot, { port = 4173, remote = "orig
       if (req.method === "POST" && heartbeatMatch) {
         const body = await readJsonBody(req);
         const tokens = await tokenUsage.sessionTokenUsage(body.transcriptPath).catch(() => null);
-        const result = await writer.writeHeartbeat(repoRoot, stateBranch, {
+        const result = await writer.writeHeartbeat(ctx.repoRoot, ctx.stateBranch, {
           sessionId: heartbeatMatch[1], host: body.host, activeTicket: body.activeTicket, status: body.status,
           tokens, author: body.author,
         });
-        await refresh({ doFetch: false });
-        return sendJson(res, 200, { ...result, state: publicState() });
+        await ctx.refresh({ doFetch: false });
+        return sendJson(res, 200, { ...result, state: ctx.publicState() });
       }
       // The hook's one hot-path call: cheap (in-memory) gate check on every tool call, with an
       // actual git-committed heartbeat throttled to once a minute so PreToolUse stays fast.
@@ -635,18 +666,18 @@ export async function startServer(initialRepoRoot, { port = 4173, remote = "orig
         const sessionId = checkinMatch[1];
         const body = await readJsonBody(req);
         const now = Date.now();
-        const owned = (cache.tickets || []).filter((t) => t.owner === sessionId);
+        const owned = (ctx.cache.tickets || []).filter((t) => t.owner === sessionId);
         const blockedTicket = owned.find((t) => t.control && t.control !== "run");
 
-        sessionLastCheckin.set(sessionId, now);
-        const lastWrite = sessionLastHeartbeatWrite.get(sessionId) || 0;
-        if (now - lastWrite > HEARTBEAT_WRITE_INTERVAL_MS) {
-          sessionLastHeartbeatWrite.set(sessionId, now);
+        ctx.sessionLastCheckin.set(sessionId, now);
+        const lastWrite = ctx.sessionLastHeartbeatWrite.get(sessionId) || 0;
+        if (now - lastWrite > ctx.HEARTBEAT_WRITE_INTERVAL_MS) {
+          ctx.sessionLastHeartbeatWrite.set(sessionId, now);
           try {
             // Transcript parsing only happens on this throttled (≤once/min) path, never on the
             // hot per-tool-call check above it — a growing transcript must stay cheap to re-read.
             const tokens = await tokenUsage.sessionTokenUsage(body.transcriptPath).catch(() => null);
-            await writer.writeHeartbeat(repoRoot, stateBranch, {
+            await writer.writeHeartbeat(ctx.repoRoot, ctx.stateBranch, {
               sessionId,
               host: body.host,
               activeTicket: owned[0]?.id ?? null,
@@ -659,12 +690,12 @@ export async function startServer(initialRepoRoot, { port = 4173, remote = "orig
             // somehow owns several, only the first is charged rather than charging each of them
             // the same tokens.
             if (owned[0]) {
-              await writer.touchTicketSession(repoRoot, stateBranch, owned[0].id, {
+              await writer.touchTicketSession(ctx.repoRoot, ctx.stateBranch, owned[0].id, {
                 sessionId, transcriptPath: body.transcriptPath, tokens: tokens?.totalTokens ?? null,
-                author: agentAuthor(sessionId),
+                author: ctx.agentAuthor(sessionId),
               });
             }
-            await refresh({ doFetch: false });
+            await ctx.refresh({ doFetch: false });
           } catch (e) {
             console.error("heartbeat write failed:", e.message);
           }
@@ -681,13 +712,24 @@ export async function startServer(initialRepoRoot, { port = 4173, remote = "orig
       res.writeHead(404);
       res.end("not found");
     } catch (e) {
+      if (e && e.statusCode) return sendJson(res, e.statusCode, { error: e.message });
       console.error(e);
       sendJson(res, 500, { error: e.message });
     }
   });
 
-  await refresh({ doFetch: true });
+  // Build the project the server was started on up front, so `serve --repo X` still fails loudly
+  // and immediately on a bad path rather than on the first request.
+  const initial = await contextFor(new URL(`http://localhost:${port}/`));
+  await initial.refresh({ doFetch: true }).catch((e) => console.error("initial fetch failed:", e.message));
 
   await new Promise((resolve) => server.listen(port, host, resolve));
-  return { server, port, stateBranch, stateBranchSource, remoteUrl, worktreePath };
+  return {
+    server,
+    port,
+    stateBranch: initial.stateBranch,
+    stateBranchSource: initial.publicState().stateBranchSource,
+    remoteUrl: initial.publicState().remoteUrl,
+    worktreePath: initial.worktreePath,
+  };
 }
