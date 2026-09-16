@@ -598,9 +598,14 @@ export async function startServer(initialRepoRoot, { port = 4173, remote = "orig
         const check = await validateRepo(String(body.repoRoot || ""));
         if (!check.ok) return sendJson(res, 400, { error: check.error });
         const target = await contextFor(new URL(`http://localhost:${port}/?project=${encodeURIComponent(check.repoRoot)}`));
+        // Registration happens when a context is CREATED, so a project that was forgotten but whose
+        // context is still cached would never come back to the menu — adding it again looked like it
+        // did nothing until the server restarted. Registering here makes add idempotent.
+        const shown = target.publicState();
+        await rememberProject(check.repoRoot, { remoteUrl: shown.remoteUrl, stateBranch: shown.stateBranch });
         // The self-check in the response tells the UI whether this repo still needs scaffolding —
         // that IS the per-project setup, and it is the same one an existing project gets.
-        return sendJson(res, 200, target.publicState());
+        return sendJson(res, 200, shown);
       }
       if (req.method === "POST" && url.pathname === "/api/projects/forget") {
         const body = await readJsonBody(req);

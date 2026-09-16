@@ -1556,6 +1556,10 @@
       btn.addEventListener("click", async function (ev) {
         ev.stopPropagation(); // forgetting must not also open the project
         var root = btn.dataset.forget;
+        // The ✕ sits a few pixels from the row you click to OPEN a project, so a misclick is easy
+        // and the result looks like a deleted project even though nothing but a menu row is gone.
+        // Confirm says exactly what is and is not being removed.
+        if (!window.confirm("Remove " + root + " from this project list?\n\nThe repository, its ledger branch and its tickets are not touched — opening it again re-adds it.")) return;
         var isActive = root === (latestState && latestState.repoRoot);
         await apiPost("/api/projects/forget", { repoRoot: root });
         if (isActive) {
