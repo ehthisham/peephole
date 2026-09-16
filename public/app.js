@@ -105,8 +105,6 @@
   var addProjectGo = document.getElementById("addProjectGo");
   var addProjectCancel = document.getElementById("addProjectCancel");
   var addProjectClose = document.getElementById("addProjectClose");
-  var remoteLink = document.getElementById("remoteLink");
-  var branchName = document.getElementById("branchName");
   var checkoutBranchEl = document.getElementById("checkoutBranch");
   var statRow = document.getElementById("statRow");
   var langs = document.getElementById("langs");
@@ -486,16 +484,32 @@
   function renderConfig(state) {
     var cfg = state.config || {};
     var gitUser = state.gitUser || {};
+    var ledger = state.ledger || {};
+    // The header carries only what changes as you work — the project and the branch you are on.
+    // Everything else about how this project is wired lives here, where it can be read once
+    // instead of sitting in the chrome of every screen.
     var rows = [
       ["Project", esc(cfg.project || state.project || "—")],
+      ["Checkout", state.repoRoot ? '<span class="mono">' + esc(state.repoRoot) + "</span>" : "—"],
+      ["Checked-out branch", state.checkoutBranch
+        ? '<span class="mono">' + esc(state.checkoutBranch) + '</span> <span class="dim">— coverage and hook setup are read from it</span>'
+        : "—"],
       ["Remote", state.remoteUrl ? '<span class="mono">' + esc(state.remoteUrl) + "</span>" : "—"],
-      ["State branch", state.stateBranch ? '<span class="mono">' + esc(state.stateBranch) + "</span>" : "—"],
+      ["Ledger branch", esc(state.stateBranch || "—") +
+        ' <span class="dim">(resolved from ' + esc(state.stateBranchSource || "?") + ")</span>" +
+        (state.stateBranchOnRemote === false ? ' <span class="dim">— not pushed yet</span>' : "")],
+      ["Ledger checkout", ledger.kind === "clone"
+        ? 'sparse clone <span class="mono">' + esc(ledger.path || "") + "</span>"
+        : 'in-repo worktree <span class="mono">' + esc(ledger.path || "") + "</span>" +
+          (ledger.reason ? ' <span class="dim">— ' + esc(ledger.reason) + "</span>" : "")],
+      ["Unpushed", state.unpushed ? esc(String(state.unpushed)) + " ledger commit" + (state.unpushed === 1 ? "" : "s") : "none"],
       ["Git identity", gitUser.name || gitUser.email ? esc(gitUser.name || "") + (gitUser.email ? " <" + esc(gitUser.email) + ">" : "") : "—"],
-      ["Hook", state.hookConfigured ? "connected — live" : "not configured"],
+      ["Hooks", state.hookConfigured
+        ? "live — a session is checking in"
+        : (state.hooksInstalled ? "wired — no session running right now" : "not configured — run Fix it")],
       ["Autosync", state.autoFetch && state.autoFetch.enabled
         ? "every " + esc(state.autoFetch.intervalMinutes) + " min" + (state.autoFetch.push ? ", fetch + push" : ", fetch only")
         : "off"],
-      ["State branch", esc(state.stateBranch || "—") + ' <span class="dim">(' + esc(state.stateBranchSource || "?") + ")</span>"],
       ["States", Array.isArray(cfg.states) ? cfg.states.map(esc).join(" → ") : "—"],
       ["Control values", Array.isArray(cfg.control) ? cfg.control.map(esc).join(", ") : "—"],
       ["Risk values", Array.isArray(cfg.risk) ? cfg.risk.map(esc).join(", ") : "—"],
@@ -536,12 +550,6 @@
       "</div>";
   }
 
-  function toHttpUrl(remote) {
-    if (!remote) return "#";
-    var m = remote.match(/^git@([^:]+):(.+?)(\.git)?$/);
-    if (m) return "https://" + m[1] + "/" + m[2];
-    return remote.replace(/\.git$/, "");
-  }
 
   // The project this TAB is looking at, kept per tab. The server holds one context per project, so
   // two tabs can watch two repos at once; previously "switching" mutated a single server-side
@@ -1332,24 +1340,15 @@
     });
     projectName.textContent = state.project || "—";
     projectBtn.title = "Switch project — " + (state.repoRoot || "");
-    remoteLink.textContent = state.remoteUrl || "";
-    remoteLink.href = toHttpUrl(state.remoteUrl);
-    // Where the ledger lives, and on whose authority. A board reading a branch nobody declared is
-    // one `git remote show` away from reading a different one — worth saying out loud.
-    branchName.textContent = state.stateBranch ? "branch: " + state.stateBranch : "";
-    branchName.title = state.stateBranchSource
-      ? "ticket ledger branch — resolved from " + state.stateBranchSource
-      : "";
-    branchName.className = "branch mono" + (state.stateBranchSource === "remote default" ? " branch-unpinned" : "");
-    // Two refs feed this page and they are not the same one. Tickets come from the ledger branch,
-    // which everyone shares; coverage is read from THIS machine's working tree, so it reflects
-    // whatever branch the person running the board has checked out. Saying only the first made the
-    // second look like a property of the project rather than of one developer's checkout.
+
+    // Only the branch you are actually on. The ledger branch, the remote and where the ledger is
+    // checked out describe the setup rather than the moment, so they live in Configuration instead
+    // of sitting in the chrome of every screen.
     if (state.checkoutBranch) {
       checkoutBranchEl.className = "branch mono checkout-branch";
-      checkoutBranchEl.innerHTML = "checkout: <b>" + esc(state.checkoutBranch) + "</b>";
-      checkoutBranchEl.title = "The checkout Peephole is watching (" + (state.repoRoot || "") +
-        ") — coverage and hook setup are read from it, tickets are not";
+      checkoutBranchEl.textContent = state.checkoutBranch;
+      checkoutBranchEl.title = "The branch checked out in " + (state.repoRoot || "this repo") +
+        " — tickets live on " + (state.stateBranch || "the ledger branch") + " (see Configuration)";
     } else {
       checkoutBranchEl.textContent = "";
       checkoutBranchEl.title = "";
