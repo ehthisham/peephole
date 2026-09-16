@@ -209,7 +209,11 @@ export async function startServer(initialRepoRoot, { port = 4173, remote = "orig
 
   function publicState() {
     return {
-      project: path.basename(repoRoot),
+      // The project's own name, as its committed config declares it — NOT the directory name. The
+      // board filters tickets by project, and a checkout whose folder is named differently from the
+      // project (a clone into `work/`, a second checkout) had every ticket filtered out as
+      // belonging to "another project", leaving an empty board and no hint why.
+      project: (cache.config && cache.config.project) || path.basename(repoRoot),
       remoteUrl,
       remote,
       stateBranch,
@@ -545,6 +549,22 @@ export async function startServer(initialRepoRoot, { port = 4173, remote = "orig
         cache = { config: null, tickets: [], agents: [], issues: [], lastFetchedAt: null, unpushed: 0, coverage: null };
         lastCoverageStamp = null;
         await refresh({ doFetch: false });
+        return sendJson(res, 200, publicState());
+      }
+      if (req.method === "POST" && url.pathname === "/api/projects/add") {
+        const body = await readJsonBody(req);
+        const check = await validateRepo(String(body.repoRoot || ""));
+        if (!check.ok) return sendJson(res, 400, { error: check.error });
+        // Adding and opening are the same act: a project you added but are not looking at would
+        // just be a row in a file. Registration happens inside openProject.
+        queueState.pending.forEach((p) => queue.cancel(p.ticketId));
+        branchOverride = null;
+        await openProject(check.repoRoot);
+        cache = { config: null, tickets: [], agents: [], issues: [], lastFetchedAt: null, unpushed: 0, coverage: null };
+        lastCoverageStamp = null;
+        await refresh({ doFetch: false });
+        // The self-check in the response tells the UI whether this repo still needs scaffolding —
+        // that IS the per-project setup, and it is the same one an existing project gets.
         return sendJson(res, 200, publicState());
       }
       if (req.method === "POST" && url.pathname === "/api/projects/forget") {

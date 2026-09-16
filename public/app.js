@@ -96,6 +96,12 @@
   var projectName = document.getElementById("projectName");
   var projectBtn = document.getElementById("projectBtn");
   var projectMenu = document.getElementById("projectMenu");
+  var addProjectBackdrop = document.getElementById("addProjectBackdrop");
+  var addProjectPath = document.getElementById("addProjectPath");
+  var addProjectError = document.getElementById("addProjectError");
+  var addProjectGo = document.getElementById("addProjectGo");
+  var addProjectCancel = document.getElementById("addProjectCancel");
+  var addProjectClose = document.getElementById("addProjectClose");
   var remoteLink = document.getElementById("remoteLink");
   var branchName = document.getElementById("branchName");
   var checkoutBranchEl = document.getElementById("checkoutBranch");
@@ -1477,8 +1483,10 @@
     var projects = ((latestState && latestState.projects) || []).slice().sort(function (a, b) {
       return String(b.lastOpenedAt || "").localeCompare(String(a.lastOpenedAt || ""));
     });
+    var addRow = '<button type="button" role="menuitem" class="pm-add" data-add="1">+ Add project…</button>';
     if (!projects.length) {
-      projectMenu.innerHTML = '<p class="pm-note">No other projects yet — run the board against another repo with <code>--repo</code> and it appears here.</p>';
+      projectMenu.innerHTML = '<p class="pm-note">No projects yet.</p>' + addRow;
+      wireAddRow();
       return;
     }
     projectMenu.innerHTML = projects.map(function (p) {
@@ -1489,17 +1497,86 @@
         esc(p.name) + (p.missing ? " <span class=\"pm-path\">checkout not found</span>" : "") +
         '<span class="pm-path">' + esc(p.repoRoot) + "</span></button>"
       );
-    }).join("");
+    }).join("") + addRow;
+    wireAddRow();
     Array.prototype.forEach.call(projectMenu.querySelectorAll("button[data-root]"), function (btn) {
-      btn.addEventListener("click", async function () {
+      btn.addEventListener("click", function () {
         projectMenu.hidden = true;
         projectBtn.setAttribute("aria-expanded", "false");
         if (btn.getAttribute("aria-current") === "true") return;
-        var res = await apiPost("/api/projects/switch", { repoRoot: btn.dataset.root });
-        if (res && res.error) window.alert(res.error);
+        switchTo(btn.dataset.root, "/api/projects/switch");
       });
     });
   }
+
+  function wireAddRow() {
+    var add = projectMenu.querySelector("[data-add]");
+    if (add) {
+      add.addEventListener("click", function () {
+        projectMenu.hidden = true;
+        projectBtn.setAttribute("aria-expanded", "false");
+        openAddProject();
+      });
+    }
+  }
+
+  /** Switching re-resolves a ledger, which can mean a fetch or a first clone — seconds, not
+   *  milliseconds. Without a visible busy state the board just sat there showing the old project's
+   *  cards, which reads as a broken menu rather than as work in progress. */
+  var switching = false;
+  async function switchTo(repoRoot, endpoint) {
+    if (switching) return null;
+    switching = true;
+    projectBtn.classList.add("busy");
+    projectName.textContent = "opening…";
+    board.innerHTML = '<p class="empty-note">Opening project…</p>';
+    try {
+      var res = await apiPost(endpoint, { repoRoot: repoRoot });
+      if (res && res.error) {
+        window.alert(res.error);
+        if (latestState) render(latestState); // put the board that is actually open back on screen
+        return res;
+      }
+      render(res);
+      return res;
+    } finally {
+      switching = false;
+      projectBtn.classList.remove("busy");
+    }
+  }
+
+  function openAddProject() {
+    addProjectError.hidden = true;
+    addProjectPath.value = "";
+    addProjectBackdrop.hidden = false;
+    addProjectPath.focus();
+  }
+  function closeAddProject() { addProjectBackdrop.hidden = true; }
+  addProjectCancel.addEventListener("click", closeAddProject);
+  addProjectClose.addEventListener("click", closeAddProject);
+  addProjectBackdrop.addEventListener("click", function (ev) {
+    if (ev.target === addProjectBackdrop) closeAddProject();
+  });
+  addProjectPath.addEventListener("keydown", function (ev) {
+    if (ev.key === "Enter") addProjectGo.click();
+  });
+  addProjectGo.addEventListener("click", async function () {
+    var value = addProjectPath.value.trim();
+    if (!value) return;
+    addProjectGo.disabled = true;
+    try {
+      var res = await switchTo(value, "/api/projects/add");
+      if (res && res.error) {
+        // Shown in the dialog, not an alert: the path is right there to correct.
+        addProjectError.hidden = false;
+        addProjectError.textContent = res.error;
+        return;
+      }
+      closeAddProject();
+    } finally {
+      addProjectGo.disabled = false;
+    }
+  });
 
   projectBtn.addEventListener("click", function (ev) {
     ev.stopPropagation();
@@ -1637,6 +1714,7 @@
     }
   });
   document.addEventListener("keydown", function (ev) {
+    if (ev.key === "Escape" && !addProjectBackdrop.hidden) closeAddProject();
     if (ev.key === "Escape" && !filterMenu.hidden) {
       filterMenu.hidden = true;
       filterBtn.setAttribute("aria-expanded", "false");

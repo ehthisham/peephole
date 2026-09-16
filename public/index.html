@@ -39,6 +39,11 @@
   .project-menu button[aria-current="true"]{color:var(--accent); font-weight:600;}
   .project-menu button:disabled{opacity:0.45; cursor:not-allowed;}
   .project-menu .pm-path{display:block; font-size:11px; color:var(--ink-dim); font-family:"IBM Plex Mono",ui-monospace,monospace; margin-top:1px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+  .project-menu .pm-add{border-top:1px solid var(--border); margin-top:4px; padding-top:6px; color:var(--accent); font-weight:600;}
+  .add-error{margin:8px 0 0; font-size:12.5px; color:var(--accent);}
+  #addProjectPath{width:100%; font:inherit; font-size:13px; padding:8px 10px; border:1px solid var(--border); border-radius:6px; background:var(--bg); color:var(--ink);}
+  #addProjectBackdrop .field label{display:block; font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:0.04em; color:var(--ink-dim); margin-bottom:5px;}
+  .project-btn.busy{opacity:0.6; cursor:progress;}
   .project-menu .pm-note{padding:6px 9px; font-size:11.5px; color:var(--ink-dim);}
   .remote-link{font-size:12px; color:var(--ink-dim); text-decoration:none;}
   .checkout-branch{color:var(--ink-dim);}
@@ -485,6 +490,29 @@
             <button class="primary" type="submit">Create ticket</button>
           </div>
         </form>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal-backdrop" id="addProjectBackdrop" hidden>
+    <div class="modal exec-modal" role="dialog" aria-modal="true" aria-labelledby="addProjectTitle">
+      <div class="modal-head">
+        <h2 id="addProjectTitle">Add a project</h2>
+        <button class="modal-close" id="addProjectClose" type="button" aria-label="Close">✕</button>
+      </div>
+      <div class="modal-body">
+        <p class="exec-note">Point Peephole at a git checkout on this machine. If it has no ticket
+          ledger yet, the board opens on its self-check and <b>Fix it</b> sets one up — each project
+          is set up on its own.</p>
+        <div class="field">
+          <label for="addProjectPath">Repository path</label>
+          <input id="addProjectPath" placeholder="/home/you/work/some-repo" autocomplete="off" spellcheck="false">
+        </div>
+        <p class="add-error" id="addProjectError" hidden></p>
+        <div class="exec-actions">
+          <button class="ghost" id="addProjectCancel" type="button">Cancel</button>
+          <button class="primary" id="addProjectGo" type="button">Add and open</button>
+        </div>
       </div>
     </div>
   </div>
