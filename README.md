@@ -72,7 +72,10 @@ you click **Push to remote** and confirm.
 ## What it does
 
 - **Pull latest** — `git fetch` + re-read, on demand.
-- **Auto-fetch** — same, on a timer (minutes, configurable), for when no webhook/hook exists yet.
+- **Autosync** — on a timer (minutes, configurable): pushes the waiting ledger commits, then
+  fetches and re-reads. The push happens only if every waiting file is under `.peephole/`; anything
+  else and it refuses and says so, since the state branch may be an ordinary code branch and an
+  unattended push of somebody's code is not something a toggle should be able to do.
 - **Self-check** — flags a missing `config.yaml` / `tickets/` / `agents/` (and a missing
   CLAUDE.md / README.md pointer) as a plain issues list; **Fix it** scaffolds exactly what's
   missing and commits locally.
@@ -118,8 +121,15 @@ on its own, so it shows up as untracked and one `git add -A` would commit the wh
 
 ### Which branch the ledger lives on
 
+A fresh setup puts the ledger on its own branch, **`peephole-state`**, created from the remote's
+default on the first write and shared on the first push. A dedicated branch keeps ticket commits
+out of the code history and gives a team one obvious place for them, so nobody starts a second
+ledger on a branch of their own. (Not simply `peephole`: the worktree's local branch is
+`peephole/<stateBranch>`, and git cannot hold both `refs/heads/peephole` and `refs/heads/peephole/…`.)
+
 Resolved in this order: `--branch` on the command line, then `stateBranch` in the repo's committed
-`.peephole/config.yaml`, then the remote's default branch.
+`.peephole/config.yaml`, then an existing `peephole-state` branch on the remote, then a new one.
+A repo set up before this — whose config names a code branch — keeps reading that branch.
 
 Declare it in `config.yaml` and keep it generic — `main`, or a dedicated `peephole` branch. The
 last resort is whatever a git host happens to report as default, which is not necessarily stable: a

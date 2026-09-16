@@ -120,10 +120,28 @@ export async function ensureWorktree(repoRoot, remoteBranch, remote = "origin") 
   if (fs.existsSync(`${worktreePath}/.git`)) {
     return { worktreePath, localBranch };
   }
-  const hasRemote = await refExists(repoRoot, `${remote}/${remoteBranch}`);
-  const base = hasRemote ? `${remote}/${remoteBranch}` : "HEAD";
+  // A dedicated ledger branch usually does not exist yet on the first run. Branch it from the
+  // remote's default rather than from HEAD: HEAD is whatever the developer happens to have checked
+  // out, so the ledger would inherit an unrelated feature branch's contents on one machine and not
+  // on another. Created here, shared on the first push.
+  const candidates = [`${remote}/${remoteBranch}`];
+  const fallback = await defaultRemoteBranch(repoRoot, remote).catch(() => null);
+  if (fallback) candidates.push(`${remote}/${fallback}`, fallback);
+  let base = "HEAD";
+  for (const ref of candidates) {
+    if (await refExists(repoRoot, ref)) { base = ref; break; }
+  }
   await run(repoRoot, ["worktree", "add", "-B", localBranch, worktreePath, base]);
   return { worktreePath, localBranch };
+}
+
+/** Paths touched by the commits waiting to be pushed. Used to prove an auto-push would only ever
+ *  publish ledger writes — anything else means something unexpected rode along on this branch. */
+export async function pendingPaths(worktreePath, localBranch, remoteBranch, remote = "origin") {
+  const hasRemote = await refExists(worktreePath, `${remote}/${remoteBranch}`);
+  const range = hasRemote ? `${remote}/${remoteBranch}..${localBranch}` : localBranch;
+  const out = await run(worktreePath, ["diff", "--name-only", range]);
+  return out.split("\n").map((l) => l.trim()).filter(Boolean);
 }
 
 /** Fast-forwards the worktree branch to match the remote — only when nothing local is waiting to be pushed, so an in-flight (unpushed) commit is never discarded. */

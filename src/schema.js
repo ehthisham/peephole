@@ -1,5 +1,11 @@
 import yaml from "js-yaml";
 
+/** The ledger's own branch. Dedicated and fixed by default so a team converges on one branch
+ * rather than each machine picking a code branch — and NOT simply "peephole": the worktree's local
+ * branch is `peephole/<stateBranch>`, and git cannot hold both `refs/heads/peephole` and
+ * `refs/heads/peephole/...` at once. */
+export const DEFAULT_STATE_BRANCH = "peephole-state";
+
 export const STATES = ["proposed", "in-progress", "built", "verified", "shipped", "closed"];
 export const FORWARD_STATES = ["proposed", "in-progress", "built", "verified", "shipped"];
 export const CONTROLS = ["run", "pause", "skip", "restart"];

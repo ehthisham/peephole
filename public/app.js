@@ -470,7 +470,10 @@
       ["State branch", state.stateBranch ? '<span class="mono">' + esc(state.stateBranch) + "</span>" : "—"],
       ["Git identity", gitUser.name || gitUser.email ? esc(gitUser.name || "") + (gitUser.email ? " <" + esc(gitUser.email) + ">" : "") : "—"],
       ["Hook", state.hookConfigured ? "connected — live" : "not configured"],
-      ["Auto-fetch", state.autoFetch && state.autoFetch.enabled ? "every " + esc(state.autoFetch.intervalMinutes) + " min" : "off"],
+      ["Autosync", state.autoFetch && state.autoFetch.enabled
+        ? "every " + esc(state.autoFetch.intervalMinutes) + " min" + (state.autoFetch.push ? ", fetch + push" : ", fetch only")
+        : "off"],
+      ["State branch", esc(state.stateBranch || "—") + ' <span class="dim">(' + esc(state.stateBranchSource || "?") + ")</span>"],
       ["States", Array.isArray(cfg.states) ? cfg.states.map(esc).join(" → ") : "—"],
       ["Control values", Array.isArray(cfg.control) ? cfg.control.map(esc).join(", ") : "—"],
       ["Risk values", Array.isArray(cfg.risk) ? cfg.risk.map(esc).join(", ") : "—"],
@@ -1291,7 +1294,7 @@
     if (state.hookConfigured) {
       hookState.innerHTML = "Hook: <b>connected — live</b>";
     } else if (state.autoFetch && state.autoFetch.enabled) {
-      hookState.innerHTML = "Hook: not configured — auto-fetching every <b>" + state.autoFetch.intervalMinutes + " min</b>";
+      hookState.innerHTML = "Hook: not configured — autosync every <b>" + state.autoFetch.intervalMinutes + " min</b>";
     } else {
       hookState.textContent = "Hook: not configured — click Pull to refresh";
     }
@@ -1323,6 +1326,16 @@
       issuesBanner.hidden = true;
     }
 
+    var sync = state.autoFetch || {};
+    if (sync.enabled && sync.lastPushError) {
+      // A silent refusal is the worst outcome for a toggle whose whole promise is "you don't have
+      // to think about pushing" — say why nothing went out.
+      pushBanner.hidden = false;
+      pushText.textContent = "Autosync: " + sync.lastPushError;
+      pushBtn.hidden = false;
+      return;
+    }
+    pushBtn.hidden = false;
     if (state.unpushed > 0) {
       pushBanner.hidden = false;
       pushText.textContent = state.unpushed + " unpushed commit" + (state.unpushed === 1 ? "" : "s") + " on " + state.stateBranch;
@@ -1592,7 +1605,7 @@
 
   autoFetchToggle.addEventListener("click", async function () {
     var enabled = autoFetchToggle.getAttribute("aria-pressed") !== "true";
-    await apiPost("/api/autofetch", { enabled: enabled, intervalMinutes: Number(intervalInput.value) || 5 });
+    await apiPost("/api/autosync", { enabled: enabled, intervalMinutes: Number(intervalInput.value) || 5, push: true });
   });
 
   intervalInput.addEventListener("change", async function () {

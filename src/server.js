@@ -8,6 +8,7 @@ import { repoStats } from "./repoStats.js";
 import * as writer from "./writer.js";
 import * as tokenUsage from "./tokens.js";
 import { createQueue, listSessions } from "./execute.js";
+import { DEFAULT_STATE_BRANCH } from "./schema.js";
 import { detectCoverage } from "./coverage.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -66,7 +67,14 @@ async function resolveStateBranch(repoRoot, remote, override) {
     if (declared) return { branch: declared, source: ".peephole/config.yaml" };
     break;
   }
-  return { branch: fallback, source: "remote default" };
+  // An existing ledger branch on the remote is the team's answer even before anyone's config
+  // declares it — joining a repo must never start a second ledger beside the one in use.
+  if (await git.refExists(repoRoot, `${remote}/${DEFAULT_STATE_BRANCH}`)) {
+    return { branch: DEFAULT_STATE_BRANCH, source: "existing " + DEFAULT_STATE_BRANCH + " branch" };
+  }
+  // Nothing declared and nothing to join: a fresh setup gets the dedicated branch, created on
+  // first write and shared on first push, instead of writing tickets onto a code branch.
+  return { branch: DEFAULT_STATE_BRANCH, source: "new " + DEFAULT_STATE_BRANCH + " branch" };
 }
 
 export async function startServer(repoRoot, { port = 4173, remote = "origin", host = DEFAULT_HOST, branch = null } = {}) {
@@ -104,7 +112,7 @@ export async function startServer(repoRoot, { port = 4173, remote = "origin", ho
       broadcast();
     },
   });
-  let autoFetch = { enabled: false, intervalMinutes: 5 };
+  let autoFetch = { enabled: false, intervalMinutes: 5, push: false, lastPushAt: null, lastPushError: null };
   let autoFetchTimer = null;
   const sseClients = new Set();
   // Last time each session's PreToolUse hook checked in (every call) — drives the honest
@@ -232,15 +240,57 @@ export async function startServer(repoRoot, { port = 4173, remote = "origin", ho
     return cache;
   }
 
-  function setAutoFetch(enabled, intervalMinutes) {
-    autoFetch = { enabled, intervalMinutes: Math.max(1, Number(intervalMinutes) || 5) };
+  /**
+   * Pushes the waiting ledger commits, but only after proving they ARE ledger commits: every path
+   * in the pending range must sit under `.peephole/`. The state branch can be an ordinary code
+   * branch (that is still the default for repos set up before the dedicated branch existed), and
+   * an unattended push of somebody's code — or of a commit that rode along on that branch — is not
+   * something a toggle should be able to do.
+   */
+  async function autoPush() {
+    const pending = await git.unpushedCount(worktreePath, localBranch, stateBranch, remote).catch(() => 0);
+    if (pending === 0) return;
+    const paths = await git.pendingPaths(worktreePath, localBranch, stateBranch, remote).catch(() => null);
+    const foreign = (paths || []).filter((f) => !f.startsWith(".peephole/"));
+    if (paths === null || foreign.length) {
+      autoFetch.lastPushError = foreign.length
+        ? `not pushed — ${foreign.length} non-ledger file(s) waiting, e.g. ${foreign[0]}`
+        : "not pushed — could not read what is waiting";
+      return;
+    }
+    await writer.push(repoRoot, stateBranch);
+    autoFetch.lastPushAt = new Date().toISOString();
+    autoFetch.lastPushError = null;
+  }
+
+  async function syncTick() {
+    try {
+      if (autoFetch.push) await autoPush();
+    } catch (e) {
+      autoFetch.lastPushError = e.message;
+      console.error("auto-push failed:", e.message);
+    }
+    // Fetch after pushing, so the refresh that follows sees the branch as it now stands and the
+    // unpushed banner clears in the same tick rather than one interval later.
+    await refresh({ doFetch: true }).catch((e) => console.error("auto-fetch failed:", e.message));
+  }
+
+  function setAutoFetch(enabled, intervalMinutes, push) {
+    autoFetch = {
+      ...autoFetch,
+      enabled,
+      intervalMinutes: Math.max(1, Number(intervalMinutes) || 5),
+      push: push === undefined ? autoFetch.push : Boolean(push),
+    };
     if (autoFetchTimer) clearInterval(autoFetchTimer);
     autoFetchTimer = null;
     if (autoFetch.enabled) {
       autoFetchTimer = setInterval(() => {
-        refresh({ doFetch: true }).catch((e) => console.error("auto-fetch failed:", e.message));
+        syncTick().catch((e) => console.error("autosync failed:", e.message));
       }, autoFetch.intervalMinutes * 60 * 1000);
       if (autoFetchTimer.unref) autoFetchTimer.unref();
+      // Run once immediately: a toggle that does nothing for five minutes reads as broken.
+      syncTick().catch((e) => console.error("autosync failed:", e.message));
     }
     broadcast();
   }
@@ -310,9 +360,12 @@ export async function startServer(repoRoot, { port = 4173, remote = "origin", ho
         await refresh({ doFetch: true });
         return sendJson(res, 200, publicState());
       }
-      if (req.method === "POST" && url.pathname === "/api/autofetch") {
+      if (req.method === "POST" && (url.pathname === "/api/autofetch" || url.pathname === "/api/autosync")) {
         const body = await readJsonBody(req);
-        setAutoFetch(Boolean(body.enabled), body.intervalMinutes);
+        // /api/autosync sets both halves; /api/autofetch stays for anything still calling it and
+        // leaves the push setting alone.
+        const push = url.pathname === "/api/autosync" ? body.push !== false : undefined;
+        setAutoFetch(Boolean(body.enabled), body.intervalMinutes, push);
         return sendJson(res, 200, publicState());
       }
       if (req.method === "POST" && url.pathname === "/api/scaffold") {
