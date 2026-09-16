@@ -131,6 +131,9 @@ export async function startServer(initialRepoRoot, { port = 4173, remote = "orig
     repoRoot,
     binPath: peepholeBin,
     port,
+    // Reading the ticket the board already has avoids a git round trip just to check whether a
+    // dispatch is still appropriate.
+    readTicket: (ticketId) => (cache.tickets || []).find((t) => t.id === ticketId) || null,
     claimTicket: async (ticketId, sessionId) => {
       const result = await writer.claimTicket(repoRoot, stateBranch, ticketId, sessionId, "peephole-queue", {
         sessionId, transcriptPath: null, tokens: null, author: gitUser && gitUser.name ? gitUser : null,

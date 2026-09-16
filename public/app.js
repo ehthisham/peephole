@@ -1603,7 +1603,11 @@
     }
     queueBar.hidden = false;
     var bits = [];
-    if (running) {
+    if (running && running.needsInput) {
+      // An agent that stopped to ask something is not progress and not failure; it needs a person.
+      bits.push('<span class="q-wait-input">⏸ <b>' + esc(running.ticketId) + "</b> is waiting for input — " +
+        '<code>claude attach ' + esc((running.sessionId || "").slice(0, 8)) + "</code></span>");
+    } else if (running) {
       bits.push('<span class="q-run">▶ running <b>' + esc(running.ticketId) + "</b>" +
         (running.sessionId ? ' <span class="dim mono">' + esc(running.sessionId.slice(0, 6)) + "</span>" : "") + "</span>");
     }
