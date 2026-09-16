@@ -211,8 +211,25 @@ Finally, unwire the per-machine bits, none of which are in the repo's history:
 
 Peephole's own checkout is untouched by all of this: it stores nothing about the repos it watches.
 
+## Sync is git, and only git
+
+Everything a board knows travels as commits on the ledger branch. There is no live channel between
+two people's boards, and that is a decision rather than a gap: each developer runs their own board
+against their own checkout, and the hooks only ever talk to `localhost`.
+
+What that means in practice:
+
+- Pausing or skipping a ticket reaches a teammate's agent after a push and their fetch — turn on
+  **Autosync** and that is one interval, not whenever somebody remembers to press a button.
+- A board only enforces `control` on sessions running on its own machine. Nobody can stop your
+  agent from their laptop, and nothing can stop a colleague's agent from yours.
+- Nothing listens on the network. The server binds `127.0.0.1`, and the check-in endpoint that
+  gates every tool call is not reachable from another machine — which is also why there is no
+  shared-board authentication to get wrong.
+
+A shared always-on instance with auth (Hosted Mode, Phase 7) would change all three. It stays
+deferred.
+
 ## Not yet built
 
-- The Claude Code hook that makes `control` self-enforcing on an agent session (Phase 4 in the plan).
 - Bitbucket branch/PR/CI/deploy enrichment (Phase 5).
-- Hosted Mode — a shared always-on instance with auth (Phase 7) — deliberately deferred.
