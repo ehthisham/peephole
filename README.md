@@ -102,6 +102,50 @@ in use and why:
 Pushing a ledger branch for the first time moves the ledger out of the repo on the next fetch, with
 no restart.
 
+## What Peephole stores, and where
+
+Nothing about a project lives inside the Peephole checkout. Three places hold state, and only one
+of them matters if you lose the others.
+
+**In the repo, committed** — `.peephole/` on the ledger branch: `config.yaml`, `tickets/*.md`,
+`agents/*.json`. This is the whole board. Everything else can be deleted and rebuilt from it.
+
+**On your machine, disposable** — under `~/.peephole/` (override with `PEEPHOLE_HOME`, and
+`PEEPHOLE_LEDGER_HOME` for the clones alone):
+
+```
+~/.peephole/
+  projects.json                    the menu: which repos this install has served
+  ledgers/<repo>-<hash>/           one sparse ledger clone per project
+```
+
+`projects.json` is a plain list, written whenever a project is opened:
+
+```json
+[
+  {
+    "id": "hp-platform-api-go",
+    "name": "hp-platform-api-go",
+    "repoRoot": "/home/you/work/hp-platform-api-go",
+    "remoteUrl": "git@bitbucket.org:you/hp-go.git",
+    "stateBranch": "peephole-state",
+    "lastOpenedAt": "2026-09-16T12:34:33.833Z"
+  }
+]
+```
+
+It is an index, not a source of truth: delete it and you lose the menu, nothing else — opening a
+repo again re-adds it. It is kept outside every repo it lists on purpose, since one developer's
+local paths have no business travelling to another machine inside a git repo. The clone directory
+name carries a hash of the remote so two checkouts that share a folder name never share a ledger.
+
+**In the browser** — the project this tab is showing (`sessionStorage`, so two tabs differ), and
+per-viewer preferences in `localStorage`: lane sort, group-by-epic, member and selection filters,
+and the last permission mode chosen for a dispatch. None of it reaches the repo or another machine.
+
+**Also per machine, in the repo but never committed** — `.claude/settings.local.json` (the hook
+wiring, written by Fix it) and `.peephole-worktree/` when the worktree fallback is in use.
+
 ## Moving an existing ledger to its own branch
 
 ```
