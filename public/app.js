@@ -783,8 +783,10 @@
     // Only when there is a session to open: a ticket claimed under a person's own name has none.
     var sessionOwner = t.owner && SESSION_ID_RE.test(t.owner) ? t.owner : null;
     var attachBtn = sessionOwner
-      ? '<button class="ctl attach" data-attach="' + esc(t.id) + '" type="button" title="Open this ticket\'s session in a terminal — ' +
-        esc(sessionOwner.slice(0, 8)) + '" aria-label="Open the session working this ticket">' + ATTACH_ICON + "</button>"
+      ? '<button class="ctl attach" data-attach="' + esc(t.id) + '" data-session="' + esc(sessionOwner) +
+        '" type="button" title="Hand this ticket to its session — ' + esc(sessionOwner.slice(0, 8)) +
+        ' (opens a background session, or copies the prompt for an interactive one)" ' +
+        'aria-label="Hand this ticket to its session">' + ATTACH_ICON + "</button>"
       : "";
     var chatBtn =
       '<button class="ctl chat" data-chat="' + esc(t.id) + '" type="button" title="' +
@@ -882,16 +884,23 @@
         ev.stopPropagation();
         attachBtnEl.disabled = true;
         try {
-          var res = await apiPost("/api/tickets/" + encodeURIComponent(attachBtnEl.dataset.attach) + "/attach", {});
-          if (res && res.opened) return;
-          // No emulator, or the board is being read from another machine: hand over the command
-          // rather than failing silently.
-          var cmd = (res && res.command) || "";
-          if (cmd && navigator.clipboard) {
-            try { await navigator.clipboard.writeText(cmd); } catch (e) {}
+          var res = await apiPost("/api/tickets/" + encodeURIComponent(attachBtnEl.dataset.attach) + "/handoff", {
+            sessionId: attachBtnEl.dataset.session,
+          });
+          if (res && res.error) { window.alert(res.error); return; }
+          if (res && res.mode === "attached" && res.opened) return;
+          // Either an interactive session, which nothing can inject into, or no terminal here.
+          // Both end the same way: put what that window needs on the clipboard.
+          var text = (res && res.mode === "paste") ? res.prompt : (res && res.command) || "";
+          var copied = false;
+          if (text && navigator.clipboard) {
+            try { await navigator.clipboard.writeText(text); copied = true; } catch (e) {}
           }
-          window.alert((res && res.error ? res.error + "\n\n" : "Could not open a terminal here.\n\n") +
-            (cmd ? "Run this where you have one (copied to your clipboard):\n\n  " + cmd : ""));
+          window.alert(
+            (res && res.reason ? res.reason : "Could not open a terminal here.") + "\n\n" +
+            (copied ? "Copied to your clipboard." : text) +
+            "\n\nThe ticket is claimed for that session either way.",
+          );
         } finally {
           attachBtnEl.disabled = false;
         }

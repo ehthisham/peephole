@@ -182,7 +182,7 @@ async function runInTerminal(repoRoot, line) {
 /** The instruction handed to the agent. Deliberately points at the CLI rather than describing the
  *  work in prose: the ticket file is the source of truth, and the agent must drive state through
  *  `peephole ticket advance` so the board reflects reality rather than this prompt's assumptions. */
-function promptFor(ticket, { binPath, port }) {
+export function promptFor(ticket, { binPath, port }) {
   const cli = `node ${binPath}`;
   const parts = [
     `Work Peephole ticket "${ticket.id}".`,

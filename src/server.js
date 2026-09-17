@@ -7,7 +7,7 @@ import { scan } from "./scan.js";
 import { repoStats } from "./repoStats.js";
 import * as writer from "./writer.js";
 import * as tokenUsage from "./tokens.js";
-import { createQueue, listSessions, attachInTerminal, safeSessionId } from "./execute.js";
+import { createQueue, listSessions, attachInTerminal, safeSessionId, promptFor } from "./execute.js";
 import { DEFAULT_STATE_BRANCH } from "./schema.js";
 import { resolveLedger } from "./ledger.js";
 import { listProjects, rememberProject, forgetProject, validateRepo } from "./projects.js";
@@ -407,6 +407,9 @@ export async function startServer(initialRepoRoot, { port = 4173, remote = "orig
     };
   }
 
+  const repoRootOf = (ctx) => ctx.repoRoot;
+  const stateBranchOf = (ctx) => ctx.stateBranch;
+
   /** The project a request is about: `?project=<repoRoot>`, else the one the server was started on.
    *  Contexts are built once and kept, so switching back to a project is instant and its queue and
    *  autosync setting survive the trip. */
@@ -618,6 +621,50 @@ export async function startServer(initialRepoRoot, { port = 4173, remote = "orig
         }
         const result = await attachInTerminal(ctx.repoRoot, sessionId);
         return sendJson(res, result.opened ? 200 : 400, { ...result, sessionId });
+      }
+      const handoffMatch = url.pathname.match(/^\/api\/tickets\/([^/]+)\/handoff$/);
+      if (req.method === "POST" && handoffMatch) {
+        const body = await readJsonBody(req);
+        const sessionId = safeSessionId(body.sessionId);
+        if (!sessionId) return sendJson(res, 400, { error: "that is not a session id" });
+        const ticket = (ctx.cache.tickets || []).find((t) => t.id === handoffMatch[1]);
+        if (!ticket) return sendJson(res, 404, { error: "ticket not found" });
+
+        const sessions = await listSessions(ctx.repoRoot);
+        const session = sessions.find((s) => s.sessionId === sessionId) || null;
+        const prompt = promptFor(ticket, { binPath: ctx.peepholeBin, port });
+
+        // Claim it for the session that is about to work it, so the board matches reality whichever
+        // way the prompt gets there. Already claimed by that same session is fine — claimTicket
+        // treats a re-claim as a no-op.
+        let claimed = null;
+        try {
+          const result = await writer.claimTicket(repoRootOf(ctx), stateBranchOf(ctx), ticket.id, sessionId, "peephole-handoff", {
+            sessionId, transcriptPath: null, tokens: null, author: ctx.gitUser && ctx.gitUser.name ? ctx.gitUser : null,
+          });
+          claimed = result && result.claimed !== false;
+          if (!claimed) return sendJson(res, 409, { error: (result && result.reason) || "could not claim", prompt });
+          await ctx.refresh({ doFetch: false });
+        } catch (e) {
+          return sendJson(res, 500, { error: e.message, prompt });
+        }
+
+        // A BACKGROUND session can be opened here: `claude attach` takes it over in a new terminal.
+        // An INTERACTIVE one cannot — it is already bound to a terminal somebody has open, and
+        // attach answers "No job matching <id>". Nothing can inject a message into it, so the
+        // honest help is to hand over the prompt for that window.
+        if (session && session.kind === "background") {
+          const opened = await attachInTerminal(ctx.repoRoot, sessionId);
+          return sendJson(res, 200, { mode: "attached", opened: opened.opened, command: opened.command, prompt, sessionId });
+        }
+        return sendJson(res, 200, {
+          mode: "paste",
+          reason: session
+            ? "that session is interactive — it is already attached to its own terminal, so paste this into that window"
+            : "that session is not running here — paste this into the window it is running in",
+          prompt,
+          sessionId,
+        });
       }
       const chatMatch = url.pathname.match(/^\/api\/tickets\/([^/]+)\/chat$/);
       if (req.method === "POST" && chatMatch) {
