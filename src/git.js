@@ -71,6 +71,14 @@ export async function declaredStateBranch(repoRoot, ref) {
   return m[1].trim().replace(/^["']|["']$/g, "") || null;
 }
 
+export async function headSha(repoRoot, ref = "HEAD") {
+  try {
+    return (await run(repoRoot, ["rev-parse", ref])).trim();
+  } catch {
+    return null;
+  }
+}
+
 export async function refExists(repoRoot, ref) {
   try {
     await run(repoRoot, ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`]);

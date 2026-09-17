@@ -12,6 +12,7 @@ import { DEFAULT_STATE_BRANCH } from "./schema.js";
 import { resolveLedger } from "./ledger.js";
 import { listProjects, rememberProject, forgetProject, validateRepo } from "./projects.js";
 import { detectCoverage } from "./coverage.js";
+import { ownershipMap } from "./ownership.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, "..", "public");
@@ -131,6 +132,10 @@ export async function startServer(initialRepoRoot, { port = 4173, remote = "orig
     let cache = { config: null, tickets: [], agents: [], issues: [], lastFetchedAt: null, unpushed: 0, coverage: null };
     let queueState = { pending: [], running: null, lastError: null };
     let lastCoverageStamp = null;
+    // The ownership map shells out to `git log` over a year of history — 2.3s on a real repo — so
+    // it is recomputed only when the checkout's HEAD actually moves, never per request.
+    let ownership = null;
+    let ownershipSha = null;
     // publicState() is synchronous, so the menu is refreshed alongside every state refresh rather
     // than read from disk on each request.
     let knownProjects = [];
@@ -232,6 +237,7 @@ export async function startServer(initialRepoRoot, { port = 4173, remote = "orig
         stateBranchSource,
         checkoutBranch: cache.checkoutBranch ?? null,
         hooksInstalled: cache.hooksInstalled ?? false,
+      ownership,
         ledger: { kind: ledger.kind, path: ledger.path, reason: ledger.reason },
         projects: knownProjects,
         stateBranchOnRemote: cache.stateBranchOnRemote ?? true,
@@ -283,6 +289,14 @@ export async function startServer(initialRepoRoot, { port = 4173, remote = "orig
       // working tree, so the figure on the board is whatever this person's branch last produced;
       // two teammates on different branches see the same tickets and different coverage.
       const checkoutBranch = await git.currentBranch(repoRoot).catch(() => null);
+    const sha = await git.headSha(repoRoot).catch(() => null);
+    if (sha && sha !== ownershipSha) {
+      const next = await ownershipMap(repoRoot).catch((e) => {
+        console.error("ownership map failed:", e.message);
+        return null;
+      });
+      if (next) { ownership = next; ownershipSha = sha; }
+    }
       const stateBranchOnRemote = await git.remoteBranchExists(repoRoot, stateBranch, remote).catch(() => true);
       const enrichedStats = stats
         ? { ...stats, contributorList: await withMemberTokens(state.agents, stats.contributorList) }

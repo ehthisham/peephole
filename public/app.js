@@ -1476,6 +1476,70 @@
     }).join("") + "</ul>";
   }
 
+  /**
+   * What the project loses if one person stops. For each package they have touched in the window:
+   * their share of its commits, whether anyone else touched it at all, and — joined from the
+   * coverage profile — how much of it tests would catch a mistake in.
+   *
+   * Sole-owned and untested is the cell that matters. Ownership alone says "one person knows this",
+   * coverage alone says "this is unverified"; neither is urgent on its own. Their product is what
+   * actually breaks when somebody leaves, and Peephole is holding both halves already.
+   */
+  function removalRisk(name, state) {
+    var own = state.ownership;
+    if (!own || !own.packages) return null;
+    var cov = {};
+    ((state.coverage && state.coverage.modules) || []).forEach(function (m) { cov[m.pkg] = m; });
+
+    var touched = [];
+    own.packages.forEach(function (p) {
+      var mine = p.authors[name];
+      if (!mine) return;
+      var others = Object.keys(p.authors).filter(function (a) { return a !== name; });
+      var share = mine / p.commits;
+      var c = cov[p.pkg] || null;
+      var uncovered = c ? Math.round(c.total * (1 - c.pct / 100)) : null;
+      touched.push({
+        pkg: p.pkg, share: share, commits: p.commits, mine: mine,
+        others: others, sole: others.length === 0,
+        coverage: c ? c.pct : null, statements: c ? c.total : null,
+        uncoveredStatements: uncovered,
+        lastTouched: p.lastBy[name] || null,
+      });
+    });
+    touched.sort(function (a, b) { return b.share - a.share || b.commits - a.commits; });
+
+    var sole = touched.filter(function (t) { return t.sole; });
+    // Only packages nobody else has touched count as exposure — a package with a second author has
+    // somebody to ask, whatever the coverage says.
+    var exposure = sole.reduce(function (sum, t) { return sum + (t.uncoveredStatements || 0); }, 0);
+    var untestedSole = sole.filter(function (t) { return t.coverage != null && t.coverage < 50; });
+
+    // Who else has touched the things they touch — the handover shortlist, by weight of overlap.
+    var peers = {};
+    touched.forEach(function (t) {
+      t.others.forEach(function (o) { peers[o] = (peers[o] || 0) + 1; });
+    });
+    var peerList = Object.keys(peers).sort(function (a, b) { return peers[b] - peers[a]; });
+
+    return {
+      windowMonths: own.windowMonths, touched: touched, sole: sole, untestedSole: untestedSole,
+      exposure: exposure, peers: peerList, peerCounts: peers,
+    };
+  }
+
+  function pkgRow(t) {
+    var covLabel = t.coverage == null ? "no coverage data" : t.coverage.toFixed(0) + "% covered";
+    return (
+      '<div class="own-row"><span class="name mono" title="' + esc(t.pkg) + '">' + esc(t.pkg) + "</span>" +
+      '<span class="bar-track"><span class="bar-fill" style="width:' + (t.share * 100).toFixed(1) +
+      '%;background:' + (t.sole ? "var(--accent)" : "var(--progress)") + '"></span></span>' +
+      '<span class="amount mono">' + Math.round(t.share * 100) + "%</span>" +
+      '<span class="cov ' + (t.coverage != null && t.coverage < 50 ? "low" : "") + '">' + esc(covLabel) + "</span>" +
+      '<span class="who dim">' + (t.sole ? "only author" : t.others.length + " other" + (t.others.length === 1 ? "" : "s")) + "</span></div>"
+    );
+  }
+
   var openMember = null;
 
   /** One member's page: what they moved, how they worked with agents, and what would need a new
@@ -1531,6 +1595,8 @@
         : '<p class="empty-note">No pauses or skips explained yet — the reason box on ⏸/⏭ fills this.</p>') +
       "</section>" +
 
+      ownershipPanels(name, state) +
+
       '<section class="member-panel wide"><h3>Would need a new owner</h3>' +
       '<p class="split-key dim">Open work that stops if ' + esc(name) + " does.</p>" +
       ticketLinkList(w.open.concat(w.assigned), "Nothing open — nothing to hand over.") +
@@ -1560,6 +1626,51 @@
       "either was tracked, by a CLI that wrote the literal string \"agent\" — so they count towards " +
       "nobody here. Nothing can recover a name that was never written down; tickets finished from " +
       "now on carry one.</p>";
+  }
+
+  /** Stages 2 and 3 of the member view: where their knowledge sits, and what it would cost to lose
+   *  it. Absent entirely when the ownership map has not been computed — a risk figure built on
+   *  missing data is worse than no figure. */
+  function ownershipPanels(name, state) {
+    var risk = removalRisk(name, state);
+    if (!risk) return "";
+    if (!risk.touched.length) {
+      return '<section class="member-panel wide"><h3>Ownership</h3><p class="empty-note">No commits in the last ' +
+        risk.windowMonths + " months.</p></section>";
+    }
+
+    var worst = risk.untestedSole.slice().sort(function (a, b) {
+      return (b.uncoveredStatements || 0) - (a.uncoveredStatements || 0);
+    });
+
+    return (
+      '<section class="member-panel wide"><h3>Where their knowledge sits</h3>' +
+      '<p class="split-key dim">Share of commits per package, last ' + risk.windowMonths +
+      " months. Red means nobody else has touched it.</p>" +
+      risk.touched.slice(0, 12).map(pkgRow).join("") +
+      (risk.touched.length > 12 ? '<p class="split-key dim">+ ' + (risk.touched.length - 12) + " more</p>" : "") +
+      "</section>" +
+
+      '<section class="member-panel wide risk-panel"><h3>If they stop</h3>' +
+      '<div class="risk-head"><span class="risk-num">' + fmtNum(risk.sole.length) + "</span>" +
+      '<span class="risk-label">package' + (risk.sole.length === 1 ? "" : "s") +
+      " nobody else has touched in " + risk.windowMonths + " months</span>" +
+      (risk.exposure
+        ? '<span class="risk-num accent">' + fmtNum(risk.exposure) + "</span>" +
+          '<span class="risk-label">statements in them that tests would not catch</span>'
+        : "") +
+      "</div>" +
+      (worst.length
+        ? '<p class="split-key">Least protected:</p>' + worst.slice(0, 5).map(pkgRow).join("")
+        : '<p class="split-key dim">Nothing sole-owned is under 50% covered.</p>') +
+      '<p class="split-key">' +
+      (risk.peers.length
+        ? "Nearest peers by overlapping work: " + risk.peers.slice(0, 3).map(function (p) {
+            return esc(p) + " (" + risk.peerCounts[p] + " shared package" + (risk.peerCounts[p] === 1 ? "" : "s") + ")";
+          }).join(" · ")
+        : "<b>No peers.</b> Nobody else has committed to any package they touch — the handover target would have to be chosen, not found.") +
+      "</p></section>"
+    );
   }
 
   function renderMembers(list) {
