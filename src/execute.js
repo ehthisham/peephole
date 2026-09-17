@@ -126,6 +126,20 @@ export async function attachInTerminal(repoRoot, sessionId) {
   return { ...result, command: `claude attach ${sessionId}` };
 }
 
+/** Whether a claude process for this session is still running. `pgrep -f` against the session id,
+ *  which appears on the command line of a session Peephole started — the one liveness signal that
+ *  does not depend on the CLI choosing to list the session. */
+async function processAlive(sessionId) {
+  try {
+    // Matches both shapes Peephole starts: `--session-id <id>` for a new session, `--resume <id>`
+    // for one it continued.
+    const { stdout } = await execFileP("pgrep", ["-f", `(session-id|resume) ${sessionId}`], { timeout: 5000 });
+    return stdout.trim().length > 0;
+  } catch {
+    return false; // pgrep exits non-zero when nothing matches
+  }
+}
+
 /** Runs one shell line in whichever terminal emulator this machine has. */
 async function runInTerminal(repoRoot, line) {
   for (const [cmd, args] of [
@@ -214,6 +228,7 @@ export function createQueue({ repoRoot, binPath, port, claimTicket, readTicket, 
   /** Whether finishing one ticket starts the next by itself. */
   let autoContinue = true;
   const TERMINAL_TICKET_STATES = new Set(["shipped", "closed"]);
+  const TERMINAL_GRACE_MS = 30000;
 
   async function startChat(ticketId, permissionMode = "plan") {
     const ticket = readTicket(ticketId);
@@ -286,10 +301,10 @@ export function createQueue({ repoRoot, binPath, port, claimTicket, readTicket, 
     if (onChange) onChange(state());
   }
 
-  function enqueue(ticketId, permissionMode, launch = "background") {
+  function enqueue(ticketId, permissionMode, launch = "background", sessionId = null) {
     if (running && running.ticketId === ticketId) return state();
     if (pending.some((p) => p.ticketId === ticketId)) return state();
-    pending.push({ ticketId, permissionMode, launch, queuedAt: new Date().toISOString() });
+    pending.push({ ticketId, permissionMode, launch, sessionId, queuedAt: new Date().toISOString() });
     announce();
     tick().catch((e) => console.error("queue tick failed:", e.message));
     return state();
@@ -343,6 +358,44 @@ export function createQueue({ repoRoot, binPath, port, claimTicket, readTicket, 
 
     pending.shift();
     const prompt = promptFor(ticket, { binPath, port });
+
+    if (next.launch === "existing" && next.sessionId) {
+      // Continue a conversation that already exists, in a terminal. `--resume` keeps the session's
+      // context, which is the whole point of choosing it: the agent already knows this codebase,
+      // this ticket's neighbourhood, or the half-finished attempt you are handing it.
+      //
+      // The CLI's own caveat applies and is surfaced to the picker rather than hidden: resuming a
+      // session that is currently RUNNING starts a copy under a new id. The picker marks busy
+      // sessions for exactly that reason.
+      const sessionId = next.sessionId;
+      const promptFile = path.join(os.tmpdir(), `peephole-resume-${sessionId}.txt`);
+      await fs.writeFile(promptFile, prompt, "utf8");
+      const opened = await runInTerminal(
+        repoRoot,
+        `claude --resume ${sessionId} --permission-mode ${next.permissionMode} "$(cat ${promptFile})"; ` +
+          `rm -f ${promptFile}; exec bash`,
+      );
+      if (!opened.opened) {
+        lastError = `${next.ticketId}: ${opened.reason}`;
+        announce();
+        return;
+      }
+      try {
+        const claim = await claimTicket(next.ticketId, sessionId);
+        if (!claim || claim.claimed === false) {
+          lastError = `${next.ticketId}: resumed ${sessionId.slice(0, 8)}, but not claimed — ${(claim && claim.reason) || "unknown"}`;
+        }
+      } catch (e) {
+        lastError = `${next.ticketId}: resumed ${sessionId.slice(0, 8)}, but not claimed — ${e.message}`;
+      }
+      running = {
+        ticketId: next.ticketId, sessionId, startedAt: new Date().toISOString(),
+        launch: "terminal", terminal: opened.terminal, resumed: true,
+      };
+      announce();
+      watchRunning();
+      return;
+    }
 
     if (next.launch === "terminal") {
       // The id is minted here rather than read back, because an interactive session accepts
@@ -488,11 +541,21 @@ export function createQueue({ repoRoot, binPath, port, claimTicket, readTicket, 
       const sessions = await listSessions(repoRoot);
       const live = sessions.find((s) => s.sessionId === running.sessionId);
       if (running.launch === "terminal") {
-        // Watch the ticket and ONLY the ticket. A freshly started interactive session does not
-        // appear in `claude agents --json` at all — verified: the process is running with the right
-        // prompt while the listing shows nothing — so absence there says nothing about whether the
-        // developer is still working. If they abandon it, the ticket simply stays claimed and
-        // in-progress on the board, which is both true and visible.
+        // A freshly started interactive session never appears in `claude agents --json`, so that
+        // listing cannot answer "is the window still open". The process can: the session id is on
+        // its command line. Watching for it means closing the terminal clears the card, instead of
+        // leaving it marked running forever.
+        //
+        // Only after a grace period — a window takes a moment to appear, and a check that fires
+        // first would declare every dispatch dead on arrival.
+        if (Date.now() - Date.parse(running.startedAt) < TERMINAL_GRACE_MS) return watchRunning();
+        if (!(await processAlive(running.sessionId))) {
+          lastError = `${running.ticketId}: its terminal was closed before the ticket finished — still claimed, pick it up again when you want`;
+          running = null;
+          announce();
+          if (autoContinue) tick().catch((e) => console.error("queue tick failed:", e.message));
+          return;
+        }
         return watchRunning();
       }
       if (live && live.status === "busy") {

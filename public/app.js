@@ -1894,11 +1894,17 @@
       try { lastLaunch = localStorage.getItem(LAUNCH_KEY) || lastLaunch; } catch (e) {}
       var launchHtml =
         '<div class="launch-row">' +
-        [["terminal", "In a terminal", "you sit with it and can interrupt at any point"],
+        [["terminal", "In a new terminal", "a fresh session you sit with and can interrupt"],
+         ["existing", "In an existing session", "continue a conversation that already has context"],
          ["background", "In the background", "unattended; join later with claude attach"]].map(function (l) {
           return '<label class="perm-opt"><input type="radio" name="launch" value="' + l[0] + '"' +
             (l[0] === lastLaunch ? " checked" : "") + "><span><b>" + esc(l[1]) + "</b><small>" + esc(l[2]) + "</small></span></label>";
-        }).join("") + "</div>";
+        }).join("") +
+        '<div class="session-pick" id="sessionPick" hidden>' +
+        '<select id="sessionSelect"><option value="">Loading sessions…</option></select>' +
+        '<input id="sessionManual" placeholder="…or paste a session id" autocomplete="off" spellcheck="false">' +
+        '<p class="perm-note" id="sessionNote"></p></div>' +
+        "</div>";
       execModes.innerHTML = launchHtml + '<div class="perm-head">Permissions</div>' + offered.map(function (m) {
         return '<label class="perm-opt"><input type="radio" name="perm" value="' + m.key + '"' +
           (m.key === last ? " checked" : "") + '><span><b>' + esc(m.label) + "</b><small>" + esc(m.sub) + "</small></span></label>";
@@ -1915,6 +1921,48 @@
             (risky.length === 1 ? "it" : "them") + " anyway — this work cannot be undone by a revert</label></div>"
           : "");
       execBackdrop.hidden = false;
+
+      // The session picker only matters for one of the three choices, and it needs a live list —
+      // sessions come and go while the dialog is open.
+      var pick = execModes.querySelector("#sessionPick");
+      var select = execModes.querySelector("#sessionSelect");
+      var manual = execModes.querySelector("#sessionManual");
+      var noteEl = execModes.querySelector("#sessionNote");
+      function syncPicker() {
+        var chosen = execModes.querySelector('input[name="launch"]:checked');
+        pick.hidden = !chosen || chosen.value !== "existing";
+        if (!pick.hidden && select.dataset.loaded !== "1") loadSessions();
+      }
+      async function loadSessions() {
+        select.dataset.loaded = "1";
+        try {
+          var data = await fetch(withProject("/api/sessions")).then(function (r) { return r.json(); });
+          var list = data.sessions || [];
+          if (!list.length) {
+            select.innerHTML = '<option value="">No live sessions — paste an id below</option>';
+            return;
+          }
+          select.innerHTML = '<option value="">Choose a session…</option>' + list.map(function (s) {
+            var label = (s.name || s.sessionId.slice(0, 8)) + " · " + s.kind + " · " + s.status +
+              (s.inThisRepo ? "" : " · " + s.cwd);
+            return '<option value="' + esc(s.sessionId) + '" data-status="' + esc(s.status) + '">' + esc(label) + "</option>";
+          }).join("");
+        } catch (e) {
+          select.innerHTML = '<option value="">Could not list sessions — paste an id below</option>';
+        }
+      }
+      function noteForChoice() {
+        var opt = select.options[select.selectedIndex];
+        // The CLI's own behaviour, said out loud rather than discovered afterwards.
+        noteEl.textContent = opt && opt.dataset && opt.dataset.status === "busy"
+          ? "That session is mid-turn. Resuming a running session starts a copy under a new id — wait for it to go idle if you meant to continue this one."
+          : "";
+      }
+      Array.prototype.forEach.call(execModes.querySelectorAll('input[name="launch"]'), function (r) {
+        r.addEventListener("change", syncPicker);
+      });
+      select.addEventListener("change", noteForChoice);
+      syncPicker();
       // Execute stays disabled until the acknowledgement is ticked; the checkbox is the consent,
       // not the button.
       var ack = execModes.querySelector("#riskAck");
@@ -1932,13 +1980,23 @@
         var mode = picked ? picked.value : "acceptEdits";
         var launchPick = execModes.querySelector('input[name="launch"]:checked');
         var launch = launchPick ? launchPick.value : "terminal";
+        var sessionId = null;
+        if (launch === "existing") {
+          var typed = execModes.querySelector("#sessionManual");
+          var chosen = execModes.querySelector("#sessionSelect");
+          sessionId = (typed && typed.value.trim()) || (chosen && chosen.value) || "";
+          if (!sessionId) {
+            window.alert("Choose a session, or paste a session id.");
+            return;
+          }
+        }
         try {
           localStorage.setItem(PERM_KEY, mode);
           localStorage.setItem(LAUNCH_KEY, launch);
         } catch (e) {}
         cleanup();
         execGo.disabled = false;
-        resolve({ permissionMode: mode, launch: launch });
+        resolve({ permissionMode: mode, launch: launch, sessionId: sessionId });
       }
       function cancel() { cleanup(); execGo.disabled = false; resolve(null); }
       function backdropClick(ev) { if (ev.target === execBackdrop) cancel(); }
@@ -2295,7 +2353,9 @@
     if (!choice) return;
     execSelectedBtn.disabled = true;
     try {
-      await apiPost("/api/execute", { ticketIds: ids, permissionMode: choice.permissionMode, launch: choice.launch });
+      await apiPost("/api/execute", {
+        ticketIds: ids, permissionMode: choice.permissionMode, launch: choice.launch, sessionId: choice.sessionId,
+      });
     } finally {
       renderExecSelected();
     }

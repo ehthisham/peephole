@@ -115,7 +115,7 @@ export async function startServer(initialRepoRoot, { port = 4173, remote = "orig
       remoteUrl = await git.remoteUrl(repoRoot, remote);
       // The ledger may live outside the repo (a sparse clone) or inside it (the worktree fallback);
       // everything below reads and writes through whichever was resolved.
-      ledger = await resolveLedger(repoRoot, stateBranch, { remote });
+      ledger = await resolveLedger(repoRoot, stateBranch, { remote, fetch: true });
       worktreePath = ledger.path;
       localBranch = ledger.localBranch;
       // The identity a UI-created ticket's "created by" defaults to — this machine's configured git
@@ -580,8 +580,12 @@ export async function startServer(initialRepoRoot, { port = 4173, remote = "orig
         const body = await readJsonBody(req);
         if (body.permissionMode === BYPASS_MODE && !bypassAllowed) return sendJson(res, 403, { error: BYPASS_REFUSED });
         const mode = PERMISSION_MODES.includes(body.permissionMode) ? body.permissionMode : "acceptEdits";
-        const launch = body.launch === "terminal" ? "terminal" : "background";
-        ctx.queueState = ctx.queue.enqueue(executeMatch[1], mode, launch);
+        const launch = ["terminal", "existing"].includes(body.launch) ? body.launch : "background";
+        const sessionId = typeof body.sessionId === "string" ? body.sessionId.trim() : null;
+        if (launch === "existing" && !sessionId) {
+          return sendJson(res, 400, { error: "pick a session, or paste a session id" });
+        }
+        ctx.queueState = ctx.queue.enqueue(executeMatch[1], mode, launch, sessionId);
         return sendJson(res, 200, { queued: true, queue: ctx.queueState, state: ctx.publicState() });
       }
       if (req.method === "POST" && url.pathname === "/api/execute") {
@@ -590,8 +594,9 @@ export async function startServer(initialRepoRoot, { port = 4173, remote = "orig
         const mode = PERMISSION_MODES.includes(body.permissionMode) ? body.permissionMode : "acceptEdits";
         // Lane order, not click order: "run the selected ones" means the order they are read in.
         const ids = Array.isArray(body.ticketIds) ? body.ticketIds : [];
-        const batchLaunch = body.launch === "terminal" ? "terminal" : "background";
-        ids.forEach((id) => { ctx.queueState = ctx.queue.enqueue(String(id), mode, batchLaunch); });
+        const batchLaunch = ["terminal", "existing"].includes(body.launch) ? body.launch : "background";
+        const batchSession = typeof body.sessionId === "string" ? body.sessionId.trim() : null;
+        ids.forEach((id) => { ctx.queueState = ctx.queue.enqueue(String(id), mode, batchLaunch, batchSession); });
         return sendJson(res, 200, { queued: ids.length, queue: ctx.queueState, state: ctx.publicState() });
       }
       const attachMatch = url.pathname.match(/^\/api\/tickets\/([^/]+)\/attach$/);
@@ -658,7 +663,18 @@ export async function startServer(initialRepoRoot, { port = 4173, remote = "orig
         return sendJson(res, 200, { projects: await listProjects(), active: ctx.repoRoot });
       }
       if (req.method === "GET" && url.pathname === "/api/sessions") {
-        return sendJson(res, 200, { sessions: await listSessions(ctx.repoRoot) });
+        // Every live session, not only this repo's: a developer may want to hand a ticket to the
+        // session they already have open one directory up. `reach` says how tightly each one fits
+        // this repo, so the picker can sort and label rather than hide.
+        const scoped = await listSessions(ctx.repoRoot);
+        const all = await listSessions("/");
+        const known = new Set(scoped.map((s) => s.sessionId));
+        return sendJson(res, 200, {
+          sessions: [
+            ...scoped.map((s) => ({ ...s, inThisRepo: true })),
+            ...all.filter((s) => !known.has(s.sessionId)).map((s) => ({ ...s, inThisRepo: false })),
+          ],
+        });
       }
       const epicMatch = url.pathname.match(/^\/api\/tickets\/([^/]+)\/epic$/);
       if (req.method === "POST" && epicMatch) {

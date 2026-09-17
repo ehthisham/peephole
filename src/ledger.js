@@ -55,9 +55,14 @@ async function worktreeHasUnpushed(repoRoot, branch) {
   return count > 0;
 }
 
-async function ensureClone(repoRoot, branch, remoteUrl, remote) {
+async function ensureClone(repoRoot, branch, remoteUrl, remote, { fetch = false } = {}) {
   const dir = path.join(LEDGER_HOME, slugFor(repoRoot, remoteUrl));
   if (await exists(path.join(dir, ".git"))) {
+    // Fetching belongs to a refresh cycle, not to a write. It was running here on EVERY ledger
+    // operation — every state move, control click, comment and selection toggle paid a network
+    // round trip to the remote before it could touch a file, which is why moving a card took
+    // seconds to show. Measured at 3.6s of a ~4.5s write.
+    if (!fetch) return dir;
     await git.fetch(dir, remote).catch(() => {});
     // Fast-forward ONLY when nothing local is waiting. An unconditional reset is destructive here
     // in a way it never was for the worktree: the clone is the only copy of a ledger commit until
@@ -82,7 +87,24 @@ async function ensureClone(repoRoot, branch, remoteUrl, remote) {
  * in-repo worktree. `reason` explains the fallback, for the UI to show rather than leaving a user
  * wondering why a directory appeared inside their repo.
  */
-export async function resolveLedger(repoRoot, branch, { remote = "origin", allowClone = true } = {}) {
+/** Resolution involves several git calls and, when fetching, the network. Writes arrive in bursts —
+ *  a dispatch claims, advances and comments within a second — so the answer is memoised briefly.
+ *  A fetching resolve always recomputes and refreshes the entry. */
+const cache = new Map();
+const CACHE_MS = 10000;
+
+export async function resolveLedger(repoRoot, branch, { remote = "origin", allowClone = true, fetch = false } = {}) {
+  const key = `${repoRoot}\u0000${branch}\u0000${remote}\u0000${allowClone}`;
+  if (!fetch) {
+    const hit = cache.get(key);
+    if (hit && Date.now() - hit.at < CACHE_MS) return hit.value;
+  }
+  const value = await resolveLedgerUncached(repoRoot, branch, { remote, allowClone, fetch });
+  cache.set(key, { at: Date.now(), value });
+  return value;
+}
+
+async function resolveLedgerUncached(repoRoot, branch, { remote, allowClone, fetch }) {
   const remoteUrl = await git.remoteUrl(repoRoot, remote).catch(() => null);
   const reasons = [];
   if (!allowClone) reasons.push("clone mode disabled");
@@ -96,7 +118,7 @@ export async function resolveLedger(repoRoot, branch, { remote = "origin", allow
 
   if (reasons.length === 0) {
     try {
-      const dir = await ensureClone(repoRoot, branch, remoteUrl, remote);
+      const dir = await ensureClone(repoRoot, branch, remoteUrl, remote, { fetch });
       return { kind: "clone", path: dir, localBranch: branch, reason: null };
     } catch (e) {
       reasons.push(`clone failed: ${e.message}`);

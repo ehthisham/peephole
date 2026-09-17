@@ -38,11 +38,32 @@ async function hasHookSetup(repoRoot) {
  * this machine. Passing one root for both reported those files permanently missing once the ledger
  * moved into its own clone, which contains none of them.
  */
+/** Reads a ledger file from the checkout when one is present, falling back to `git show` at the
+ *  ref. The ledger checkout — clone or worktree — always holds exactly what was last committed,
+ *  because every writer commits before returning. Going through git meant one process per ticket:
+ *  110 spawns, 822ms, to read files already on disk. */
+async function readLedgerFile(ledgerRoot, ref, file) {
+  try {
+    return await fs.readFile(path.join(ledgerRoot, file), "utf8");
+  } catch {
+    return git.showFile(ledgerRoot, ref, file);
+  }
+}
+
+async function listLedgerFiles(ledgerRoot, ref, subpath) {
+  try {
+    const names = await fs.readdir(path.join(ledgerRoot, subpath));
+    return names.map((n) => `${subpath}/${n}`);
+  } catch {
+    return git.lsTreeFiles(ledgerRoot, ref, subpath);
+  }
+}
+
 export async function scan(ledgerRoot, ref, { repoRoot = ledgerRoot } = {}) {
   const issues = [];
   let config = null;
 
-  const configText = await git.showFile(ledgerRoot, ref, ".peephole/config.yaml");
+  const configText = await readLedgerFile(ledgerRoot, ref, ".peephole/config.yaml");
   if (configText === null) {
     issues.push({ kind: "missing-config", message: `No .peephole/config.yaml found on ${ref}` });
   } else {
@@ -51,7 +72,7 @@ export async function scan(ledgerRoot, ref, { repoRoot = ledgerRoot } = {}) {
     for (const e of parsed.errors) issues.push({ kind: "invalid-config", message: e });
   }
 
-  const ticketFiles = await git.lsTreeFiles(ledgerRoot, ref, ".peephole/tickets");
+  const ticketFiles = await listLedgerFiles(ledgerRoot, ref, ".peephole/tickets");
   const ticketMdFiles = ticketFiles.filter((f) => f.endsWith(".md"));
   if (ticketFiles.length === 0) {
     issues.push({ kind: "missing-tickets-dir", message: ".peephole/tickets/ directory missing (or empty)" });
@@ -60,19 +81,19 @@ export async function scan(ledgerRoot, ref, { repoRoot = ledgerRoot } = {}) {
   const tickets = [];
   for (const file of ticketMdFiles) {
     const id = file.split("/").pop().replace(/\.md$/, "");
-    const text = await git.showFile(ledgerRoot, ref, file);
+    const text = await readLedgerFile(ledgerRoot, ref, file);
     const parsed = parseTicket(text, id);
     for (const e of parsed.errors) issues.push({ kind: "invalid-ticket", message: e, ticketId: id });
     if (parsed.ok) tickets.push(parsed.ticket);
   }
 
-  const agentFiles = await git.lsTreeFiles(ledgerRoot, ref, ".peephole/agents");
+  const agentFiles = await listLedgerFiles(ledgerRoot, ref, ".peephole/agents");
   if (agentFiles.length === 0) {
     issues.push({ kind: "missing-agents-dir", message: ".peephole/agents/ directory missing (or empty)" });
   }
   const agents = [];
   for (const file of agentFiles.filter((f) => f.endsWith(".json"))) {
-    const text = await git.showFile(ledgerRoot, ref, file);
+    const text = await readLedgerFile(ledgerRoot, ref, file);
     try {
       const agent = JSON.parse(text);
       agents.push(agent);
