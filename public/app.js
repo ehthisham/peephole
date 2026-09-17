@@ -140,6 +140,7 @@
   var otherProjects = document.getElementById("otherProjects");
   var epicOptions = document.getElementById("epicOptions");
   var execSelectedBtn = document.getElementById("execSelectedBtn");
+  var workerBtn = document.getElementById("workerBtn");
   var queueBar = document.getElementById("queueBar");
   var execBackdrop = document.getElementById("execBackdrop");
   var execTitle = document.getElementById("execTitle");
@@ -1806,6 +1807,7 @@
     latestTickets = state.tickets || [];
     renderFilterState();
     renderExecSelected();
+    renderWorkerButton();
     // Filtering to one project is silent otherwise — a ticket filed against another project would
     // simply never appear, with no way to tell that from "never created".
     var all = state.tickets || [];
@@ -2353,6 +2355,46 @@
     var n = selectedInBoardOrder().length;
     execSelectedBtn.disabled = n === 0;
     execSelectedBtn.textContent = n ? "Execute " + n + " selected" : "Execute selected";
+  }
+
+  /** One worker per project is the shape this is for: start it once, sit in it, and let every later
+   *  dispatch continue that conversation rather than opening a fresh context each time. */
+  workerBtn.addEventListener("click", async function () {
+    var existing = (latestState && latestState.queue && latestState.queue.workers) || [];
+    if (existing.length) {
+      var w = existing[0];
+      if (!window.confirm("A worker is already running (" + w.sessionId.slice(0, 8) + ", " + w.status +
+        ").\n\nDispatches already reuse it. Start a second one anyway?")) return;
+    }
+    workerBtn.disabled = true;
+    workerBtn.textContent = "Starting…";
+    try {
+      var res = await apiPost("/api/worker", { attach: true });
+      if (res && res.error) { window.alert(res.error); return; }
+      if (res && !res.started) { window.alert("Could not start a worker: " + (res.reason || "unknown")); return; }
+      if (!res.attached && res.command) {
+        if (navigator.clipboard) { try { await navigator.clipboard.writeText(res.command); } catch (e) {} }
+        window.alert("Worker " + res.sessionId.slice(0, 8) + " started.\n\nNo terminal opened here — join it with " +
+          "(copied to your clipboard):\n\n  " + res.command);
+      }
+    } finally {
+      workerBtn.disabled = false;
+      renderWorkerButton();
+    }
+  });
+
+  function renderWorkerButton() {
+    var workers = (latestState && latestState.queue && latestState.queue.workers) || [];
+    if (!workers.length) {
+      workerBtn.textContent = "Start a worker";
+      workerBtn.removeAttribute("aria-pressed");
+      workerBtn.title = "Start a background session for this repo that later dispatches reuse";
+      return;
+    }
+    var w = workers[0];
+    workerBtn.textContent = "Worker " + w.sessionId.slice(0, 8) + (workers.length > 1 ? " +" + (workers.length - 1) : "");
+    workerBtn.setAttribute("aria-pressed", "true");
+    workerBtn.title = "A worker is standing by (" + w.status + ") — dispatches reuse it. Click to start another.";
   }
 
   execSelectedBtn.addEventListener("click", async function () {

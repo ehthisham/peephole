@@ -318,6 +318,7 @@ export async function startServer(initialRepoRoot, { port = 4173, remote = "orig
           })
         : cache.coverage ?? null;
       knownProjects = await listProjects().catch(() => knownProjects);
+    if (doFetch) queue.refreshWorkers().catch(() => {});
       cache = { ...state, stats: enrichedStats, coverage, checkoutBranch, stateBranchOnRemote, lastFetchedAt: new Date().toISOString(), unpushed };
       broadcast();
       return cache;
@@ -716,6 +717,15 @@ export async function startServer(initialRepoRoot, { port = 4173, remote = "orig
         const body = await readJsonBody(req);
         await forgetProject(String(body.repoRoot || ""));
         return sendJson(res, 200, { projects: await listProjects(), active: ctx.repoRoot });
+      }
+      if (req.method === "POST" && url.pathname === "/api/worker") {
+        const body = await readJsonBody(req);
+        const mode = PERMISSION_MODES.includes(body.permissionMode) ? body.permissionMode : "acceptEdits";
+        if (mode === BYPASS_MODE && !bypassAllowed) return sendJson(res, 403, { error: BYPASS_REFUSED });
+        const result = await ctx.queue.startWorker(mode, body.attach !== false);
+        await ctx.queue.refreshWorkers().catch(() => {});
+        ctx.queueState = ctx.queue.state();
+        return sendJson(res, result.started ? 200 : 400, { ...result, queue: ctx.queueState, state: ctx.publicState() });
       }
       if (req.method === "GET" && url.pathname === "/api/sessions") {
         // Every live session, not only this repo's: a developer may want to hand a ticket to the

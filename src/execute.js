@@ -242,6 +242,51 @@ export function createQueue({ repoRoot, binPath, port, claimTicket, readTicket, 
   let timer = null;
   let lastError = null;
 
+  /**
+   * Starts a background session that belongs to this project and does nothing yet — a worker.
+   *
+   * It exists to be reused: `idleSessionOf` already prefers an idle background session over
+   * spawning one, so every later dispatch continues this conversation instead of starting a fresh
+   * context each time. And because it is background rather than interactive, it is the one kind of
+   * session that is BOTH sittable-in (`claude attach`) and reachable by the board — the combination
+   * an interactive session you started yourself can never offer.
+   */
+  async function startWorker(permissionMode = "acceptEdits", attach = true) {
+    const priming = [
+      "You are a worker session for this repository, opened from its Peephole board.",
+      "No task yet — tickets will arrive in this same conversation as they are dispatched.",
+      "Reply with one line confirming which repository you are in, then wait.",
+    ].join("\n");
+
+    let out = "";
+    try {
+      const code = await new Promise((resolve, reject) => {
+        const child = spawn("claude", ["--background", "--permission-mode", permissionMode, priming], {
+          cwd: repoRoot,
+          stdio: ["ignore", "pipe", "pipe"],
+        });
+        child.stdout.on("data", (d) => { out += String(d); });
+        child.on("error", reject);
+        child.on("exit", resolve);
+      });
+      if (code !== 0) return { started: false, reason: `claude exited ${code}` };
+    } catch (e) {
+      return { started: false, reason: e.message };
+    }
+
+    const sessionId = await resolveSpawnedSession(out, repoRoot);
+    if (!sessionId) return { started: false, reason: "started a session but could not identify it" };
+
+    let opened = null;
+    if (attach) opened = await attachInTerminal(repoRoot, sessionId);
+    announce();
+    return {
+      started: true, sessionId,
+      attached: Boolean(opened && opened.opened),
+      command: opened ? opened.command : `claude attach ${sessionId}`,
+    };
+  }
+
   /** Conversations opened about tickets. Deliberately outside the queue: a chat claims nothing,
    *  blocks nothing and does not take a turn from the worker — it is a person thinking out loud
    *  with an agent, and the board's job is only to say where it is so it can be joined. */
@@ -300,8 +345,25 @@ export function createQueue({ repoRoot, binPath, port, claimTicket, readTicket, 
     }, POLL_MS).unref?.();
   }
 
+  /** Background sessions in this repo, refreshed alongside the queue's own polling. The board shows
+   *  whether a worker is standing by, which is the difference between "dispatch will reuse
+   *  something" and "dispatch will start something". */
+  let workers = [];
+  async function refreshWorkers() {
+    const sessions = await listSessions(repoRoot);
+    const next = sessions
+      .filter((s) => s.kind === "background")
+      .map((s) => ({ sessionId: s.sessionId, status: s.status, name: s.name || null }));
+    if (JSON.stringify(next) !== JSON.stringify(workers)) {
+      workers = next;
+      announce();
+    }
+    return workers;
+  }
+
   function state() {
     return {
+      workers: workers.map((w) => ({ ...w })),
       chats: chats.map((c) => ({ ...c })),
       pending: pending.map((p) => ({ ticketId: p.ticketId, queuedAt: p.queuedAt })),
       autoContinue,
@@ -646,5 +708,5 @@ export function createQueue({ repoRoot, binPath, port, claimTicket, readTicket, 
     return state();
   }
 
-  return { enqueue, cancel, stop, state, tick, startChat, setAutoContinue };
+  return { enqueue, cancel, stop, state, tick, startChat, startWorker, refreshWorkers, setAutoContinue };
 }
