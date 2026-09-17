@@ -1,0 +1,19 @@
+project: peephole
+gitHost: bitbucket
+stateBranch: peephole-state
+remote: git@bitbucket.org:ehthishamtk/peephole.git
+states:
+  - proposed
+  - in-progress
+  - built
+  - verified
+  - shipped
+  - closed
+control:
+  - run
+  - pause
+  - skip
+  - restart
+risk:
+  - reversible
+  - irreversible

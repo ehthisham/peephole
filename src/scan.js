@@ -99,6 +99,16 @@ export async function scan(ledgerRoot, ref, { repoRoot = ledgerRoot } = {}) {
     else if (version < NOTE_VERSION) issues.push({ kind: `stale-${kind}`, message: stale });
   }
 
+  // A repo whose ledger lives on another branch needs one file on the CODE branch saying so.
+  // Without it, resolution works only by guessing at a branch name.
+  const pointer = await readWorkingFile(repoRoot, path.join(".peephole", "config.yaml"));
+  if (!pointer) {
+    issues.push({
+      kind: "missing-pointer",
+      message: ".peephole/config.yaml is missing from this checkout — nothing on the code branch says where the ledger lives",
+    });
+  }
+
   // The worktree fallback puts a full checkout inside the repo. Git does not ignore a nested
   // worktree on its own, so without this entry it shows up as untracked and one `git add -A`
   // commits the whole duplicate tree into the repo it was copied from.

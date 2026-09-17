@@ -84,7 +84,7 @@
   var STRUCTURAL_ISSUES = new Set([
     "missing-config", "missing-tickets-dir", "missing-agents-dir",
     "missing-agent-note", "missing-readme-note", "missing-hook-setup",
-    "stale-agent-note", "stale-readme-note", "missing-gitignore",
+    "stale-agent-note", "stale-readme-note", "missing-gitignore", "missing-pointer",
   ]);
 
   var board = document.getElementById("board");

@@ -95,6 +95,7 @@ export async function scaffold(repoRoot, remoteBranch, { projectName, remoteUrl,
 
   const kinds = new Set(issues.map((i) => i.kind));
   const created = [];
+  const docsWritten = [];
   const paths = [".peephole"];
 
   let hookSetup = null;
@@ -106,6 +107,21 @@ export async function scaffold(repoRoot, remoteBranch, { projectName, remoteUrl,
     const config = defaultConfig(projectName, remoteUrl, remoteBranch);
     await fs.writeFile(path.join(base, "config.yaml"), serializeConfig(config), "utf8");
     created.push("config.yaml");
+  }
+  // The same config also goes on the CODE branch, as a pointer. Branch resolution reads
+  // `.peephole/config.yaml` at the remote's default ref, so without it a teammate's board finds the
+  // ledger only by falling through to "a branch named peephole-state exists" — which works by
+  // accident and says nothing about which branch is canonical if a second one ever appears. It is
+  // one file declaring where the tickets live, written into the checkout and left for the
+  // developer to commit, like the doc sections.
+  if (kinds.has("missing-config") || kinds.has("missing-pointer")) {
+    const pointerDir = path.join(repoRoot, ".peephole");
+    await ensureDir(pointerDir);
+    const pointerPath = path.join(pointerDir, "config.yaml");
+    if (!(await fileExists(pointerPath))) {
+      await fs.writeFile(pointerPath, serializeConfig(defaultConfig(projectName, remoteUrl, remoteBranch)), "utf8");
+      docsWritten.push(".peephole/config.yaml");
+    }
   }
   if (kinds.has("missing-tickets-dir")) {
     const dir = path.join(base, "tickets");
@@ -129,7 +145,6 @@ export async function scaffold(repoRoot, remoteBranch, { projectName, remoteUrl,
   // is simply wrong, and with a sparse ledger checkout they would be stubs in an otherwise empty
   // tree. They are written into the developer's own checkout instead — and deliberately NOT
   // committed: that is their working tree and their branch to commit on.
-  const docsWritten = [];
   if (kinds.has("missing-gitignore")) {
     // In the repo's own .gitignore, uncommitted like the doc sections: it is a change to the code
     // branch, and that is the developer's commit to make.
