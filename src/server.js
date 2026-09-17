@@ -7,7 +7,7 @@ import { scan } from "./scan.js";
 import { repoStats } from "./repoStats.js";
 import * as writer from "./writer.js";
 import * as tokenUsage from "./tokens.js";
-import { createQueue, listSessions } from "./execute.js";
+import { createQueue, listSessions, attachInTerminal } from "./execute.js";
 import { DEFAULT_STATE_BRANCH } from "./schema.js";
 import { resolveLedger } from "./ledger.js";
 import { listProjects, rememberProject, forgetProject, validateRepo } from "./projects.js";
@@ -593,6 +593,18 @@ export async function startServer(initialRepoRoot, { port = 4173, remote = "orig
         const batchLaunch = body.launch === "terminal" ? "terminal" : "background";
         ids.forEach((id) => { ctx.queueState = ctx.queue.enqueue(String(id), mode, batchLaunch); });
         return sendJson(res, 200, { queued: ids.length, queue: ctx.queueState, state: ctx.publicState() });
+      }
+      const attachMatch = url.pathname.match(/^\/api\/tickets\/([^/]+)\/attach$/);
+      if (req.method === "POST" && attachMatch) {
+        const ticket = (ctx.cache.tickets || []).find((t) => t.id === attachMatch[1]);
+        // Whatever session is on the ticket: the one the queue dispatched, or the one a developer
+        // claimed it with. A ticket owned by a person's name has no session to open.
+        const sessionId = ticket && ticket.owner && /^[0-9a-f-]{20,}$/i.test(ticket.owner) ? ticket.owner : null;
+        if (!sessionId) {
+          return sendJson(res, 400, { error: "no session on this ticket to open" });
+        }
+        const result = await attachInTerminal(ctx.repoRoot, sessionId);
+        return sendJson(res, result.opened ? 200 : 400, { ...result, sessionId });
       }
       const chatMatch = url.pathname.match(/^\/api\/tickets\/([^/]+)\/chat$/);
       if (req.method === "POST" && chatMatch) {

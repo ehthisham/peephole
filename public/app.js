@@ -56,6 +56,11 @@
     '<svg class="mv-icon" viewBox="0 0 16 16" width="15" height="15" aria-hidden="true" focusable="false" ' +
     'fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' +
     '<path d="M3 8.6 6.3 12 13 4.6"/></svg>';
+  // A terminal prompt: the card's way of saying "open the session working this".
+  var ATTACH_ICON =
+    '<svg class="mv-icon" viewBox="0 0 16 16" width="15" height="15" aria-hidden="true" focusable="false" ' +
+    'fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">' +
+    '<rect x="1.8" y="2.8" width="12.4" height="10.4" rx="1.4"/><path d="M4.6 6.2 6.9 8l-2.3 1.8M8.4 10.2h3"/></svg>';
   var CHAT_ICON =
     '<svg class="mv-icon" viewBox="0 0 16 16" width="15" height="15" aria-hidden="true" focusable="false" ' +
     'fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">' +
@@ -775,6 +780,12 @@
     // nothing and is available whatever the ticket's state, because the ticket most worth
     // discussing is often one somebody already started.
     var chatting = (chatSessions[t.id] || null);
+    // Only when there is a session to open: a ticket claimed under a person's own name has none.
+    var sessionOwner = t.owner && SESSION_ID_RE.test(t.owner) ? t.owner : null;
+    var attachBtn = sessionOwner
+      ? '<button class="ctl attach" data-attach="' + esc(t.id) + '" type="button" title="Open this ticket\'s session in a terminal — ' +
+        esc(sessionOwner.slice(0, 8)) + '" aria-label="Open the session working this ticket">' + ATTACH_ICON + "</button>"
+      : "";
     var chatBtn =
       '<button class="ctl chat" data-chat="' + esc(t.id) + '" type="button" title="' +
       esc(chatting ? "Being discussed — claude attach " + chatting.slice(0, 8) : "Talk about this ticket (no changes made)") +
@@ -816,7 +827,7 @@
         ' — state only moves forward once work has been built" aria-label="No move back from ' + esc(t.state) + '" type="button">' +
         MOVE_ICON.back + "</button>");
     var moves = advance || unclaim ? '<div class="move-group">' + unclaim + advance + "</div>" : "";
-    var ctlGroup = '<div class="controls">' + selectBtn + executeBtn + chatBtn + controls + "</div>";
+    var ctlGroup = '<div class="controls">' + selectBtn + executeBtn + attachBtn + chatBtn + controls + "</div>";
     // One footer row, read left to right as "what the agent is doing" -> "who" -> "where it goes
     // next": run/pause/skip on the left, owner in the middle (the part that truncates when a lane
     // is narrow), the state moves on the right. They were two stacked rows, which cost every card
@@ -862,6 +873,27 @@
           });
         } finally {
           selBtn.disabled = false;
+        }
+      });
+    }
+    var attachBtnEl = card.querySelector(".ctl.attach");
+    if (attachBtnEl) {
+      attachBtnEl.addEventListener("click", async function (ev) {
+        ev.stopPropagation();
+        attachBtnEl.disabled = true;
+        try {
+          var res = await apiPost("/api/tickets/" + encodeURIComponent(attachBtnEl.dataset.attach) + "/attach", {});
+          if (res && res.opened) return;
+          // No emulator, or the board is being read from another machine: hand over the command
+          // rather than failing silently.
+          var cmd = (res && res.command) || "";
+          if (cmd && navigator.clipboard) {
+            try { await navigator.clipboard.writeText(cmd); } catch (e) {}
+          }
+          window.alert((res && res.error ? res.error + "\n\n" : "Could not open a terminal here.\n\n") +
+            (cmd ? "Run this where you have one (copied to your clipboard):\n\n  " + cmd : ""));
+        } finally {
+          attachBtnEl.disabled = false;
         }
       });
     }

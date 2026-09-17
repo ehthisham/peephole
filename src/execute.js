@@ -106,10 +106,28 @@ async function openInTerminal({ repoRoot, sessionId, permissionMode, prompt }) {
   await fs.writeFile(promptFile, prompt, "utf8");
   // `exec bash` keeps the window alive when the session ends: the developer is left in the repo,
   // in a shell, where they were already working — not staring at a closed window.
-  const line =
+  return runInTerminal(
+    repoRoot,
     `claude --session-id ${sessionId} --permission-mode ${permissionMode} "$(cat ${promptFile})"; ` +
-    `rm -f ${promptFile}; exec bash`;
+      `rm -f ${promptFile}; exec bash`,
+  );
+}
 
+/**
+ * Opens a terminal on an existing session — the board's answer to "I want to talk to the agent
+ * that is working this ticket". It works whichever way the session started: `claude attach` joins a
+ * background worker, and re-opens a session whose own window has since been closed.
+ */
+export async function attachInTerminal(repoRoot, sessionId) {
+  const line = `claude attach ${sessionId}; exec bash`;
+  const result = await runInTerminal(repoRoot, line);
+  // The command is returned either way, so a machine with no terminal emulator (or a board being
+  // read over SSH) still gets something it can paste.
+  return { ...result, command: `claude attach ${sessionId}` };
+}
+
+/** Runs one shell line in whichever terminal emulator this machine has. */
+async function runInTerminal(repoRoot, line) {
   for (const [cmd, args] of [
     ["gnome-terminal", [`--working-directory=${repoRoot}`, "--", "bash", "-lc", line]],
     ["x-terminal-emulator", ["-e", `bash -lc '${line.replace(/'/g, "'\\''")}'`]],
