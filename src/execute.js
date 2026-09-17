@@ -108,8 +108,8 @@ async function openInTerminal({ repoRoot, sessionId, permissionMode, prompt }) {
   // in a shell, where they were already working — not staring at a closed window.
   return runInTerminal(
     repoRoot,
-    `claude --session-id ${sessionId} --permission-mode ${permissionMode} "$(cat ${promptFile})"; ` +
-      `rm -f ${promptFile}; exec bash`,
+    `claude --session-id ${q(sessionId)} --permission-mode ${q(permissionMode)} "$(cat ${q(promptFile)})"; ` +
+      `rm -f ${q(promptFile)}; exec bash`,
   );
 }
 
@@ -118,9 +118,10 @@ async function openInTerminal({ repoRoot, sessionId, permissionMode, prompt }) {
  * that is working this ticket". It works whichever way the session started: `claude attach` joins a
  * background worker, and re-opens a session whose own window has since been closed.
  */
-export async function attachInTerminal(repoRoot, sessionId) {
-  const line = `claude attach ${sessionId}; exec bash`;
-  const result = await runInTerminal(repoRoot, line);
+export async function attachInTerminal(repoRoot, rawSessionId) {
+  const sessionId = safeSessionId(rawSessionId);
+  if (!sessionId) return { opened: false, reason: "not a session id" };
+  const result = await runInTerminal(repoRoot, `claude attach ${q(sessionId)}; exec bash`);
   // The command is returned either way, so a machine with no terminal emulator (or a board being
   // read over SSH) still gets something it can paste.
   return { ...result, command: `claude attach ${sessionId}` };
@@ -138,6 +139,26 @@ async function processAlive(sessionId) {
   } catch {
     return false; // pgrep exits non-zero when nothing matches
   }
+}
+
+/**
+ * A session id that is safe to put on a command line, or null.
+ *
+ * Session ids reach this module from a free-text box in the dispatch dialog — "…or paste a session
+ * id" — and end up inside a shell line handed to a terminal. Without this, a pasted
+ * `x"; rm -rf ~; #` is a command, not an id. Checked here as well as at the API boundary because
+ * this is the module that builds the shell line, and it should not depend on a caller's diligence.
+ */
+export function safeSessionId(value) {
+  const id = String(value == null ? "" : value).trim();
+  return /^[0-9a-fA-F][0-9a-fA-F-]{7,63}$/.test(id) ? id : null;
+}
+
+/** Single-quotes a value for a shell line, escaping any quotes inside it. Belt to the braces of
+ *  safeSessionId: paths come from os.tmpdir() and a repo root the user chose, and neither is
+ *  guaranteed free of spaces. */
+function q(value) {
+  return `'${String(value).replace(/'/g, `'\\''`)}'`;
 }
 
 /** Runs one shell line in whichever terminal emulator this machine has. */
@@ -367,13 +388,18 @@ export function createQueue({ repoRoot, binPath, port, claimTicket, readTicket, 
       // The CLI's own caveat applies and is surfaced to the picker rather than hidden: resuming a
       // session that is currently RUNNING starts a copy under a new id. The picker marks busy
       // sessions for exactly that reason.
-      const sessionId = next.sessionId;
+      const sessionId = safeSessionId(next.sessionId);
+      if (!sessionId) {
+        lastError = `${next.ticketId}: "${String(next.sessionId).slice(0, 24)}" is not a session id`;
+        announce();
+        return tick();
+      }
       const promptFile = path.join(os.tmpdir(), `peephole-resume-${sessionId}.txt`);
       await fs.writeFile(promptFile, prompt, "utf8");
       const opened = await runInTerminal(
         repoRoot,
-        `claude --resume ${sessionId} --permission-mode ${next.permissionMode} "$(cat ${promptFile})"; ` +
-          `rm -f ${promptFile}; exec bash`,
+        `claude --resume ${q(sessionId)} --permission-mode ${q(next.permissionMode)} "$(cat ${q(promptFile)})"; ` +
+          `rm -f ${q(promptFile)}; exec bash`,
       );
       if (!opened.opened) {
         lastError = `${next.ticketId}: ${opened.reason}`;

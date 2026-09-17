@@ -7,7 +7,7 @@ import { scan } from "./scan.js";
 import { repoStats } from "./repoStats.js";
 import * as writer from "./writer.js";
 import * as tokenUsage from "./tokens.js";
-import { createQueue, listSessions, attachInTerminal } from "./execute.js";
+import { createQueue, listSessions, attachInTerminal, safeSessionId } from "./execute.js";
 import { DEFAULT_STATE_BRANCH } from "./schema.js";
 import { resolveLedger } from "./ledger.js";
 import { listProjects, rememberProject, forgetProject, validateRepo } from "./projects.js";
@@ -581,9 +581,14 @@ export async function startServer(initialRepoRoot, { port = 4173, remote = "orig
         if (body.permissionMode === BYPASS_MODE && !bypassAllowed) return sendJson(res, 403, { error: BYPASS_REFUSED });
         const mode = PERMISSION_MODES.includes(body.permissionMode) ? body.permissionMode : "acceptEdits";
         const launch = ["terminal", "existing"].includes(body.launch) ? body.launch : "background";
-        const sessionId = typeof body.sessionId === "string" ? body.sessionId.trim() : null;
+        // Rejected at the boundary as well as inside the queue: this value came from a free-text
+        // box and ends up on a command line, so it is checked where it arrives, not only where it
+        // is used.
+        const sessionId = body.sessionId ? safeSessionId(body.sessionId) : null;
         if (launch === "existing" && !sessionId) {
-          return sendJson(res, 400, { error: "pick a session, or paste a session id" });
+          return sendJson(res, 400, {
+            error: body.sessionId ? "that is not a session id" : "pick a session, or paste a session id",
+          });
         }
         ctx.queueState = ctx.queue.enqueue(executeMatch[1], mode, launch, sessionId);
         return sendJson(res, 200, { queued: true, queue: ctx.queueState, state: ctx.publicState() });
@@ -595,7 +600,10 @@ export async function startServer(initialRepoRoot, { port = 4173, remote = "orig
         // Lane order, not click order: "run the selected ones" means the order they are read in.
         const ids = Array.isArray(body.ticketIds) ? body.ticketIds : [];
         const batchLaunch = ["terminal", "existing"].includes(body.launch) ? body.launch : "background";
-        const batchSession = typeof body.sessionId === "string" ? body.sessionId.trim() : null;
+        const batchSession = body.sessionId ? safeSessionId(body.sessionId) : null;
+        if (batchLaunch === "existing" && !batchSession) {
+          return sendJson(res, 400, { error: "pick a session, or paste a valid session id" });
+        }
         ids.forEach((id) => { ctx.queueState = ctx.queue.enqueue(String(id), mode, batchLaunch, batchSession); });
         return sendJson(res, 200, { queued: ids.length, queue: ctx.queueState, state: ctx.publicState() });
       }
