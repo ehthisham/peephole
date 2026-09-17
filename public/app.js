@@ -141,6 +141,7 @@
   var epicOptions = document.getElementById("epicOptions");
   var execSelectedBtn = document.getElementById("execSelectedBtn");
   var workerBtn = document.getElementById("workerBtn");
+  var workerMenu = document.getElementById("workerMenu");
   var queueBar = document.getElementById("queueBar");
   var execBackdrop = document.getElementById("execBackdrop");
   var execTitle = document.getElementById("execTitle");
@@ -721,7 +722,14 @@
     var card = document.createElement("article");
     card.className = "card";
     var risk = t.risk === "irreversible" ? '<span class="badge risk">⚠ irreversible</span>' : "";
-    var blocked = t.blockedOn ? '<span class="badge blocked">⛓ ' + esc(t.blockedOn) + "</span>" : "";
+    // blockedOn carries whole ticket ids, and often several comma-separated — rendered raw in a
+    // nowrap badge that was wider than the card and spilled over its neighbour. Show what it is
+    // blocked on, count the rest, and keep the full list in the tooltip.
+    var blockedIds = (t.blockedOn || "").split(",").map(function (b) { return b.trim(); }).filter(Boolean);
+    var blocked = blockedIds.length
+      ? '<span class="badge blocked" title="' + esc("blocked on: " + blockedIds.join("\n")) + '">⛓ ' +
+        esc(blockedIds[0]) + (blockedIds.length > 1 ? " +" + (blockedIds.length - 1) : "") + "</span>"
+      : "";
     // The owner used to ride in `.card-top` alongside the project tag, the risk badge and every
     // ticket tag — four competing chips in one wrapping row. It now sits alone on the footer's
     // left, opposite the state-move buttons, so it can never crowd the tag row again.
@@ -2359,28 +2367,95 @@
 
   /** One worker per project is the shape this is for: start it once, sit in it, and let every later
    *  dispatch continue that conversation rather than opening a fresh context each time. */
-  workerBtn.addEventListener("click", async function () {
-    var existing = (latestState && latestState.queue && latestState.queue.workers) || [];
-    if (existing.length) {
-      var w = existing[0];
-      if (!window.confirm("A worker is already running (" + w.sessionId.slice(0, 8) + ", " + w.status +
-        ").\n\nDispatches already reuse it. Start a second one anyway?")) return;
+  /** The menu answers "what is this about" on sight: every background session, what it is doing,
+   *  and the two things you can do to it. The button used to be start-only, so a label reporting
+   *  three sessions could only offer to make a fourth. */
+  function renderWorkerMenu() {
+    var workers = (latestState && latestState.queue && latestState.queue.workers) || [];
+    var rows = workers.map(function (w) {
+      var status = w.status || "idle";
+      return (
+        '<div class="worker-row" data-session="' + esc(w.sessionId) + '">' +
+        '<span class="wname">' + esc(w.name || w.sessionId.slice(0, 8)) +
+        "<small>" + esc(w.sessionId.slice(0, 8)) + "</small></span>" +
+        '<span class="wstatus ' + esc(status) + '">' + esc(status) + "</span>" +
+        '<button type="button" class="wattach" data-attach="' + esc(w.sessionId) + '">Attach</button>' +
+        '<button type="button" class="wstop" data-stop="' + esc(w.sessionId) + '">Stop</button>' +
+        "</div>"
+      );
+    }).join("");
+
+    workerMenu.innerHTML =
+      (workers.length
+        ? rows + '<p class="pm-note">Dispatches reuse an idle worker. "waiting" means it asked something and nobody has answered.</p>'
+        : '<p class="pm-note">No background sessions for this repo.</p>') +
+      '<div class="wfoot"><button type="button" id="workerStart">+ Start a worker</button></div>';
+
+    Array.prototype.forEach.call(workerMenu.querySelectorAll("[data-attach]"), function (btn) {
+      btn.addEventListener("click", async function (ev) {
+        ev.stopPropagation();
+        var res = await apiPost("/api/worker/" + encodeURIComponent(btn.dataset.attach) + "/attach", {});
+        if (res && res.opened) { closeWorkerMenu(); return; }
+        var cmd = (res && res.command) || "";
+        if (cmd && navigator.clipboard) { try { await navigator.clipboard.writeText(cmd); } catch (e) {} }
+        window.alert((res && res.reason ? res.reason : "Could not open a terminal here.") +
+          (cmd ? "\n\nCopied to your clipboard:\n\n  " + cmd : ""));
+      });
+    });
+
+    Array.prototype.forEach.call(workerMenu.querySelectorAll("[data-stop]"), function (btn) {
+      btn.addEventListener("click", async function (ev) {
+        ev.stopPropagation();
+        var id = btn.dataset.stop;
+        // Worth saying what stop does NOT do: the conversation survives and can be reopened.
+        if (!window.confirm("Stop session " + id.slice(0, 8) + "?\n\nIt ends the current turn. The conversation is kept — " +
+          "`claude attach " + id.slice(0, 8) + "` reopens it.")) return;
+        btn.disabled = true;
+        btn.textContent = "Stopping…";
+        var res = await apiPost("/api/worker/" + encodeURIComponent(id) + "/stop", {});
+        if (res && res.error) window.alert(res.error);
+        if (res && res.state) render(res.state);
+        renderWorkerMenu();
+      });
+    });
+
+    var start = workerMenu.querySelector("#workerStart");
+    if (start) {
+      start.addEventListener("click", async function (ev) {
+        ev.stopPropagation();
+        start.disabled = true;
+        start.textContent = "Starting…";
+        try {
+          var res = await apiPost("/api/worker", { attach: true });
+          if (res && res.error) { window.alert(res.error); return; }
+          if (res && !res.started) { window.alert("Could not start a worker: " + (res.reason || "unknown")); return; }
+          if (!res.attached && res.command) {
+            if (navigator.clipboard) { try { await navigator.clipboard.writeText(res.command); } catch (e) {} }
+            window.alert("Worker " + res.sessionId.slice(0, 8) + " started.\n\nNo terminal opened here — join it with " +
+              "(copied to your clipboard):\n\n  " + res.command);
+          }
+          if (res && res.state) render(res.state);
+        } finally {
+          closeWorkerMenu();
+        }
+      });
     }
-    workerBtn.disabled = true;
-    workerBtn.textContent = "Starting…";
-    try {
-      var res = await apiPost("/api/worker", { attach: true });
-      if (res && res.error) { window.alert(res.error); return; }
-      if (res && !res.started) { window.alert("Could not start a worker: " + (res.reason || "unknown")); return; }
-      if (!res.attached && res.command) {
-        if (navigator.clipboard) { try { await navigator.clipboard.writeText(res.command); } catch (e) {} }
-        window.alert("Worker " + res.sessionId.slice(0, 8) + " started.\n\nNo terminal opened here — join it with " +
-          "(copied to your clipboard):\n\n  " + res.command);
-      }
-    } finally {
-      workerBtn.disabled = false;
-      renderWorkerButton();
-    }
+  }
+
+  function closeWorkerMenu() {
+    workerMenu.hidden = true;
+    workerBtn.setAttribute("aria-expanded", "false");
+  }
+
+  workerBtn.addEventListener("click", function (ev) {
+    ev.stopPropagation();
+    if (!workerMenu.hidden) return closeWorkerMenu();
+    renderWorkerMenu();
+    workerMenu.hidden = false;
+    workerBtn.setAttribute("aria-expanded", "true");
+  });
+  document.addEventListener("click", function (ev) {
+    if (!workerMenu.hidden && !workerMenu.contains(ev.target) && !workerBtn.contains(ev.target)) closeWorkerMenu();
   });
 
   function renderWorkerButton() {
@@ -2391,10 +2466,16 @@
       workerBtn.title = "Start a background session for this repo that later dispatches reuse";
       return;
     }
-    var w = workers[0];
-    workerBtn.textContent = "Worker " + w.sessionId.slice(0, 8) + (workers.length > 1 ? " +" + (workers.length - 1) : "");
-    workerBtn.setAttribute("aria-pressed", "true");
-    workerBtn.title = "A worker is standing by (" + w.status + ") — dispatches reuse it. Click to start another.";
+    // Lead with a worker a dispatch could actually use. The old label took workers[0], which was
+    // often one parked on an unanswered question — the least representative session there is.
+    var idle = workers.filter(function (w) { return w.status === "idle"; });
+    var waiting = workers.filter(function (w) { return w.status === "waiting"; });
+    workerBtn.textContent = idle.length
+      ? (workers.length === 1 ? "Worker ready" : idle.length + " of " + workers.length + " workers ready")
+      : workers.length + " worker" + (workers.length === 1 ? "" : "s") + (waiting.length ? ", none free" : " busy");
+    workerBtn.setAttribute("aria-pressed", String(idle.length > 0));
+    workerBtn.title = workers.map(function (w) { return w.sessionId.slice(0, 8) + " · " + w.status; }).join("\n") +
+      (waiting.length ? "\n\n" + waiting.length + " waiting on an unanswered question" : "");
   }
 
   execSelectedBtn.addEventListener("click", async function () {

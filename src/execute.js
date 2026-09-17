@@ -121,10 +121,27 @@ async function openInTerminal({ repoRoot, sessionId, permissionMode, prompt }) {
 export async function attachInTerminal(repoRoot, rawSessionId) {
   const sessionId = safeSessionId(rawSessionId);
   if (!sessionId) return { opened: false, reason: "not a session id" };
-  const result = await runInTerminal(repoRoot, `claude attach ${q(sessionId)}; exec bash`);
+  const result = await runInTerminal(repoRoot, `claude attach ${q(jobId(sessionId))}; exec bash`);
   // The command is returned either way, so a machine with no terminal emulator (or a board being
   // read over SSH) still gets something it can paste.
-  return { ...result, command: `claude attach ${sessionId}` };
+  return { ...result, command: `claude attach ${jobId(sessionId)}` };
+}
+
+/** Ends a background session's turn. Its conversation survives — `claude attach <id>` reopens it —
+ *  so this cancels work rather than destroying history. */
+/** `claude attach` and `claude stop` address a background session by its JOB id — the eight
+ *  characters the CLI prints as "backgrounded · cd15eb82" — not by the full session uuid. Passing
+ *  the uuid answers "No job matching", which for attach failed silently inside the terminal that
+ *  had already opened. Every other flag (`--session-id`, `--resume`) takes the full id. */
+function jobId(sessionId) {
+  return sessionId.slice(0, 8);
+}
+
+export async function stopSession(sessionId) {
+  const id = safeSessionId(sessionId);
+  if (!id) throw new Error("that is not a session id");
+  await execFileP("claude", ["stop", jobId(id)], { timeout: LIST_TIMEOUT_MS });
+  return id;
 }
 
 /** Whether a claude process for this session is still running. `pgrep -f` against the session id,
@@ -694,7 +711,7 @@ export function createQueue({ repoRoot, binPath, port, claimTicket, readTicket, 
     running = null;
     announce();
     // `claude stop <id>`, not `claude agents stop` — agents takes no positional arguments.
-    execFileP("claude", ["stop", id], { timeout: LIST_TIMEOUT_MS }).catch((e) => {
+    execFileP("claude", ["stop", jobId(id)], { timeout: LIST_TIMEOUT_MS }).catch((e) => {
       lastError = `could not stop ${id.slice(0, 8)}: ${e.message}`;
       announce();
     });

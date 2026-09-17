@@ -7,7 +7,7 @@ import { scan } from "./scan.js";
 import { repoStats } from "./repoStats.js";
 import * as writer from "./writer.js";
 import * as tokenUsage from "./tokens.js";
-import { createQueue, listSessions, attachInTerminal, safeSessionId, promptFor } from "./execute.js";
+import { createQueue, listSessions, attachInTerminal, safeSessionId, promptFor, stopSession } from "./execute.js";
 import { DEFAULT_STATE_BRANCH } from "./schema.js";
 import { resolveLedger } from "./ledger.js";
 import { listProjects, rememberProject, forgetProject, validateRepo } from "./projects.js";
@@ -717,6 +717,28 @@ export async function startServer(initialRepoRoot, { port = 4173, remote = "orig
         const body = await readJsonBody(req);
         await forgetProject(String(body.repoRoot || ""));
         return sendJson(res, 200, { projects: await listProjects(), active: ctx.repoRoot });
+      }
+      const workerStopMatch = url.pathname.match(/^\/api\/worker\/([^/]+)\/stop$/);
+      if (req.method === "POST" && workerStopMatch) {
+        const id = safeSessionId(workerStopMatch[1]);
+        if (!id) return sendJson(res, 400, { error: "that is not a session id" });
+        // `claude stop` ends the turn and keeps the conversation: `claude attach <id>` still opens
+        // it afterwards. Stopping a worker is not destroying its history.
+        try {
+          await stopSession(id);
+        } catch (e) {
+          return sendJson(res, 500, { error: e.message });
+        }
+        await ctx.queue.refreshWorkers().catch(() => {});
+        ctx.queueState = ctx.queue.state();
+        return sendJson(res, 200, { stopped: id, queue: ctx.queueState, state: ctx.publicState() });
+      }
+      const workerAttachMatch = url.pathname.match(/^\/api\/worker\/([^/]+)\/attach$/);
+      if (req.method === "POST" && workerAttachMatch) {
+        const id = safeSessionId(workerAttachMatch[1]);
+        if (!id) return sendJson(res, 400, { error: "that is not a session id" });
+        const opened = await attachInTerminal(ctx.repoRoot, id);
+        return sendJson(res, opened.opened ? 200 : 400, opened);
       }
       if (req.method === "POST" && url.pathname === "/api/worker") {
         const body = await readJsonBody(req);

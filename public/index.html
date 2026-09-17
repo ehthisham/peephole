@@ -146,6 +146,24 @@
      lanes show, and nothing else on the page. Right-aligned so they sit over the last lane. */
   .board-toolbar{display:flex; align-items:center; justify-content:flex-end; gap:8px; width:100%;}
   .icon-btn{display:inline-flex; align-items:center; gap:5px; padding:7px 9px;}
+  .worker-wrap{position:relative;}
+  .worker-menu{position:absolute; right:0; top:calc(100% + 5px); z-index:25; min-width:320px;
+    background:var(--surface); border:1px solid var(--border); border-radius:8px; padding:6px; box-shadow:0 8px 24px rgba(32,26,24,0.14);}
+  .worker-row{display:flex; align-items:center; gap:8px; padding:7px 8px; border-radius:6px; font-size:12.5px;}
+  .worker-row:hover{background:var(--surface-2);}
+  .worker-row .wname{flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+  .worker-row .wname small{display:block; font-size:10.5px; color:var(--ink-dim); font-family:"IBM Plex Mono",ui-monospace,monospace;}
+  .worker-row .wstatus{flex:none; font-size:10.5px; padding:1px 6px; border-radius:5px;}
+  .worker-row .wstatus.idle{color:var(--built); background:var(--built-bg);}
+  .worker-row .wstatus.busy{color:var(--progress); background:var(--progress-bg);}
+  .worker-row .wstatus.waiting{color:var(--proposed); background:var(--proposed-bg);}
+  .worker-row button{flex:none; background:none; border:1px solid var(--border); border-radius:5px; padding:3px 8px; font:inherit; font-size:11.5px; color:var(--ink-dim); cursor:pointer;}
+  .worker-row button:hover{border-color:var(--ink-dim); color:var(--ink);}
+  .worker-row button.wstop:hover{border-color:var(--accent); color:var(--accent); background:var(--accent-wash);}
+  .worker-menu .wfoot{border-top:1px solid var(--border); margin-top:4px; padding-top:6px;}
+  .worker-menu .wfoot button{width:100%; background:none; border:none; padding:7px; font:inherit; font-size:12.5px; color:var(--accent); font-weight:600; cursor:pointer; border-radius:6px;}
+  .worker-menu .wfoot button:hover{background:var(--accent-wash);}
+  .worker-menu .pm-note{padding:6px 8px; font-size:11.5px; color:var(--ink-dim);}
   .filter-wrap{position:relative;}
   .filter-count{font-size:11px; font-weight:700; color:var(--accent);}
   .filter-menu{position:absolute; right:0; top:calc(100% + 5px); z-index:20; min-width:200px; max-height:320px; overflow-y:auto;
@@ -229,7 +247,10 @@
   .project-tag{font-size:10.5px; font-weight:600; color:var(--ink-dim); background:var(--bg); border:1px solid var(--border); border-radius:5px; padding:2px 6px;}
   .badge{font-size:10.5px; font-weight:600; border-radius:5px; padding:2px 6px; white-space:nowrap;}
   .badge.risk{color:var(--accent); background:var(--accent-wash);}
-  .badge.blocked{color:var(--closed); background:var(--closed-bg);}
+  /* The one badge whose content is not short by nature: a ticket id, or a list of them. It gets the
+     full card width and truncates, instead of pushing past the card edge. */
+  .badge.blocked{color:var(--closed); background:var(--closed-bg); display:block; max-width:100%;
+    overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
   .badge.tag{color:var(--ink-dim); background:var(--surface-2); border:1px solid var(--border);}
   .badge.phase{font-weight:700; letter-spacing:0.01em;}
   .epic-tag{font-size:10.5px; font-weight:700; color:var(--verified); background:var(--verified-bg); border-radius:5px; padding:2px 6px; max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
@@ -458,7 +479,11 @@
   <div class="tab-panel" id="panel-tasks">
     <div class="layout board-layout">
       <div class="board-toolbar">
-        <button class="ghost" id="workerBtn" type="button" title="Start a background session for this repo that later dispatches reuse">Start a worker</button>
+        <div class="worker-wrap">
+          <button class="ghost" id="workerBtn" type="button" aria-expanded="false" aria-haspopup="true"
+                  title="Background sessions for this repo — dispatches reuse an idle one">Start a worker</button>
+          <div class="worker-menu" id="workerMenu" hidden role="group" aria-label="Workers"></div>
+        </div>
         <button class="primary" id="execSelectedBtn" type="button" disabled>Execute selected</button>
         <button class="ghost" id="groupToggle" type="button" aria-pressed="false">Group by epic</button>
         <div class="filter-wrap">
