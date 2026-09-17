@@ -1381,6 +1381,178 @@
    *  "ehthisham" and "Ehthisham <other-email>" land on one row. Sorted by tokens first (the
    *  more AI-era-relevant figure when present), falling back to commits — never by name, which
    *  would bury whoever's actually doing the most right now at the bottom of an alphabetical list. */
+  /** Everything one person did on this board, from the ledger alone — no git blame, no extra
+   *  round trip. A ticket belongs to someone if they own it (by recorded name, or by a session
+   *  they dispatched), if it is assigned to them, or if they wrote a comment on it. */
+  function memberWork(name, tickets) {
+    var mine = forThisProject(tickets || []);
+    var owned = mine.filter(function (t) { return ownerNameOf(t) === name; });
+    var assigned = mine.filter(function (t) { return t.assignee === name && ownerNameOf(t) !== name; });
+    var commented = mine.filter(function (t) {
+      return (t.comments || []).some(function (c) { return c.by === name; }) &&
+        ownerNameOf(t) !== name && t.assignee !== name;
+    });
+
+    var shipped = owned.filter(function (t) { return TERMINAL_STATES.has(t.state); });
+    var open = owned.filter(function (t) { return !TERMINAL_STATES.has(t.state); });
+
+    // Hand-worked vs dispatched: a ticket owned under a person's own name was claimed by a human,
+    // while one owned by a session id with their name recorded beside it was work they DIRECTED.
+    // Nothing else on this board can tell those apart, and they are different skills.
+    var dispatched = owned.filter(function (t) { return t.owner && SESSION_ID_RE.test(t.owner); });
+    var handWorked = owned.filter(function (t) { return t.owner && !SESSION_ID_RE.test(t.owner); });
+
+    var durations = [];
+    var tokens = 0;
+    var tokenTickets = 0;
+    shipped.forEach(function (t) {
+      var cost = ticketCost(t);
+      if (cost.workMs != null) durations.push(cost.workMs);
+      if (cost.tokens != null && cost.tokens > 0) { tokens += cost.tokens; tokenTickets += 1; }
+    });
+
+    var epics = {};
+    owned.forEach(function (t) { var k = t.epic || NO_EPIC; epics[k] = (epics[k] || 0) + 1; });
+
+    // Pauses and skips they explained. The reason text is the richest thing on the board about
+    // how somebody supervises agents, and it exists nowhere else.
+    var interventions = [];
+    mine.forEach(function (t) {
+      (t.comments || []).forEach(function (c) {
+        if (c.by === name && c.control) interventions.push({ ticket: t, at: c.at, control: c.control, text: c.text });
+      });
+    });
+    interventions.sort(function (a, b) { return Date.parse(b.at || 0) - Date.parse(a.at || 0); });
+
+    return {
+      name: name, owned: owned, shipped: shipped, open: open, assigned: assigned, commented: commented,
+      dispatched: dispatched, handWorked: handWorked,
+      medianWorkMs: median(durations), tokensPerShipped: tokenTickets ? Math.round(tokens / tokenTickets) : null,
+      tokenTickets: tokenTickets, epics: epics, interventions: interventions,
+      irreversible: shipped.filter(function (t) { return t.risk === "irreversible"; }).length,
+    };
+  }
+
+  function median(values) {
+    if (!values.length) return null;
+    var sorted = values.slice().sort(function (a, b) { return a - b; });
+    var mid = Math.floor(sorted.length / 2);
+    return sorted.length % 2 ? sorted[mid] : Math.round((sorted[mid - 1] + sorted[mid]) / 2);
+  }
+
+  /** The team's median, so a person's numbers can be read as "typical / faster / slower" rather
+   *  than as a rank. Ranking a four-person team by tickets shipped teaches people to split
+   *  tickets, which is the opposite of what this board is for. */
+  function teamMedians(names, tickets) {
+    var shipped = [];
+    var work = [];
+    names.forEach(function (n) {
+      var w = memberWork(n, tickets);
+      shipped.push(w.shipped.length);
+      if (w.medianWorkMs != null) work.push(w.medianWorkMs);
+    });
+    return { shipped: median(shipped), workMs: median(work) };
+  }
+
+  function comparison(value, mid) {
+    if (value == null || mid == null || mid === 0) return "";
+    var ratio = value / mid;
+    if (ratio > 1.25) return ' <span class="cmp above">above the team median</span>';
+    if (ratio < 0.8) return ' <span class="cmp below">below the team median</span>';
+    return ' <span class="cmp">about the team median</span>';
+  }
+
+  function ticketLinkList(tickets, emptyText) {
+    if (!tickets.length) return '<p class="empty-note">' + esc(emptyText) + "</p>";
+    return '<ul class="member-tickets">' + tickets.map(function (t) {
+      return '<li><button type="button" class="tlink" data-ticket="' + esc(t.id) + '">' +
+        esc(t.intent || t.id) + '</button><span class="st">' + esc(t.state) + "</span></li>";
+    }).join("") + "</ul>";
+  }
+
+  var openMember = null;
+
+  /** One member's page: what they moved, how they worked with agents, and what would need a new
+   *  owner if they stopped. Deliberately not a score — every figure is either a count, a median,
+   *  or a comparison to the team's median. */
+  function renderMemberDetail(name, state) {
+    var w = memberWork(name, state.tickets);
+    var names = ((state.stats && state.stats.contributorList) || []).map(function (c) { return c.name; });
+    var mid = teamMedians(names, state.tickets);
+    var contributor = ((state.stats && state.stats.contributorList) || []).find(function (c) { return c.name === name; }) || {};
+    var epicRows = Object.keys(w.epics).sort(function (a, b) { return w.epics[b] - w.epics[a]; });
+
+    memberList.innerHTML =
+      '<button class="back-link" id="memberBack" type="button">← All members</button>' +
+      '<h2 class="member-name">' + esc(name) + "</h2>" +
+      '<div class="stat-row">' +
+      [
+        { value: fmtNum(w.shipped.length), label: "Shipped", sub: "tickets they owned" + comparison(w.shipped.length, mid.shipped) },
+        { value: w.medianWorkMs != null ? fmtDuration(w.medianWorkMs) : "—", label: "Median time to ship",
+          // The sample size is part of the number: a median over three tickets is a coincidence,
+          // and one over three tickets that were bulk-advanced is an artefact of the CLI.
+          sub: "claim → shipped, " + w.shipped.length + " ticket" + (w.shipped.length === 1 ? "" : "s") + comparison(w.medianWorkMs, mid.workMs) },
+        { value: w.tokensPerShipped != null ? fmtNum(w.tokensPerShipped) : "—", label: "Tokens per ticket", sub: w.tokenTickets ? "across " + w.tokenTickets + " measured" : "none measured yet" },
+        { value: fmtNum(contributor.commits || 0), label: "Commits", sub: "on the checked-out branch" },
+      ].map(function (t) {
+        return '<div class="stat-tile"><div class="value">' + t.value + '</div><div class="label">' + esc(t.label) +
+          '</div><div class="sub">' + t.sub + "</div></div>";
+      }).join("") +
+      "</div>" +
+
+      '<div class="member-panels">' +
+      '<section class="member-panel"><h3>How the work got done</h3>' +
+      '<div class="split-bar"><span style="width:' +
+        (w.owned.length ? (w.handWorked.length / w.owned.length) * 100 : 0).toFixed(1) +
+        '%" class="hand"></span><span style="width:' +
+        (w.owned.length ? (w.dispatched.length / w.owned.length) * 100 : 0).toFixed(1) + '%" class="dispatched"></span></div>' +
+      '<p class="split-key"><b>' + w.handWorked.length + "</b> worked by hand · <b>" + w.dispatched.length +
+        "</b> dispatched to an agent" + (w.irreversible ? " · <b>" + w.irreversible + "</b> irreversible shipped" : "") + "</p>" +
+      (epicRows.length
+        ? '<p class="split-key dim">Epics: ' + epicRows.map(function (k) {
+            return (k === NO_EPIC ? "unfiled" : esc(k)) + " (" + w.epics[k] + ")";
+          }).join(" · ") + "</p>"
+        : "") +
+      "</section>" +
+
+      '<section class="member-panel"><h3>Interventions</h3>' +
+      (w.interventions.length
+        ? '<ul class="member-tickets">' + w.interventions.slice(0, 6).map(function (i) {
+            return "<li><b>" + esc(i.control) + "</b> " + esc(i.text) +
+              '<span class="st">' + relTime(i.at) + "</span></li>";
+          }).join("") + "</ul>"
+        : '<p class="empty-note">No pauses or skips explained yet — the reason box on ⏸/⏭ fills this.</p>') +
+      "</section>" +
+
+      '<section class="member-panel wide"><h3>Would need a new owner</h3>' +
+      '<p class="split-key dim">Open work that stops if ' + esc(name) + " does.</p>" +
+      ticketLinkList(w.open.concat(w.assigned), "Nothing open — nothing to hand over.") +
+      "</section>" +
+      "</div>";
+
+    var back = document.getElementById("memberBack");
+    if (back) back.addEventListener("click", function () { openMember = null; renderMembers((state.stats && state.stats.contributorList) || []); });
+    Array.prototype.forEach.call(memberList.querySelectorAll(".tlink"), function (btn) {
+      btn.addEventListener("click", function () {
+        var t = (latestState.tickets || []).find(function (x) { return x.id === btn.dataset.ticket; });
+        if (t) openTicketModal(t);
+      });
+    });
+  }
+
+  /** How much of the board these figures do NOT cover. A ticket nobody claimed belongs to nobody,
+   *  and per-member counts that quietly omit two thirds of the work invite exactly the wrong
+   *  conclusion about who did what. */
+  function unattributedNote(tickets) {
+    var mine = forThisProject(tickets || []);
+    var shipped = mine.filter(function (t) { return TERMINAL_STATES.has(t.state); });
+    var unowned = shipped.filter(function (t) { return !ownerNameOf(t); });
+    if (!unowned.length) return "";
+    return '<p class="empty-note attribution">' + unowned.length + " of " + shipped.length +
+      " finished tickets have no recorded owner — claimed before ownership was tracked, or advanced " +
+      "without a claim — so they count towards nobody here.</p>";
+  }
+
   function renderMembers(list) {
     if (!list || list.length === 0) {
       memberList.innerHTML = '<p class="empty-note">No commits yet.</p>';
@@ -1389,18 +1561,34 @@
     var rows = list.slice().sort(function (a, b) {
       return (b.tokens || 0) - (a.tokens || 0) || b.commits - a.commits;
     });
+    // The list gains the two ledger counts that make a row worth clicking: what they shipped and
+    // what is still open in their name.
     memberList.innerHTML =
-      "<table class=\"matrix\"><thead><tr>" +
-      "<th>Member</th><th>Commits</th><th>Tokens</th>" +
+      "<table class=\"matrix members\"><thead><tr>" +
+      "<th>Member</th><th>Shipped</th><th>Open</th><th>Commits</th><th>Tokens</th>" +
       "</tr></thead><tbody>" +
       rows.map(function (m) {
+        var w = memberWork(m.name, (latestState && latestState.tickets) || []);
         return (
-          "<tr><td>" + esc(m.name) + "</td>" +
+          '<tr class="member-row" data-member="' + esc(m.name) + '">' +
+          "<td>" + esc(m.name) + "</td>" +
+          '<td class="mono">' + fmtNum(w.shipped.length) + "</td>" +
+          '<td class="mono">' + (w.open.length || w.assigned.length
+            ? fmtNum(w.open.length + w.assigned.length)
+            : "—") + "</td>" +
           '<td class="mono">' + fmtNum(m.commits) + "</td>" +
           '<td class="mono">' + (m.tokens ? fmtNum(m.tokens) : "—") + "</td></tr>"
         );
       }).join("") +
-      "</tbody></table>";
+      "</tbody></table>" +
+      unattributedNote((latestState && latestState.tickets) || []);
+
+    Array.prototype.forEach.call(memberList.querySelectorAll(".member-row"), function (tr) {
+      tr.addEventListener("click", function () {
+        openMember = tr.dataset.member;
+        renderMemberDetail(openMember, latestState);
+      });
+    });
   }
 
   var latestState = null;
@@ -1505,7 +1693,8 @@
     renderBoard(state.tickets || []);
     renderAgents(state.agents || []);
     renderTokenUsage(state.agents || []);
-    renderMembers((state.stats && state.stats.contributorList) || []);
+    if (openMember) renderMemberDetail(openMember, state);
+    else renderMembers((state.stats && state.stats.contributorList) || []);
     renderConfig(state);
   }
 
