@@ -303,6 +303,10 @@ export async function touchTicketSession(repoRoot, remoteBranch, ticketId, { ses
  * (state only ever advances or closes, never drags backward, never deletes). Always its own commit:
  * unlike `control` clicks this is a meaningful milestone, never rapid-fire. */
 export async function setState(repoRoot, remoteBranch, ticketId, state, actor = "peephole-ui", session = null) {
+  // Whoever moves a ticket to a terminal state is the closest thing to an author the ledger has for
+  // work that was never claimed. Recorded as `finishedBy` so it can be attributed without pretending
+  // somebody owned it — an unclaimed ticket has no owner, and inventing one would be a lie the
+  // member pages then report as fact.
   const { STATES, FORWARD_STATES, parseTicket } = await import("./schema.js");
   if (!STATES.includes(state)) {
     throw new Error(`invalid state "${state}" (expected one of ${STATES.join(", ")})`);
@@ -330,6 +334,11 @@ export async function setState(repoRoot, remoteBranch, ticketId, state, actor = 
   ticket.history = Array.isArray(ticket.history) ? ticket.history : [];
   ticket.history.push({ at: ticket.updatedAt, from, to: state, by: actor });
   if (session) upsertSession(ticket, { sessionId: session.sessionId || actor, transcriptPath: session.transcriptPath, tokens: session.tokens });
+
+  const MACHINE_ACTORS = new Set(["peephole-ui", "peephole-queue", "agent", ""]);
+  if (["shipped", "closed"].includes(state) && actor && !MACHINE_ACTORS.has(actor)) {
+    ticket.finishedBy = actor;
+  }
 
   await fs.writeFile(file, serializeTicket(ticket), "utf8");
   const sha = await git.commitAll(worktreePath, `peephole: ${ticketId} state -> ${state}`);

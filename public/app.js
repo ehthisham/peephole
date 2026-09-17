@@ -1386,7 +1386,12 @@
    *  they dispatched), if it is assigned to them, or if they wrote a comment on it. */
   function memberWork(name, tickets) {
     var mine = forThisProject(tickets || []);
+    // A finished ticket nobody claimed still has someone who closed it. That is weaker than
+    // ownership and is treated as such — counted, but never described as "theirs".
     var owned = mine.filter(function (t) { return ownerNameOf(t) === name; });
+    var finished = mine.filter(function (t) {
+      return TERMINAL_STATES.has(t.state) && t.finishedBy === name && ownerNameOf(t) !== name;
+    });
     var assigned = mine.filter(function (t) { return t.assignee === name && ownerNameOf(t) !== name; });
     var commented = mine.filter(function (t) {
       return (t.comments || []).some(function (c) { return c.by === name; }) &&
@@ -1426,6 +1431,7 @@
 
     return {
       name: name, owned: owned, shipped: shipped, open: open, assigned: assigned, commented: commented,
+      finished: finished,
       dispatched: dispatched, handWorked: handWorked,
       medianWorkMs: median(durations), tokensPerShipped: tokenTickets ? Math.round(tokens / tokenTickets) : null,
       tokenTickets: tokenTickets, epics: epics, interventions: interventions,
@@ -1488,6 +1494,7 @@
       '<div class="stat-row">' +
       [
         { value: fmtNum(w.shipped.length), label: "Shipped", sub: "tickets they owned" + comparison(w.shipped.length, mid.shipped) },
+        { value: fmtNum(w.finished.length), label: "Closed out", sub: "finished without claiming" },
         { value: w.medianWorkMs != null ? fmtDuration(w.medianWorkMs) : "—", label: "Median time to ship",
           // The sample size is part of the number: a median over three tickets is a coincidence,
           // and one over three tickets that were bulk-advanced is an artefact of the CLI.
@@ -1546,11 +1553,13 @@
   function unattributedNote(tickets) {
     var mine = forThisProject(tickets || []);
     var shipped = mine.filter(function (t) { return TERMINAL_STATES.has(t.state); });
-    var unowned = shipped.filter(function (t) { return !ownerNameOf(t); });
+    var unowned = shipped.filter(function (t) { return !ownerNameOf(t) && !t.finishedBy; });
     if (!unowned.length) return "";
     return '<p class="empty-note attribution">' + unowned.length + " of " + shipped.length +
-      " finished tickets have no recorded owner — claimed before ownership was tracked, or advanced " +
-      "without a claim — so they count towards nobody here.</p>";
+      " finished tickets record neither an owner nor who closed them — they were advanced before " +
+      "either was tracked, by a CLI that wrote the literal string \"agent\" — so they count towards " +
+      "nobody here. Nothing can recover a name that was never written down; tickets finished from " +
+      "now on carry one.</p>";
   }
 
   function renderMembers(list) {

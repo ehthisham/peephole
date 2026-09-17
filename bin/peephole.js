@@ -215,7 +215,14 @@ async function cmdTicketAdvance(argv) {
     console.error("usage: peephole ticket advance <id> --state <proposed|in-progress|built|verified|shipped|closed> [--transcript <path>] [--port 4173]");
     process.exit(1);
   }
-  const result = await apiCall(port, "POST", `/api/tickets/${encodeURIComponent(id)}/state`, { state: args.state, actor: args.actor, sessionId: args.actor, transcriptPath: args.transcript || null });
+  // Default the actor to this machine's git identity. Without it the history recorded the literal
+  // string "agent" — 63 of 65 finished tickets on a real board say exactly that, which is why none
+  // of them can be attributed to anybody. Nothing can recover a name that was never written down;
+  // all that can be fixed is writing it from now on.
+  const who = args.actor && args.actor !== true ? String(args.actor) : (await resolveAuthor(args))?.name;
+  const result = await apiCall(port, "POST", `/api/tickets/${encodeURIComponent(id)}/state`, {
+    state: args.state, actor: who, sessionId: args.owner || args.actor, transcriptPath: args.transcript || null,
+  });
   console.log(`"${id}" -> ${result.ticket.state}`);
 }
 

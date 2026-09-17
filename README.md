@@ -268,7 +268,60 @@ git push origin --delete peephole/<stateBranch>    # only if that branch was eve
 Finally, unwire the per-machine bits, none of which are in the repo's history:
 
 - `.claude/settings.local.json` — drop the hook entries pointing at `peephole/hooks/`.
-- `CLAUDE.md` and `README.md` — delete the `<!-- peephole:start -->` … `<!-- peephole:end -->`
+- `CLAUDE.md` and `README.md` — delete the `<!-- peephole:start v=2 -->
+## Task board (Peephole)
+
+This repo's AI-executed work is tracked live in `.peephole/`. To see current status — what's
+in progress, blocked, shipped — run:
+
+```
+peephole serve --repo . --port 4173
+```
+
+then open the printed `http://localhost:<port>` link.
+
+### The two `.peephole` directories
+
+Both are the same tracked path, seen from two checkouts of this repo:
+
+- `.peephole/` — this branch's copy of the ticket files, committed like any other source. The
+  board never reads it, so it is normally behind: it is whatever reached this branch the last time
+  the ticket files were merged in.
+- `.peephole-worktree/` — a git worktree (a second checkout sharing this repo's one `.git`
+  object store) parked on the branch `peephole/<stateBranch>`. Every ticket write happens there,
+  which is why your own branch and uncommitted changes are never touched. Its `.peephole/` is the
+  live one the board reads.
+
+This branch catches up only after the board's **Push to remote** and a pull.
+
+Keep `.peephole-worktree/` in `.gitignore` — git does not ignore a nested worktree on its own,
+so it shows as untracked and one `git add -A` would commit the whole duplicate tree.
+
+### Removing Peephole from this repo
+
+Stop the board first (the worktree is in use while it runs), then:
+
+```
+git worktree remove --force .peephole-worktree     # the checkout AND its registration
+git branch -D peephole/<stateBranch>               # the local state branch
+```
+
+Deleting the folder by hand is not enough — the registration lives in `.git/worktrees/`, and git
+keeps reporting a broken worktree until `git worktree remove` (or `git worktree prune`) clears it.
+
+The ticket data is ordinary tracked content; to drop that too:
+
+```
+git rm -r .peephole && git commit -m "Remove Peephole ticket data"
+git push origin <stateBranch>                      # if the branch was already shared
+git push origin --delete peephole/<stateBranch>    # only if that branch was ever pushed
+```
+
+Then unwire the per-machine bits, which are not in git history: the `peephole/hooks/` entries in
+`.claude/settings.local.json`, and the `peephole:start`/`peephole:end` sections in this file
+and in CLAUDE.md.
+<!-- peephole:end -->
+`
   sections the scaffold added.
 
 Peephole's own checkout is untouched by all of this: it stores nothing about the repos it watches.

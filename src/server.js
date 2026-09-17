@@ -375,6 +375,7 @@ export async function startServer(initialRepoRoot, { port = 4173, remote = "orig
       get localBranch() { return localBranch; },
       get ledger() { return ledger; },
       get gitUser() { return gitUser; },
+      get remoteUrl() { return remoteUrl; },
       get cache() { return cache; },
       get queueState() { return queueState; },
       set queueState(v) { queueState = v; },
@@ -483,7 +484,7 @@ export async function startServer(initialRepoRoot, { port = 4173, remote = "orig
         const binPath = ctx.peepholeBin;
         const result = await writer.scaffold(ctx.repoRoot, ctx.stateBranch, {
           projectName: path.basename(ctx.repoRoot),
-          remoteUrl,
+          remoteUrl: ctx.publicState().remoteUrl,
           issues: ctx.cache.issues,
           peepholeCmd: `peephole serve --repo . --port ${port}`,
           peepholeBin: binPath,
