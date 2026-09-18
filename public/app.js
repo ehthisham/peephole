@@ -1028,6 +1028,35 @@
     );
   }
 
+  /** The transcript, rendered as what happened rather than as a chat: a line per turn, with the
+   *  tools each turn used. Sidechain turns (subagents) are marked, because "why did it read forty
+   *  files" is usually answered by "a subagent did". */
+  function renderTicketLog(data) {
+    var sessions = (data && data.sessions) || [];
+    if (!sessions.length) return '<p class="empty-note">No session was ever recorded on this ticket.</p>';
+    return sessions.map(function (s) {
+      var head = '<div class="log-head"><span class="mono">' + esc(s.sessionId.slice(0, 8)) + "</span>" +
+        (s.alsoRecordedAs ? ' <span class="dim">also recorded as ' + s.alsoRecordedAs.map(esc).join(", ") + "</span>" : "") +
+        (s.events && s.events.length ? ' <span class="dim">' + s.events.length + " turns</span>" : "") +
+        "</div>";
+      if (!s.found) return head + '<p class="empty-note">' + esc(s.reason || "no transcript") + "</p>";
+      if (!s.events.length) {
+        return head + '<p class="empty-note">' +
+          esc(s.reason || "nothing in the transcript for the window this ticket was claimed") + "</p>";
+      }
+      return head + '<ul class="log-list">' + s.events.map(function (e) {
+        var tools = (e.tools || []).map(function (t) {
+          return '<span class="log-tool">' + esc(t.name) + (t.detail ? ' <span class="dim">' + esc(t.detail) + "</span>" : "") + "</span>";
+        }).join("");
+        return '<li class="log-' + esc(e.kind) + '">' +
+          '<span class="log-when mono">' + esc((e.at || "").slice(11, 16)) + "</span>" +
+          '<span class="log-body">' + (e.sidechain ? '<span class="log-side">subagent</span> ' : "") +
+          (e.text ? esc(e.text) : "") + (tools ? '<span class="log-tools">' + tools + "</span>" : "") +
+          "</span></li>";
+      }).join("") + "</ul>";
+    }).join("");
+  }
+
   /** Detail popup for one ticket — everything the compact card leaves out, including the
    *  branch it was (or is being) built on, if the ticket ever recorded one. */
   function openTicketModal(t) {
@@ -1091,7 +1120,11 @@
       '<h3>Comments</h3>' +
       '<div class="comment-add"><textarea id="commentText" rows="2" placeholder="Add a comment — why this is blocked, skipped, or what you decided"></textarea>' +
       '<button class="ghost" id="commentAdd" type="button" data-id="' + esc(t.id) + '">Comment</button></div>' +
-      "<h3>Activity</h3>" + historyHtml;
+      "<h3>Activity</h3>" + historyHtml +
+      '<h3>Claude log</h3>' +
+      '<div id="ticketLog"><button class="ghost" id="loadLog" type="button" data-id="' + esc(t.id) +
+      '">Load what Claude did</button>' +
+      '<p class="empty-note">Read from the session transcripts, for the window this ticket was claimed.</p></div>';
     var riskSelect = ticketModalBody.querySelector(".risk-select");
     if (riskSelect) {
       riskSelect.addEventListener("change", async function () {
@@ -1104,6 +1137,21 @@
           else t.risk = riskSelect.value;
         } finally {
           riskSelect.disabled = false;
+        }
+      });
+    }
+    var loadLog = ticketModalBody.querySelector("#loadLog");
+    if (loadLog) {
+      loadLog.addEventListener("click", async function () {
+        var box = ticketModalBody.querySelector("#ticketLog");
+        loadLog.disabled = true;
+        loadLog.textContent = "Reading transcripts…";
+        try {
+          var res = await fetch(withProject("/api/tickets/" + encodeURIComponent(loadLog.dataset.id) + "/log"))
+            .then(function (r) { return r.json(); });
+          box.innerHTML = renderTicketLog(res);
+        } catch (e) {
+          box.innerHTML = '<p class="empty-note">Could not read the transcripts.</p>';
         }
       });
     }

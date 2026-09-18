@@ -13,6 +13,7 @@ import { resolveLedger } from "./ledger.js";
 import { listProjects, rememberProject, forgetProject, validateRepo } from "./projects.js";
 import { detectCoverage } from "./coverage.js";
 import { ownershipMap } from "./ownership.js";
+import { ticketLog } from "./sessionlog.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, "..", "public");
@@ -622,6 +623,18 @@ export async function startServer(initialRepoRoot, { port = 4173, remote = "orig
         }
         const result = await attachInTerminal(ctx.repoRoot, sessionId);
         return sendJson(res, result.opened ? 200 : 400, { ...result, sessionId });
+      }
+      const logMatch = url.pathname.match(/^\/api\/tickets\/([^/]+)\/log$/);
+      if (req.method === "GET" && logMatch) {
+        const ticket = (ctx.cache.tickets || []).find((t) => t.id === logMatch[1]);
+        if (!ticket) return sendJson(res, 404, { error: "ticket not found" });
+        // Fetched on demand, never with the board's state: a transcript is megabytes and only
+        // matters when somebody asks what happened on one ticket.
+        try {
+          return sendJson(res, 200, await ticketLog(ticket));
+        } catch (e) {
+          return sendJson(res, 500, { error: e.message });
+        }
       }
       const handoffMatch = url.pathname.match(/^\/api\/tickets\/([^/]+)\/handoff$/);
       if (req.method === "POST" && handoffMatch) {
