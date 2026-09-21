@@ -2602,20 +2602,39 @@
   if (!tabButtons.some(function (b) { return b.dataset.tab === storedTab; })) storedTab = "tasks";
   setActiveTab(storedTab);
 
-  /** The project's own ENGINEERING-STANDARDS-GO.md, read at the same git ref repoStats scans —
-   *  fetched once per page load (it doesn't change as often as tickets/agents do), rendered
-   *  with the same small markdown renderer ticket bodies use. */
-  async function loadStandards() {
+  /** Whichever standards documents this checkout has — including the agent-rules files, which are
+   *  policy applied before code is written rather than after. One tab, a picker when there is more
+   *  than one, and an explanation of what was looked for when there are none. */
+  async function loadStandards(file) {
     standardsLoaded = true;
     try {
-      var res = await fetch("/api/standards");
-      var data = await res.json();
-      standardsContent.innerHTML = data.content
-        ? renderMarkdown(data.content)
-        : '<p class="empty-note">No ENGINEERING-STANDARDS-GO.md found in this repo.</p>';
+      var url = "/api/standards" + (file ? "?file=" + encodeURIComponent(file) : "");
+      var data = await fetch(withProject(url)).then(function (r) { return r.json(); });
+      if (!data.content) {
+        standardsContent.innerHTML =
+          '<p class="empty-note">No standards document in this checkout. Peephole looks for:</p>' +
+          '<ul class="looked-for">' + (data.lookedFor || []).map(function (n) {
+            return "<li><code>" + esc(n) + "</code></li>";
+          }).join("") + "</ul>" +
+          '<p class="empty-note">Add one, or name your own in <code>.peephole/config.yaml</code> as ' +
+          "<code>standardsFiles</code>.</p>";
+        return;
+      }
+      var picker = (data.files || []).length > 1
+        ? '<div class="std-picker">' + data.files.map(function (f) {
+            return '<button type="button" class="std-tab' + (f.name === data.file ? " on" : "") +
+              '" data-file="' + esc(f.name) + '">' + esc(f.name) + "</button>";
+          }).join("") + "</div>"
+        : '<p class="std-single mono">' + esc(data.file) + "</p>";
+      standardsContent.innerHTML = picker +
+        (data.truncated ? '<p class="empty-note">Showing the first 1MB.</p>' : "") +
+        renderMarkdown(data.content);
+      Array.prototype.forEach.call(standardsContent.querySelectorAll(".std-tab"), function (btn) {
+        btn.addEventListener("click", function () { loadStandards(btn.dataset.file); });
+      });
     } catch (e) {
       standardsLoaded = false;
-      standardsContent.innerHTML = '<p class="empty-note">Could not load standards doc.</p>';
+      standardsContent.innerHTML = '<p class="empty-note">Could not load the standards doc.</p>';
     }
   }
 

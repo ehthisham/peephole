@@ -14,6 +14,7 @@ import { listProjects, rememberProject, forgetProject, validateRepo } from "./pr
 import { detectCoverage } from "./coverage.js";
 import { ownershipMap } from "./ownership.js";
 import { ticketLog } from "./sessionlog.js";
+import { readStandard, STANDARD_CANDIDATES } from "./standards.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, "..", "public");
@@ -469,8 +470,11 @@ export async function startServer(initialRepoRoot, { port = 4173, remote = "orig
         return sendJson(res, 200, ctx.publicState());
       }
       if (req.method === "GET" && url.pathname === "/api/standards") {
-        const content = await git.showFile(ctx.repoRoot, ctx.localBranch, "ENGINEERING-STANDARDS-GO.md");
-        return sendJson(res, 200, { content });
+        const configured = ctx.cache.config && ctx.cache.config.standardsFiles;
+        const result = await readStandard(ctx.repoRoot, url.searchParams.get("file"), configured);
+        // When nothing is found, say what was looked for — an empty tab that does not explain
+        // itself reads as broken rather than as "this repo has no standards document".
+        return sendJson(res, 200, { ...result, lookedFor: result.file ? undefined : (configured || STANDARD_CANDIDATES) });
       }
       if (req.method === "GET" && url.pathname === "/api/events") {
         res.writeHead(200, {
