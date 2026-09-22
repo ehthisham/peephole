@@ -318,6 +318,29 @@ export function createQueue({ repoRoot, binPath, port, claimTicket, readTicket, 
     if (!ticket) return { started: false, reason: `ticket "${ticketId}" not found` };
 
     const prompt = chatPromptFor(ticket, { binPath, port });
+
+    // A conversation opens in a TERMINAL, because a conversation needs somebody in it. This used
+    // to start a headless background session: the agent dutifully asked its questions into a void,
+    // the board showed a strip saying a discussion existed, and there was no way to reply without
+    // reading a session id off that strip and typing `claude attach` by hand. Talking to it was
+    // the entire feature.
+    const sessionId = randomUUID();
+    const promptFile = path.join(os.tmpdir(), `peephole-chat-${sessionId}.txt`);
+    await fs.writeFile(promptFile, prompt, "utf8");
+    const opened = await runInTerminal(
+      repoRoot,
+      `claude --session-id ${q(sessionId)} --permission-mode ${q(permissionMode)} "$(cat ${q(promptFile)})"; ` +
+        `rm -f ${q(promptFile)}; exec bash`,
+    );
+
+    if (opened.opened) {
+      trackChat({ ticketId, sessionId, startedAt: new Date().toISOString(), launch: "terminal" });
+      return { started: true, sessionId, launch: "terminal" };
+    }
+
+    // No terminal emulator here — a board over SSH, a headless box. Fall back to the background
+    // session and hand back the command to join it, rather than refusing to discuss anything.
+    await fs.rm(promptFile, { force: true }).catch(() => {});
     let out = "";
     try {
       const code = await new Promise((resolve, reject) => {
@@ -334,15 +357,22 @@ export function createQueue({ repoRoot, binPath, port, claimTicket, readTicket, 
       return { started: false, reason: e.message };
     }
 
-    const sessionId = await resolveSpawnedSession(out, repoRoot);
-    if (!sessionId) return { started: false, reason: "started a session but could not identify it" };
-    const existing = chats.findIndex((c) => c.ticketId === ticketId);
-    const entry = { ticketId, sessionId, startedAt: new Date().toISOString() };
+    const bgId = await resolveSpawnedSession(out, repoRoot);
+    if (!bgId) return { started: false, reason: "started a session but could not identify it" };
+    trackChat({ ticketId, sessionId: bgId, startedAt: new Date().toISOString(), launch: "background" });
+    return {
+      started: true, sessionId: bgId, launch: "background",
+      reason: opened.reason,
+      command: `claude attach ${bgId.slice(0, 8)}`,
+    };
+  }
+
+  function trackChat(entry) {
+    const existing = chats.findIndex((c) => c.ticketId === entry.ticketId);
     if (existing === -1) chats.push(entry);
     else chats[existing] = entry;
     announce();
     watchChats();
-    return { started: true, sessionId };
   }
 
   /** Drops finished conversations from the board. A chat that has exited is no longer joinable, and
@@ -355,7 +385,13 @@ export function createQueue({ repoRoot, binPath, port, claimTicket, readTicket, 
       const live = new Set(sessions.map((s) => s.sessionId));
       const before = chats.length;
       for (let i = chats.length - 1; i >= 0; i--) {
-        if (!live.has(chats[i].sessionId)) chats.splice(i, 1);
+        const chat = chats[i];
+        // A terminal conversation is invisible to `claude agents --json` — same as a dispatched
+        // one — so it is tracked by process instead. Give it a moment to appear first.
+        const gone = chat.launch === "terminal"
+          ? Date.now() - Date.parse(chat.startedAt) > TERMINAL_GRACE_MS && !(await processAlive(chat.sessionId))
+          : !live.has(chat.sessionId);
+        if (gone) chats.splice(i, 1);
       }
       if (chats.length !== before) announce();
       watchChats();

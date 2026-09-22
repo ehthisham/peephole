@@ -922,8 +922,16 @@
         chatBtnEl.disabled = true;
         try {
           var res = await apiPost("/api/tickets/" + encodeURIComponent(chatBtnEl.dataset.chat) + "/chat", {});
-          if (res && res.error) window.alert(res.error);
-          else if (res && res.reason) window.alert("Could not start the conversation: " + res.reason);
+          if (res && res.error) { window.alert(res.error); return; }
+          if (res && !res.started) { window.alert("Could not start the conversation: " + (res.reason || "unknown")); return; }
+          // A terminal opened — the conversation is on screen, so say nothing. Only the headless
+          // fallback needs to hand over a command.
+          if (res.launch === "background" && res.command) {
+            if (navigator.clipboard) { try { await navigator.clipboard.writeText(res.command); } catch (e) {} }
+            window.alert("No terminal could be opened here" + (res.reason ? " (" + res.reason + ")" : "") +
+              ", so the discussion is running in the background.\n\nJoin it with (copied to your clipboard):\n\n  " +
+              res.command);
+          }
         } finally {
           chatBtnEl.disabled = false;
         }
@@ -2267,8 +2275,10 @@
         (running ? "" : " — waiting for a free session") + "</span>");
     }
     (q.chats || []).forEach(function (c) {
-      bits.push('<span class="q-chat">💬 discussing <b>' + esc(c.ticketId) + "</b> — " +
-        '<code>claude attach ' + esc((c.sessionId || "").slice(0, 8)) + "</code></span>");
+      bits.push('<span class="q-chat">💬 discussing <b>' + esc(c.ticketId) + "</b>" +
+        (c.launch === "terminal"
+          ? ' <span class="dim">in a terminal</span>'
+          : ' — <code>claude attach ' + esc((c.sessionId || "").slice(0, 8)) + "</code>") + "</span>");
     });
     if (q.lastError) bits.push('<span class="q-err">' + esc(q.lastError) + "</span>");
     var auto = q.autoContinue !== false;
