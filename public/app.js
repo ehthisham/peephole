@@ -1701,6 +1701,14 @@
         : '<p class="empty-note">No pauses or skips explained yet — the reason box on ⏸/⏭ fills this.</p>') +
       "</section>" +
 
+      // Only on your own page: the data comes from this machine's transcripts and exists for
+      // nobody else. Loaded on demand so opening a colleague's page never touches it.
+      (state.gitUser && state.gitUser.name === name
+        ? '<section class="member-panel wide you-panel"><h3>You, on this machine</h3>' +
+          '<button class="ghost" id="loadMe" type="button">Show my last 7 days</button>' +
+          '<p class="split-key dim">Read from your own Claude transcripts. Local only — never committed, ' +
+          "never shown on anyone else's page, and there is no way to ask this about another member.</p></section>"
+        : "") +
       ownershipPanels(name, state) +
 
       '<section class="member-panel wide"><h3>Would need a new owner</h3>' +
@@ -1709,6 +1717,20 @@
       "</section>" +
       "</div>";
 
+    var loadMe = memberList.querySelector("#loadMe");
+    if (loadMe) {
+      loadMe.addEventListener("click", async function () {
+        loadMe.disabled = true;
+        loadMe.textContent = "Reading your transcripts…";
+        try {
+          var me = await fetch("/api/me?days=7").then(function (r) { return r.json(); });
+          loadMe.parentNode.innerHTML = renderYou(me);
+        } catch (e) {
+          loadMe.textContent = "Could not read them";
+          loadMe.disabled = false;
+        }
+      });
+    }
     var back = document.getElementById("memberBack");
     if (back) back.addEventListener("click", function () { openMember = null; renderMembers((state.stats && state.stats.contributorList) || []); });
     Array.prototype.forEach.call(memberList.querySelectorAll(".tlink"), function (btn) {
@@ -1732,6 +1754,43 @@
       "either was tracked, by a CLI that wrote the literal string \"agent\" — so they count towards " +
       "nobody here. Nothing can recover a name that was never written down; tickets finished from " +
       "now on carry one.</p>";
+  }
+
+  /** Your own week: hours actually worked, what you asked for, what the model did about it. Focused
+   *  time is the sum of gaps shorter than twelve minutes, not first-to-last — a session left open
+   *  overnight is not a fourteen-hour day. */
+  function renderYou(me) {
+    if (me && me.error) return '<h3>You, on this machine</h3><p class="empty-note">' + esc(me.error) + "</p>";
+    var days = (me && me.days) || [];
+    if (!days.length) {
+      return '<h3>You, on this machine</h3><p class="empty-note">No sessions in the last ' +
+        esc(String((me && me.windowDays) || 7)) + " days.</p>";
+    }
+    var max = Math.max.apply(null, days.map(function (d) { return d.focusedMinutes; }).concat([1]));
+    var t = me.totals || {};
+    return (
+      '<h3>You, on this machine</h3>' +
+      '<div class="you-tiles">' +
+      [[fmtDuration(t.focusedMinutes * 60000), "focused time", "sum of working stretches"],
+       [fmtNum(t.prompts), "things you asked", fmtNum(t.sessions) + " sessions"],
+       [fmtNum(t.tools), "tool calls it made", fmtNum(t.replies) + " replies"],
+       [fmtNum(t.steers), "steers (rough)", "short corrective replies"]].map(function (x) {
+        return '<div class="you-tile"><span class="v">' + x[0] + '</span><span class="l">' + esc(x[1]) +
+          '</span><span class="s">' + esc(x[2]) + "</span></div>";
+      }).join("") +
+      "</div>" +
+      '<div class="you-days">' + days.map(function (d) {
+        return '<div class="you-day"><span class="d">' + esc(d.date.slice(5)) + "</span>" +
+          '<span class="bar-track"><span class="bar-fill" style="width:' +
+          ((d.focusedMinutes / max) * 100).toFixed(1) + '%"></span></span>' +
+          '<span class="m mono">' + fmtDuration(d.focusedMinutes * 60000) + "</span>" +
+          '<span class="p dim">' + d.prompts + " asks · " + d.tools + " tools" +
+          (d.steers ? " · " + d.steers + " steers" : "") + "</span></div>";
+      }).join("") + "</div>" +
+      '<p class="split-key dim">Steers are a heuristic — short replies that read like a correction ' +
+      '("no", "revert", "that\'s not…"). Treat it as a nudge, not a number. Local only: read from ' +
+      esc(String(me.scannedFiles)) + " transcripts on this machine and sent nowhere.</p>"
+    );
   }
 
   /** Stages 2 and 3 of the member view: where their knowledge sits, and what it would cost to lose

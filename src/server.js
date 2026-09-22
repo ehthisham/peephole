@@ -15,6 +15,7 @@ import { detectCoverage } from "./coverage.js";
 import { ownershipMap } from "./ownership.js";
 import { ticketLog } from "./sessionlog.js";
 import { readStandard, STANDARD_CANDIDATES } from "./standards.js";
+import { selfStats } from "./selfstats.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, "..", "public");
@@ -468,6 +469,17 @@ export async function startServer(initialRepoRoot, { port = 4173, remote = "orig
       const ctx = await contextFor(url);
       if (req.method === "GET" && url.pathname === "/api/state") {
         return sendJson(res, 200, ctx.publicState());
+      }
+      if (req.method === "GET" && url.pathname === "/api/me") {
+        // Only ever about the person running this board: it reads THIS machine's transcripts, and
+        // there is no parameter to ask about anybody else. Fetched on demand and never folded into
+        // the board's state, which is broadcast to every open tab.
+        const days = Math.min(30, Math.max(1, Number(url.searchParams.get("days")) || 7));
+        try {
+          return sendJson(res, 200, { identity: ctx.gitUser || null, ...(await selfStats({ days })) });
+        } catch (e) {
+          return sendJson(res, 500, { error: e.message });
+        }
       }
       if (req.method === "GET" && url.pathname === "/api/standards") {
         const configured = ctx.cache.config && ctx.cache.config.standardsFiles;
