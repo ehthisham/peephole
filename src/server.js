@@ -806,6 +806,15 @@ export async function startServer(initialRepoRoot, { port = 4173, remote = "orig
         await ctx.refresh({ doFetch: false });
         return sendJson(res, 200, { ...result, state: ctx.publicState() });
       }
+      if (req.method === "POST" && url.pathname === "/api/tickets/advance") {
+        const body = await readJsonBody(req);
+        const ids = Array.isArray(body.ticketIds) ? body.ticketIds.map(String) : [];
+        if (!ids.length) return sendJson(res, 400, { error: "no tickets given" });
+        const who = body.actor || (ctx.gitUser && ctx.gitUser.name) || "peephole-ui";
+        const result = await writer.advanceMany(ctx.repoRoot, ctx.stateBranch, ids, body.state, who);
+        await ctx.refresh({ doFetch: false });
+        return sendJson(res, 200, { ...result, state: ctx.publicState() });
+      }
       const stateMatch = url.pathname.match(/^\/api\/tickets\/([^/]+)\/state$/);
       if (req.method === "POST" && stateMatch) {
         const body = await readJsonBody(req);

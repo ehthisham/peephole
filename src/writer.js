@@ -314,6 +314,73 @@ export async function touchTicketSession(repoRoot, remoteBranch, ticketId, { ses
   return { committed: Boolean(sha), sha, unpushed };
 }
 
+/**
+ * Advances many tickets to the same state in ONE commit.
+ *
+ * The board fills up with tickets that are finished in every sense except the last click —
+ * forty verified at once, on a real board — and advancing them one at a time is forty writes,
+ * forty commits and forty refreshes. This validates each move the same way setState does, writes
+ * every file, and commits once: the batch was one decision, so it is one commit.
+ *
+ * A ticket that cannot make the move is skipped and reported, never forced — a blocked control, a
+ * backward move, an unparsable file. The caller gets both lists back.
+ */
+export async function advanceMany(repoRoot, remoteBranch, ticketIds, state, actor = "peephole-ui") {
+  const { STATES, FORWARD_STATES, parseTicket } = await import("./schema.js");
+  if (!STATES.includes(state)) throw new Error(`invalid state "${state}"`);
+
+  const { worktreePath, localBranch } = await prepWorktree(repoRoot, remoteBranch);
+  const moved = [];
+  const skipped = [];
+  const at = new Date().toISOString();
+  const MACHINE_ACTORS = new Set(["peephole-ui", "peephole-queue", "agent", ""]);
+
+  for (const ticketId of ticketIds) {
+    const file = path.join(worktreePath, ".peephole", "tickets", `${ticketId}.md`);
+    if (!(await fileExists(file))) {
+      skipped.push({ id: ticketId, reason: "not found" });
+      continue;
+    }
+    const parsed = parseTicket(await fs.readFile(file, "utf8"), ticketId);
+    if (!parsed.ok) {
+      skipped.push({ id: ticketId, reason: parsed.errors[0] });
+      continue;
+    }
+    const ticket = parsed.ticket;
+    if (ticket.state === state) {
+      skipped.push({ id: ticketId, reason: `already ${state}` });
+      continue;
+    }
+    if (ticket.control && ticket.control !== "run") {
+      skipped.push({ id: ticketId, reason: ticket.control });
+      continue;
+    }
+    const fromIdx = FORWARD_STATES.indexOf(ticket.state);
+    const toIdx = FORWARD_STATES.indexOf(state);
+    const isForward = fromIdx !== -1 && toIdx !== -1 && toIdx > fromIdx;
+    if (!isForward && state !== "closed") {
+      skipped.push({ id: ticketId, reason: `${ticket.state} does not advance to ${state}` });
+      continue;
+    }
+
+    const from = ticket.state;
+    ticket.state = state;
+    ticket.updatedAt = at;
+    ticket.history = Array.isArray(ticket.history) ? ticket.history : [];
+    ticket.history.push({ at, from, to: state, by: actor });
+    if (["shipped", "closed"].includes(state) && actor && !MACHINE_ACTORS.has(actor)) ticket.finishedBy = actor;
+    await fs.writeFile(file, serializeTicket(ticket), "utf8");
+    moved.push({ id: ticketId, from });
+  }
+
+  let sha = null;
+  if (moved.length) {
+    sha = await git.commitAll(worktreePath, `peephole: advance ${moved.length} ticket(s) to ${state}`);
+  }
+  const unpushed = await git.unpushedCount(worktreePath, localBranch, remoteBranch);
+  return { moved, skipped, sha, committed: Boolean(sha), unpushed };
+}
+
 /** Moves a ticket's `state` — forward (proposed→...→shipped) or to `closed`, per the ledger rule
  * (state only ever advances or closes, never drags backward, never deletes). Always its own commit:
  * unlike `control` clicks this is a meaningful milestone, never rapid-fire. */

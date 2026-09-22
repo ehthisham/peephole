@@ -31,7 +31,11 @@
   // badge on its card instead — same label, same palette entry, no column of its own.
   var LANES = [
     { key: "proposed", label: "Proposed", states: ["proposed"] },
-    { key: "in-progress", label: "In progress", states: ["in-progress", "built", "verified"] },
+    {
+      key: "in-progress", label: "In progress", states: ["in-progress", "built", "verified"],
+      // Verified work is done and waiting on somebody to say so; that is the move worth batching.
+      bulk: { from: "verified", to: "shipped", label: "Ship" },
+    },
     { key: "shipped", label: "Shipped", states: ["shipped", "closed"] },
   ];
   // The states that show as a badge because they are not their lane's headline state.
@@ -1380,8 +1384,19 @@
       var inLane = sortByModified(visible.filter(function (t) { return s.states.indexOf(t.state) !== -1; }), dir);
       var lane = document.createElement("section");
       lane.className = "lane";
+      // A lane fills with tickets finished in every sense except the last click — forty verified at
+      // once here. The header offers the move for whichever state is one step from the lane's end,
+      // so clearing them is one action rather than forty.
+      var ready = inLane.filter(function (t) {
+        return s.bulk && t.state === s.bulk.from && (!t.control || t.control === "run");
+      });
+      var bulkBtn = ready.length
+        ? '<button class="bulk-btn" data-bulk="' + esc(s.bulk.to) + '" data-count="' + ready.length +
+          '" title="Move ' + ready.length + " ticket" + (ready.length === 1 ? "" : "s") + " from " +
+          esc(s.bulk.from) + " to " + esc(s.bulk.to) + '" type="button">' + esc(s.bulk.label) + " " + ready.length + "</button>"
+        : "";
       lane.innerHTML =
-        "<header><h2>" + s.label + '</h2><span class="count mono">' + inLane.length + '</span>' +
+        "<header><h2>" + s.label + '</h2><span class="count mono">' + inLane.length + "</span>" + bulkBtn +
         '<button class="sort-btn" data-lane-sort type="button" title="Sort: ' +
         (dir === "desc" ? "latest modified first" : "oldest modified first") + '" aria-pressed="' + (dir === "asc") + '">' +
         (dir === "desc" ? "↓" : "↑") + "</button></header>" +
@@ -1413,6 +1428,24 @@
         });
       } else {
         inLane.forEach(function (t) { body.appendChild(cardEl(t)); });
+      }
+      var bulkEl = lane.querySelector("[data-bulk]");
+      if (bulkEl) {
+        bulkEl.addEventListener("click", async function () {
+          var ids = ready.map(function (t) { return t.id; });
+          if (!window.confirm("Move " + ids.length + " ticket" + (ids.length === 1 ? "" : "s") + " from " +
+            s.bulk.from + " to " + s.bulk.to + "?\n\nThis is one commit on the ledger, and state only moves forward.")) return;
+          bulkEl.disabled = true;
+          bulkEl.textContent = "Moving…";
+          var res = await apiPost("/api/tickets/advance", { ticketIds: ids, state: s.bulk.to });
+          if (res && res.error) { window.alert(res.error); return; }
+          // Anything the server refused is named rather than silently left behind.
+          if (res && res.skipped && res.skipped.length) {
+            window.alert("Moved " + res.moved.length + ", skipped " + res.skipped.length + ":\n\n" +
+              res.skipped.slice(0, 8).map(function (x) { return "  " + x.id + " — " + x.reason; }).join("\n"));
+          }
+          if (res && res.state) render(res.state);
+        });
       }
       lane.querySelector("[data-lane-sort]").addEventListener("click", function () {
         var next = getLaneSortDir() === "desc" ? "asc" : "desc";

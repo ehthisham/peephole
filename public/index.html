@@ -256,6 +256,10 @@
   .lane header{display:flex; align-items:baseline; gap:6px; padding:2px 4px;}
   .lane header h2{margin:0; font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:0.06em; color:var(--ink-dim); flex:1;}
   .lane header .count{font-size:11px; color:var(--ink-dim);}
+  .bulk-btn{background:var(--shipped-bg); border:1px solid var(--shipped); color:var(--shipped); border-radius:6px;
+    padding:2px 8px; font:inherit; font-size:11px; font-weight:700; cursor:pointer; margin-left:4px;}
+  .bulk-btn:hover{background:var(--shipped); color:var(--accent-ink);}
+  .bulk-btn:disabled{opacity:0.6; cursor:default;}
   .sort-btn{background:none; border:none; padding:1px 3px; font-size:12px; line-height:1; color:var(--ink-dim); border-radius:4px;}
   .sort-btn:hover{color:var(--accent); background:var(--accent-wash);}
   .lane-body{display:flex; flex-direction:column; gap:8px; min-height:36px;}
