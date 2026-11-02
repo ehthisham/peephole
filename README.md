@@ -4,6 +4,33 @@ Local-first live status interface into multi-agent AI work. Reads `.peephole/**`
 git repo (no server, no auth, no bot credential) and writes control changes back through your own
 git identity. See the [project plan](../peephole-plan) for the full design.
 
+## Install as a Claude Code plugin
+
+This repo is also a Claude Code plugin: it ships the ticket-lifecycle **hooks** (session presence +
+cooperative stop/claim), a **skill** that carries the task-tracking workflow into any repo, and the
+`/peephole-board` and `/peephole-ticket` **slash commands**. The CLI is bundled, so no global
+install is needed — hooks and commands invoke it via `${CLAUDE_PLUGIN_ROOT}/bin/peephole.js`.
+
+Add the marketplace, then install (Claude Code 2.1.275+):
+
+```
+# GitHub-hosted marketplace (shorthand):
+/plugin marketplace add <owner>/<repo>
+/plugin install peephole --marketplace <owner>/<repo>
+
+# Any git host (Bitbucket included) or a local clone — add by URL or path:
+/plugin marketplace add git@bitbucket.org:ehthishamtk/peephole.git
+# or, from a local checkout:
+/plugin marketplace add ~/workx/peephole
+/plugin install peephole --marketplace peephole
+```
+
+To try it without installing, start a session with the plugin loaded directly:
+
+```
+claude --plugin-dir ~/workx/peephole
+```
+
 ## Adding Peephole to a repo
 
 Peephole is a separate checkout that serves any number of repos — nothing is installed into the

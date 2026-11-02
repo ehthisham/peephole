@@ -1,0 +1,37 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "PEEPHOLE_PORT=${PEEPHOLE_PORT:-4173} node \"${CLAUDE_PLUGIN_ROOT}/hooks/session-start.js\""
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "PEEPHOLE_PORT=${PEEPHOLE_PORT:-4173} node \"${CLAUDE_PLUGIN_ROOT}/hooks/pre-tool-use.js\""
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "PEEPHOLE_PORT=${PEEPHOLE_PORT:-4173} node \"${CLAUDE_PLUGIN_ROOT}/hooks/session-end.js\""
+          }
+        ]
+      }
+    ]
+  }
+}
