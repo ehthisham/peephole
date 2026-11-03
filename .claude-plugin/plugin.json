@@ -4,6 +4,8 @@
   "description": "Local-first task tracking for multi-agent AI work, read straight from a git repo — ticket lifecycle CLI, a live board, and cooperative stop/claim control, wired into Claude Code as hooks + a skill.",
   "author": { "name": "ehthisham" },
   "license": "MIT",
+  "icon": "./.claude-plugin/icon.png",
+  "homepage": "https://bitbucket.org/ehthishamtk/peephole",
   "keywords": ["task-tracking", "tickets", "multi-agent", "dashboard", "git"],
   "commands": "./commands",
   "skills": "./skills",

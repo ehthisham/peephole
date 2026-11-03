@@ -2,7 +2,7 @@
 
 Local-first live status interface into multi-agent AI work. Reads `.peephole/**` straight out of a
 git repo (no server, no auth, no bot credential) and writes control changes back through your own
-git identity. See the [project plan](../peephole-plan) for the full design.
+git identity.
 
 ## Install as a Claude Code plugin
 
@@ -375,3 +375,13 @@ deferred.
 ## Not yet built
 
 - Bitbucket branch/PR/CI/deploy enrichment (Phase 5).
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) — dev setup, the project layout, how to verify a change
+(`claude plugin validate .` and a live `--plugin-dir` load), and commit conventions. Peephole
+tracks its own work on its board, so start by claiming a ticket.
+
+## License
+
+[MIT](LICENSE) © ehthisham

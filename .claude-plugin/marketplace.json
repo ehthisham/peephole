@@ -1,5 +1,6 @@
 {
   "name": "peephole",
+  "description": "Local-first task tracking for multi-agent AI work — a ticket-lifecycle CLI, a live board, and cooperative stop/claim control, read straight from a git repo and wired into Claude Code as hooks, a skill, and slash commands.",
   "owner": { "name": "ehthisham" },
   "plugins": [
     {
