@@ -5,7 +5,7 @@
   "plugins": [
     {
       "name": "peephole",
-      "source": "./",
+      "source": { "source": "github", "repo": "ehthisham/peephole" },
       "description": "Local-first task tracking for multi-agent AI work, read straight from a git repo — ticket lifecycle CLI, a live board, and cooperative stop/claim control, wired into Claude Code as hooks + a skill.",
       "license": "MIT",
       "keywords": ["task-tracking", "tickets", "multi-agent", "dashboard", "git"]
