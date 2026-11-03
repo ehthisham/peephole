@@ -5,7 +5,7 @@
   "author": { "name": "ehthisham" },
   "license": "MIT",
   "icon": "./.claude-plugin/icon.png",
-  "homepage": "https://bitbucket.org/ehthishamtk/peephole",
+  "homepage": "https://github.com/ehthisham/peephole",
   "keywords": ["task-tracking", "tickets", "multi-agent", "dashboard", "git"],
   "commands": "./commands",
   "skills": "./skills",
