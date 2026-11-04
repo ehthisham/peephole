@@ -19,7 +19,7 @@ session. Keep both working when you change either.
 ## Project layout
 
 ```
-bin/peephole.js          CLI entry (serve, ticket, control, ledger, agent …)
+cli/peephole.js          CLI entry (serve, ticket, control, ledger, agent …)
 src/                     board server + domain modules
   server.js              HTTP API + static board
   ledger.js  scan.js     the sparse ledger clone and ticket reader
@@ -39,7 +39,7 @@ Requires **Node 18+** and `git`.
 
 ```bash
 npm install
-node bin/peephole.js serve --repo . --port 4173   # board at http://localhost:4173
+node cli/peephole.js serve --repo . --port 4173   # board at http://localhost:4173
 # optional: put `peephole` on your PATH for the committed blocks to run as-is
 npm link        # or: npm i -g .
 ```

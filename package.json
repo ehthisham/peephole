@@ -4,7 +4,7 @@
   "description": "Local-first live status interface into multi-agent AI work, read straight from a git repo.",
   "type": "module",
   "bin": {
-    "peephole": "./bin/peephole.js"
+    "peephole": "./cli/peephole.js"
   },
   "engines": {
     "node": ">=18"

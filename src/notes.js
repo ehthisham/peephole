@@ -54,7 +54,7 @@ export function markedSectionVersion(text) {
 export function agentNoteBody({ port }) {
   // Portable across machines: the committed CLAUDE.md must not bake in one developer's home /
   // checkout path, so emit the bare `peephole` command (assumed on PATH) + `--repo .` (relative to
-  // the repo root), not `node /abs/bin/peephole.js --repo /abs/repo`.
+  // the repo root), not `node /abs/cli/peephole.js --repo /abs/repo`.
   const cli = `peephole`;
   return `## Working with Peephole (task tracking)
 

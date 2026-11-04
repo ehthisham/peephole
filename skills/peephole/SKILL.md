@@ -12,7 +12,7 @@ for the commands to work; they talk to it over `--port`.
 The CLI ships with this plugin. Invoke it as:
 
 ```
-node "${CLAUDE_PLUGIN_ROOT}/bin/peephole.js" <args>
+node "${CLAUDE_PLUGIN_ROOT}/cli/peephole.js" <args>
 ```
 
 If a `peephole` binary is already on PATH (installed via `npm i -g .` in the peephole repo), use
@@ -22,7 +22,7 @@ and `.peephole/` resolve to that checkout.
 ## Start the board (once, if not already up)
 
 ```
-node "${CLAUDE_PLUGIN_ROOT}/bin/peephole.js" serve --repo . --port 4173
+node "${CLAUDE_PLUGIN_ROOT}/cli/peephole.js" serve --repo . --port 4173
 ```
 
 Start it in the background. If it is already running, reuse it — don't start a second copy on the
@@ -34,14 +34,14 @@ same port.
    create it (don't hand-write YAML — the CLI keeps the schema valid). Add `--risk irreversible`
    for a hard-to-undo change. Prints the ticket id.
    ```
-   node "${CLAUDE_PLUGIN_ROOT}/bin/peephole.js" ticket new \
+   node "${CLAUDE_PLUGIN_ROOT}/cli/peephole.js" ticket new \
      --project "<this project>" --intent "<one sentence, the why>" \
      --transcript <your transcript_path> --port 4173
    ```
 2. **Claim it** before coding — sets state to in-progress, records you as owner. A ticket reserved
    for someone else (its `assignee`) refuses your claim; pick another rather than working it.
    ```
-   node "${CLAUDE_PLUGIN_ROOT}/bin/peephole.js" ticket claim <id> \
+   node "${CLAUDE_PLUGIN_ROOT}/cli/peephole.js" ticket claim <id> \
      --owner <your session id> --transcript <your transcript_path> --port 4173
    ```
 
@@ -56,20 +56,20 @@ provenance-free.
    `pause`/`skip`/`restart` — stop and say why. (This plugin's PreToolUse hook already checks this
    automatically before every tool call; the manual command is the fallback.)
    ```
-   node "${CLAUDE_PLUGIN_ROOT}/bin/peephole.js" control check <id> --port 4173
+   node "${CLAUDE_PLUGIN_ROOT}/cli/peephole.js" control check <id> --port 4173
    ```
 4. **Advance state** at real milestones — never hand-edit it. Only move forward
    (proposed → in-progress → built → verified → shipped) or to `closed`; never backward, never
    delete a ticket file. Code merged → `built`; tests/verification done → `verified`; live →
    `shipped`.
    ```
-   node "${CLAUDE_PLUGIN_ROOT}/bin/peephole.js" ticket advance <id> \
+   node "${CLAUDE_PLUGIN_ROOT}/cli/peephole.js" ticket advance <id> \
      --state <in-progress|built|verified|shipped|closed> \
      --transcript <your transcript_path> --port 4173
    ```
 5. **Comment** findings/decisions on the ticket rather than narrating them only in chat:
    ```
-   node "${CLAUDE_PLUGIN_ROOT}/bin/peephole.js" ticket comment <id> --text "<comment>" --port 4173
+   node "${CLAUDE_PLUGIN_ROOT}/cli/peephole.js" ticket comment <id> --text "<comment>" --port 4173
    ```
 
 ## Ticket body shape

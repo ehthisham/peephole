@@ -9,7 +9,7 @@ git identity.
 This repo is also a Claude Code plugin: it ships the ticket-lifecycle **hooks** (session presence +
 cooperative stop/claim), a **skill** that carries the task-tracking workflow into any repo, and the
 `/peephole-board` and `/peephole-ticket` **slash commands**. The CLI is bundled, so no global
-install is needed — hooks and commands invoke it via `${CLAUDE_PLUGIN_ROOT}/bin/peephole.js`.
+install is needed — hooks and commands invoke it via `${CLAUDE_PLUGIN_ROOT}/cli/peephole.js`.
 
 Add the marketplace, then install (Claude Code 2.1.275+):
 
@@ -53,14 +53,14 @@ peephole --help
 ```
 
 Then run every command **from the tracked repo's root**, so `--repo .` and `.peephole/` resolve to
-that checkout. (Without a PATH install you can still invoke it as `node <peephole>/bin/peephole.js …`
+that checkout. (Without a PATH install you can still invoke it as `node <peephole>/cli/peephole.js …`
 — but then you're typing the absolute path the committed blocks deliberately avoid.)
 
 ### A repo that has never used it
 
 ```
 cd ~/workx/peephole
-node bin/peephole.js serve --repo /path/to/your-repo --port 4173
+node cli/peephole.js serve --repo /path/to/your-repo --port 4173
 ```
 
 The board opens on a self-check listing what is missing. **Fix it** creates all of it in one local
@@ -87,7 +87,7 @@ your own copy of Peephole and point it at the repo:
 
 ```
 git clone <peephole repo> ~/workx/peephole && cd ~/workx/peephole && npm install
-node bin/peephole.js serve --repo /path/to/the-repo --port 4173
+node cli/peephole.js serve --repo /path/to/the-repo --port 4173
 ```
 
 Every ticket is already there — it is committed repo content. The self-check will still report a
@@ -176,7 +176,7 @@ wiring, written by Fix it) and `.peephole-worktree/` when the worktree fallback 
 ## Moving an existing ledger to its own branch
 
 ```
-node bin/peephole.js ledger move --repo /path/to/repo --to peephole-state [--push]
+node cli/peephole.js ledger move --repo /path/to/repo --to peephole-state [--push]
 ```
 
 The target branch is created FROM the current ledger branch, so tickets travel as commits with
@@ -188,7 +188,7 @@ home, so teammates follow automatically once it is pushed.
 ## Run it (already set up)
 
 ```
-node bin/peephole.js serve --repo /path/to/your/repo --port 4173
+node cli/peephole.js serve --repo /path/to/your/repo --port 4173
 ```
 
 Then open http://localhost:4173.

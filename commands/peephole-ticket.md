@@ -13,13 +13,13 @@ Steps:
 2. Create the ticket with a one-sentence intent (the *why*), from the repo root. Add
    `--risk irreversible` if the change is hard to undo. Pass `--transcript <your transcript_path>`:
    ```
-   node "${CLAUDE_PLUGIN_ROOT}/bin/peephole.js" ticket new \
+   node "${CLAUDE_PLUGIN_ROOT}/cli/peephole.js" ticket new \
      --project "<this project>" --intent "$ARGUMENTS" \
      --transcript <your transcript_path> --port 4173
    ```
 3. Claim the printed id with your session id and transcript:
    ```
-   node "${CLAUDE_PLUGIN_ROOT}/bin/peephole.js" ticket claim <id> \
+   node "${CLAUDE_PLUGIN_ROOT}/cli/peephole.js" ticket claim <id> \
      --owner <your session id> --transcript <your transcript_path> --port 4173
    ```
 4. Report the ticket id and that it is claimed (in-progress). If the claim is refused (ticket
