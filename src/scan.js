@@ -1,8 +1,15 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import * as git from "./git.js";
 import { parseConfig, parseTicket } from "./schema.js";
 import { markedSectionVersion, NOTE_VERSION } from "./notes.js";
+
+// True when this code runs from an installed Claude Code plugin (cache/synced/marketplaces), where
+// the shipped hooks/hooks.json already registers peephole's SessionStart/PreToolUse/SessionEnd hooks
+// via ${CLAUDE_PLUGIN_ROOT}. In that mode the per-repo settings.local.json wiring is redundant and,
+// if also written, double-fires every hook — so plugin mode counts as "hooks wired".
+const RUNNING_AS_PLUGIN = /[/\\]plugins[/\\](cache|synced|marketplaces)[/\\]/.test(fileURLToPath(import.meta.url));
 
 /** Hook wiring is per-machine config (.claude/settings.local.json), read from the REAL repo
  * root directly — never through the git ref abstraction the rest of this file uses, since it
@@ -153,7 +160,9 @@ export async function scan(ledgerRoot, ref, { repoRoot = ledgerRoot } = {}) {
 
   // Reported as a value, not only as an issue: "are the hooks installed" and "has a session checked
   // in recently" are different questions, and the board was answering the first with the second.
-  const hooksInstalled = await hasHookSetup(repoRoot);
+  // Plugin installs get their hooks from the plugin manifest (hooks/hooks.json), so they are already
+  // enforced regardless of settings.local.json; only the non-plugin install needs the local wiring.
+  const hooksInstalled = RUNNING_AS_PLUGIN || await hasHookSetup(repoRoot);
   if (!hooksInstalled) {
     issues.push({ kind: "missing-hook-setup", message: "No Peephole hook wired into .claude/settings.local.json — pause/skip won't be enforced on agent sessions" });
   }
