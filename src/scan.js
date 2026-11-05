@@ -106,17 +106,25 @@ export async function scan(ledgerRoot, ref, { repoRoot = ledgerRoot } = {}) {
   // code branch and the scaffold writes them there; reading them at the ledger ref reported them
   // permanently missing once the ledger moved to its own branch (a sparse ledger clone contains
   // neither file), an issue no amount of clicking Fix it could clear.
-  for (const [file, kind, missing, stale] of [
+  // CLAUDE.md is NOT required. The plugin ships a Peephole skill (skills/peephole/SKILL.md) that
+  // travels with every install and already tells agents to create/claim a ticket before coding, so a
+  // per-repo CLAUDE.md section only duplicates it (flagMissing: false). We still flag a CLAUDE.md
+  // section that EXISTS but is out of date, so stale/contradictory instructions get refreshed. README
+  // stays required: it is for humans browsing the repo to find the live board, which the skill does
+  // not cover (flagMissing: true).
+  for (const [file, kind, missing, stale, flagMissing] of [
     ["CLAUDE.md", "agent-note",
       "CLAUDE.md has no Peephole section — agents won't know to create/update tickets",
-      "CLAUDE.md's Peephole section is out of date — agents are reading older instructions"],
+      "CLAUDE.md's Peephole section is out of date — agents are reading older instructions",
+      false],
     ["README.md", "readme-note",
       "README.md has no Peephole section — nobody browsing the repo can find the live board",
-      "README.md's Peephole section is out of date"],
+      "README.md's Peephole section is out of date",
+      true],
   ]) {
     const text = await readWorkingFile(repoRoot, file);
     const version = markedSectionVersion(text);
-    if (version === null) issues.push({ kind: `missing-${kind}`, message: missing });
+    if (version === null) { if (flagMissing) issues.push({ kind: `missing-${kind}`, message: missing }); }
     else if (version < NOTE_VERSION) issues.push({ kind: `stale-${kind}`, message: stale });
   }
 
