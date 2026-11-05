@@ -1003,6 +1003,16 @@
     return seen.filter(function (e, i) { return seen.indexOf(e) === i; }).sort();
   }
 
+  /** Every tag any ticket currently carries — derived like the epic list, never declared, so a tag
+   *  is a filter option exactly as long as something is filed under it. */
+  function knownTags() {
+    var seen = [];
+    (latestTickets || []).forEach(function (t) {
+      (Array.isArray(t.tags) ? t.tags : []).forEach(function (tg) { if (tg) seen.push(tg); });
+    });
+    return seen.filter(function (tg, i) { return seen.indexOf(tg) === i; }).sort();
+  }
+
   /** Assignment is a claim-time gate, not a label (writer.claimTicket refuses a mismatched
    *  claimant), so it is edited here in the detail view rather than on the card — reserving work
    *  for a person is a deliberate act, unlike the one-click state moves. */
@@ -1364,6 +1374,45 @@
     return false;
   }
 
+  // Tag filter — selected tag names, persisted like the member filter. Empty = no filter, and a
+  // card matches when it carries ANY selected tag (OR, same as members): narrowing to "docs" OR
+  // "infra" shows the union, which is what picking two chips reads as.
+  var TAG_FILTER_KEY = "peephole.tagFilter";
+  function getTagFilter() {
+    try {
+      var raw = JSON.parse(localStorage.getItem(TAG_FILTER_KEY) || "[]");
+      return Array.isArray(raw) ? raw : [];
+    } catch (e) { return []; }
+  }
+  function setTagFilter(list) {
+    try { localStorage.setItem(TAG_FILTER_KEY, JSON.stringify(list)); } catch (e) {}
+  }
+  function matchesTags(t, selected) {
+    if (!selected.length) return true;
+    var tags = Array.isArray(t.tags) ? t.tags : [];
+    return tags.some(function (tg) { return selected.indexOf(tg) !== -1; });
+  }
+
+  // Epic filter — selected epic names. NO_EPIC's NUL prefix can't ride in a checkbox value (the
+  // HTML parser rewrites a literal NUL to U+FFFD, so it never reads back equal — the same trap
+  // UNASSIGNED exists to dodge), so "No epic" is this plain sentinel instead.
+  var EPIC_FILTER_KEY = "peephole.epicFilter";
+  var NO_EPIC_FILTER = "__peephole:noepic__";
+  function getEpicFilter() {
+    try {
+      var raw = JSON.parse(localStorage.getItem(EPIC_FILTER_KEY) || "[]");
+      return Array.isArray(raw) ? raw : [];
+    } catch (e) { return []; }
+  }
+  function setEpicFilter(list) {
+    try { localStorage.setItem(EPIC_FILTER_KEY, JSON.stringify(list)); } catch (e) {}
+  }
+  function matchesEpics(t, selected) {
+    if (!selected.length) return true;
+    if (t.epic) return selected.indexOf(t.epic) !== -1;
+    return selected.indexOf(NO_EPIC_FILTER) !== -1;
+  }
+
   // Mirrored from the server's queue so a card can show "queued"/"running" without asking.
   var queuedIds = [];
   var runningId = null;
@@ -1376,8 +1425,11 @@
     var grouped = getGroupByEpic();
     var selected = getMemberFilter();
     var selMode = getSelectionFilter();
+    var tagSel = getTagFilter();
+    var epicSel = getEpicFilter();
     var visible = forThisProject(tickets).filter(function (t) {
-      return matchesMembers(t, selected) && matchesSelection(t, selMode);
+      return matchesMembers(t, selected) && matchesSelection(t, selMode) &&
+        matchesTags(t, tagSel) && matchesEpics(t, epicSel);
     });
     board.innerHTML = "";
     LANES.forEach(function (s) {
@@ -2419,6 +2471,15 @@
     });
     opts.push({ value: UNASSIGNED, label: "Unassigned" });
     var selMode = getSelectionFilter();
+    var epicSel = getEpicFilter();
+    var tagSel = getTagFilter();
+    // "No epic" is only worth offering once a real epic exists — on a board where nothing is filed,
+    // every card is "no epic" and the choice narrows nothing.
+    var realEpics = knownEpics();
+    var epicOpts = realEpics.length
+      ? realEpics.map(function (e) { return { value: e, label: e }; }).concat([{ value: NO_EPIC_FILTER, label: "No epic" }])
+      : [];
+    var tagOpts = knownTags();
     filterMenu.innerHTML =
       '<div class="filter-head">Selected for execution</div>' +
       [["all", "Show all"], ["selected", "Selected only"], ["unselected", "Not selected only"]].map(function (o) {
@@ -2427,10 +2488,24 @@
       }).join("") +
       '<div class="filter-head">Member</div>' +
       opts.map(function (o) {
-        return '<label><input type="checkbox" value="' + esc(o.value) + '"' +
+        return '<label><input type="checkbox" data-filter="member" value="' + esc(o.value) + '"' +
           (selected.indexOf(o.value) !== -1 ? " checked" : "") + "> " + esc(o.label) + "</label>";
       }).join("") +
-      (selected.length || selMode !== "all"
+      (epicOpts.length
+        ? '<div class="filter-head">Epic</div>' +
+          epicOpts.map(function (o) {
+            return '<label><input type="checkbox" data-filter="epic" value="' + esc(o.value) + '"' +
+              (epicSel.indexOf(o.value) !== -1 ? " checked" : "") + "> " + esc(o.label) + "</label>";
+          }).join("")
+        : "") +
+      (tagOpts.length
+        ? '<div class="filter-head">Tag</div>' +
+          tagOpts.map(function (tg) {
+            return '<label><input type="checkbox" data-filter="tag" value="' + esc(tg) + '"' +
+              (tagSel.indexOf(tg) !== -1 ? " checked" : "") + "> " + esc(tg) + "</label>";
+          }).join("")
+        : "") +
+      (selected.length || selMode !== "all" || epicSel.length || tagSel.length
         ? '<div class="filter-foot"><button class="clear-filter" type="button">Clear filter</button></div>'
         : "");
 
@@ -2443,24 +2518,34 @@
       });
     });
 
-    Array.prototype.forEach.call(filterMenu.querySelectorAll('input[type="checkbox"]'), function (box) {
-      box.addEventListener("change", function () {
-        var next = getMemberFilter().filter(function (v) { return v !== box.value; });
-        if (box.checked) next.push(box.value);
-        setMemberFilter(next);
-        renderFilterState();
-        renderBoard(latestTickets);
-        renderFilterMenu();
+    function applyFilterChange() {
+      renderFilterState();
+      renderBoard(latestTickets);
+      renderFilterMenu();
+    }
+    // Each group edits its own stored list; the data-filter attribute keeps the member, epic and tag
+    // checkboxes from being read into one another's state (they were all plain input[type=checkbox]).
+    function bindFilterBoxes(selector, get, set) {
+      Array.prototype.forEach.call(filterMenu.querySelectorAll(selector), function (box) {
+        box.addEventListener("change", function () {
+          var next = get().filter(function (v) { return v !== box.value; });
+          if (box.checked) next.push(box.value);
+          set(next);
+          applyFilterChange();
+        });
       });
-    });
+    }
+    bindFilterBoxes('input[data-filter="member"]', getMemberFilter, setMemberFilter);
+    bindFilterBoxes('input[data-filter="epic"]', getEpicFilter, setEpicFilter);
+    bindFilterBoxes('input[data-filter="tag"]', getTagFilter, setTagFilter);
     var clear = filterMenu.querySelector(".clear-filter");
     if (clear) {
       clear.addEventListener("click", function () {
         setMemberFilter([]);
+        setTagFilter([]);
+        setEpicFilter([]);
         try { localStorage.setItem(SELECTION_FILTER_KEY, "all"); } catch (e) {}
-        renderFilterState();
-        renderBoard(latestTickets);
-        renderFilterMenu();
+        applyFilterChange();
       });
     }
   }
@@ -2468,7 +2553,8 @@
   /** How many people are selected, on the button itself — an active filter that only shows up
    *  inside a closed menu is how a board ends up silently missing half its tickets. */
   function renderFilterState() {
-    var n = getMemberFilter().length + (getSelectionFilter() === "all" ? 0 : 1);
+    var n = getMemberFilter().length + getTagFilter().length + getEpicFilter().length +
+      (getSelectionFilter() === "all" ? 0 : 1);
     filterCount.hidden = n === 0;
     filterCount.textContent = String(n);
     filterBtn.setAttribute("aria-pressed", String(n > 0));
