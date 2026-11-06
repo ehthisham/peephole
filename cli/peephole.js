@@ -93,6 +93,7 @@ async function cmdTicketNew(argv) {
     acceptance: args.acceptance || "",
     risk: args.risk || "reversible",
     priority: args.priority && args.priority !== true ? String(args.priority) : null,
+    type: args.type && args.type !== true ? String(args.type) : null,
     owner: args.owner || null,
     assignee: args.assignee && args.assignee !== true ? String(args.assignee) : null,
     epic: args.epic && args.epic !== true ? String(args.epic) : null,
@@ -224,6 +225,18 @@ async function cmdTicketTitle(argv) {
   console.log(`"${id}" title -> ${result.ticket.title || "(none — falls back to intent)"}`);
 }
 
+async function cmdTicketType(argv) {
+  const id = argv[0];
+  const args = parseArgs(argv.slice(1));
+  const port = requirePort(args);
+  if (!id || !args.to) {
+    console.error("usage: peephole ticket type <id> --to <feature|bug|chore> [--port 4173]");
+    process.exit(1);
+  }
+  const result = await apiCall(port, "POST", `/api/tickets/${encodeURIComponent(id)}/type`, { type: String(args.to), actor: args.actor });
+  console.log(`"${id}" type -> ${result.ticket.type}`);
+}
+
 async function cmdTicketPriority(argv) {
   const id = argv[0];
   const args = parseArgs(argv.slice(1));
@@ -313,6 +326,7 @@ async function main() {
   if (cmd === "ticket" && argv[1] === "epic") return cmdTicketEpic(argv.slice(2));
   if (cmd === "ticket" && argv[1] === "risk") return cmdTicketRisk(argv.slice(2));
   if (cmd === "ticket" && argv[1] === "priority") return cmdTicketPriority(argv.slice(2));
+  if (cmd === "ticket" && argv[1] === "type") return cmdTicketType(argv.slice(2));
   if (cmd === "ticket" && argv[1] === "title") return cmdTicketTitle(argv.slice(2));
   if (cmd === "ticket" && argv[1] === "comment") return cmdTicketComment(argv.slice(2));
   if (cmd === "ledger" && argv[1] === "move") return cmdLedgerMove(argv.slice(2));
@@ -331,6 +345,7 @@ async function main() {
     '  peephole ticket epic <id> --to "<epic>" | --clear      # file it under an epic\n' +
     "  peephole ticket risk <id> --to <reversible|irreversible>\n" +
     "  peephole ticket priority <id> --to <low|normal|high|urgent>\n" +
+    "  peephole ticket type <id> --to <feature|bug|chore>\n" +
     '  peephole ticket title <id> --to "<title>" | --clear  # short headline, falls back to intent\n' +
     '  peephole ticket comment <id> --text "<comment>"\n' +
     '  peephole ledger move --repo <path> [--to peephole-state] [--push]  # carry the ledger to its own branch\n' +

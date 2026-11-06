@@ -429,15 +429,19 @@ export async function setState(repoRoot, remoteBranch, ticketId, state, actor = 
 }
 
 /** Creates a new ticket file with a schema-correct frontmatter — the deterministic alternative to an agent hand-writing YAML. Always its own commit. */
-export async function createTicket(repoRoot, remoteBranch, { id, project, title = "", intent, acceptance = "", body = "", risk = "reversible", priority, owner = null, assignee = null, epic = null, tags = [], createdBy = null, state: stateOverride, actor, session = null }) {
+export async function createTicket(repoRoot, remoteBranch, { id, project, title = "", intent, acceptance = "", body = "", risk = "reversible", priority, type, owner = null, assignee = null, epic = null, tags = [], createdBy = null, state: stateOverride, actor, session = null }) {
   if (!project || !intent) throw new Error("project and intent are required");
-  const { STATES, PRIORITIES, DEFAULT_PRIORITY } = await import("./schema.js");
+  const { STATES, PRIORITIES, DEFAULT_PRIORITY, TYPES, DEFAULT_TYPE } = await import("./schema.js");
   if (stateOverride && !STATES.includes(stateOverride)) {
     throw new Error(`invalid state "${stateOverride}" (expected one of ${STATES.join(", ")})`);
   }
   const prio = priority == null || priority === "" ? DEFAULT_PRIORITY : priority;
   if (!PRIORITIES.includes(prio)) {
     throw new Error(`invalid priority "${priority}" (expected one of ${PRIORITIES.join(", ")})`);
+  }
+  const kind = type == null || type === "" ? DEFAULT_TYPE : type;
+  if (!TYPES.includes(kind)) {
+    throw new Error(`invalid type "${type}" (expected one of ${TYPES.join(", ")})`);
   }
   const { worktreePath, localBranch } = await prepWorktree(repoRoot, remoteBranch);
   const dir = path.join(worktreePath, ".peephole", "tickets");
@@ -449,7 +453,7 @@ export async function createTicket(repoRoot, remoteBranch, { id, project, title 
   const state = stateOverride || (owner ? "in-progress" : "proposed");
   const who = actor || createdBy || "agent";
   const ticket = {
-    id, project, title: title || "", intent, acceptance, body, state, risk, priority: prio, blockedOn: "", control: "run", owner,
+    id, project, title: title || "", intent, acceptance, body, state, risk, priority: prio, type: kind, blockedOn: "", control: "run", owner,
     ownerName: owner ? session?.author?.name ?? null : null, assignee: assignee || null,
     epic: epic || null, selected: false, comments: [],
     tags: Array.isArray(tags) ? tags : [], createdBy,
@@ -566,6 +570,65 @@ export async function setPriority(repoRoot, remoteBranch, ticketId, priority, ac
 
   await fs.writeFile(file, serializeTicket(ticket), "utf8");
   const sha = await git.commitAll(worktreePath, `peephole: ${ticketId} priority -> ${priority}`);
+  const unpushed = await git.unpushedCount(worktreePath, localBranch, remoteBranch);
+  return { committed: Boolean(sha), sha, unpushed, ticket };
+}
+
+/** Writes a hand-ordered `rank` onto a lane's tickets in one commit — the Pivotal-Tracker
+ * single-ordered-backlog, set by dragging. `orderedIds` is the lane's new top-to-bottom order;
+ * each gets rank = position*100 (leaving gaps so a later drag of one card can be cheap). Unchanged
+ * ranks are skipped, so dragging one card near the bottom rewrites only the few files that moved.
+ * No history and no updatedAt bump: reordering is not an event and must not disturb the lane's
+ * modified-time tiebreak. */
+export async function setRanks(repoRoot, remoteBranch, orderedIds, actor = "peephole-ui") {
+  if (!Array.isArray(orderedIds) || orderedIds.length === 0) return { committed: false, changed: 0 };
+  const { parseTicket } = await import("./schema.js");
+  const { worktreePath, localBranch } = await prepWorktree(repoRoot, remoteBranch);
+  let changed = 0;
+  for (let i = 0; i < orderedIds.length; i++) {
+    const id = String(orderedIds[i]);
+    const file = path.join(worktreePath, ".peephole", "tickets", `${id}.md`);
+    if (!(await fileExists(file))) continue;
+    const parsed = parseTicket(await fs.readFile(file, "utf8"), id);
+    if (!parsed.ok) continue;
+    const ticket = parsed.ticket;
+    const want = (i + 1) * 100;
+    if (ticket.rank === want) continue;
+    ticket.rank = want;
+    await fs.writeFile(file, serializeTicket(ticket), "utf8");
+    changed++;
+  }
+  if (!changed) return { committed: false, changed: 0 };
+  const sha = await git.commitAll(worktreePath, `peephole: reorder ${changed} ticket(s)`);
+  const unpushed = await git.unpushedCount(worktreePath, localBranch, remoteBranch);
+  return { committed: Boolean(sha), changed, sha, unpushed };
+}
+
+/** Sets a ticket's type (feature|bug|chore) — the Pivotal-Tracker kind, shown as a card glyph.
+ * A ticket with no `type` is read as `feature` everywhere, so the field is optional; recorded in
+ * history like every other mutation. Always its own commit. */
+export async function setType(repoRoot, remoteBranch, ticketId, type, actor = "peephole-ui") {
+  const { TYPES, DEFAULT_TYPE, parseTicket } = await import("./schema.js");
+  if (!TYPES.includes(type)) {
+    throw new Error(`invalid type "${type}" (expected one of ${TYPES.join(", ")})`);
+  }
+  const { worktreePath, localBranch } = await prepWorktree(repoRoot, remoteBranch);
+  const file = path.join(worktreePath, ".peephole", "tickets", `${ticketId}.md`);
+  if (!(await fileExists(file))) throw new Error(`ticket "${ticketId}" not found`);
+
+  const parsed = parseTicket(await fs.readFile(file, "utf8"), ticketId);
+  if (!parsed.ok) throw new Error(`Cannot set type on ${ticketId}: ${parsed.errors.join("; ")}`);
+  const ticket = parsed.ticket;
+  const from = ticket.type || DEFAULT_TYPE;
+  if (from === type) return { committed: false, ticket };
+
+  ticket.type = type;
+  ticket.updatedAt = new Date().toISOString();
+  ticket.history = Array.isArray(ticket.history) ? ticket.history : [];
+  ticket.history.push({ at: ticket.updatedAt, from: `type:${from}`, to: `type:${type}`, by: actor });
+
+  await fs.writeFile(file, serializeTicket(ticket), "utf8");
+  const sha = await git.commitAll(worktreePath, `peephole: ${ticketId} type -> ${type}`);
   const unpushed = await git.unpushedCount(worktreePath, localBranch, remoteBranch);
   return { committed: Boolean(sha), sha, unpushed, ticket };
 }

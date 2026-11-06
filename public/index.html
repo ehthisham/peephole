@@ -266,6 +266,8 @@
   .lane-empty{font-size:11.5px; color:var(--ink-dim); padding:8px 4px; font-style:italic;}
 
   .card{background:var(--surface); border:1px solid var(--border); border-radius:8px; padding:10px 11px; display:flex; flex-direction:column; gap:6px;}
+  .card[draggable="true"]{cursor:grab;}
+  .card.dragging{opacity:0.45; cursor:grabbing;}
   .card-top{display:flex; align-items:center; gap:5px; flex-wrap:wrap;}
   .project-tag{font-size:10.5px; font-weight:600; color:var(--ink-dim); background:var(--bg); border:1px solid var(--border); border-radius:5px; padding:2px 6px;}
   .badge{font-size:10.5px; font-weight:600; border-radius:5px; padding:2px 6px; white-space:nowrap;}
@@ -282,6 +284,12 @@
   .badge.prio-low{color:var(--ink-dim); background:var(--surface-2); border:1px solid var(--border); font-weight:600;}
   .prio-select{font:inherit; font-size:12px; padding:2px 5px; border:1px solid var(--border); border-radius:5px; background:var(--bg); color:var(--ink);}
   .prio-select:disabled{opacity:0.6;}
+  .badge.ttype{font-weight:700; padding:2px 5px;}
+  .badge.ttype-feature{color:var(--progress); background:var(--progress-bg);}
+  .badge.ttype-bug{color:var(--accent); background:var(--accent-wash);}
+  .badge.ttype-chore{color:var(--ink-dim); background:var(--surface-2); border:1px solid var(--border); font-weight:600;}
+  .type-select{font:inherit; font-size:12px; padding:2px 5px; border:1px solid var(--border); border-radius:5px; background:var(--bg); color:var(--ink);}
+  .type-select:disabled{opacity:0.6;}
   .epic-tag{font-size:10.5px; font-weight:700; color:var(--verified); background:var(--verified-bg); border-radius:5px; padding:2px 6px; max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
   .lane-group{display:flex; flex-direction:column; gap:8px; margin-bottom:12px;}
   .lane-group:last-child{margin-bottom:0;}
@@ -636,6 +644,14 @@
               <option value="high">▲ High</option>
               <option value="normal" selected>Normal</option>
               <option value="low">▽ Low</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="nt-type">Type</label>
+            <select id="nt-type" name="type">
+              <option value="feature" selected>✦ Feature</option>
+              <option value="bug">🐞 Bug</option>
+              <option value="chore">⚙ Chore</option>
             </select>
           </div>
           <div class="field">

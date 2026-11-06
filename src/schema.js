@@ -15,6 +15,10 @@ export const RISKS = ["reversible", "irreversible"];
 // treated as normal rather than breaking validation.
 export const PRIORITIES = ["low", "normal", "high", "urgent"];
 export const DEFAULT_PRIORITY = "normal";
+// Ticket kind, Pivotal-Tracker style. `feature` is the default and the value a ticket with no
+// `type` is read as, so the field stays optional — pre-existing tickets keep parsing.
+export const TYPES = ["feature", "bug", "chore"];
+export const DEFAULT_TYPE = "feature";
 
 const REQUIRED_TICKET_FIELDS = ["id", "project", "intent", "state", "risk", "control", "owner", "history"];
 
@@ -28,6 +32,7 @@ export function defaultConfig(project, remoteUrl, stateBranch) {
     control: CONTROLS,
     risk: RISKS,
     priority: PRIORITIES,
+    type: TYPES,
   };
 }
 
@@ -84,6 +89,9 @@ export function validateTicket(t, id) {
   // value is an error — never a missing one.
   if (t.priority !== undefined && !PRIORITIES.includes(t.priority)) {
     errors.push(`${id}.md has invalid priority "${t.priority}" (expected one of ${PRIORITIES.join(", ")})`);
+  }
+  if (t.type !== undefined && !TYPES.includes(t.type)) {
+    errors.push(`${id}.md has invalid type "${t.type}" (expected one of ${TYPES.join(", ")})`);
   }
   if (t.history !== undefined && !Array.isArray(t.history)) {
     errors.push(`${id}.md's "history" must be a list`);

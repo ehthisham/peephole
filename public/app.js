@@ -68,6 +68,17 @@
   };
   function prioOf(t) { return (t && t.priority) || DEFAULT_PRIORITY; }
 
+  // Ticket kind (Pivotal-Tracker style). `feature` is the default and shows no badge — only bug and
+  // chore get a glyph, same "default is quiet" rule as priority's `normal`.
+  var TYPES = ["feature", "bug", "chore"];
+  var DEFAULT_TYPE = "feature";
+  var TYPE_META = {
+    feature: { label: "feature", glyph: "✦" },
+    bug: { label: "bug", glyph: "🐞" },
+    chore: { label: "chore", glyph: "⚙" },
+  };
+  function typeOf(t) { return (t && t.type) || DEFAULT_TYPE; }
+
   // Stroked SVGs for the two acts the old ▶ was conflating: marking a ticket for execution, and
   // actually dispatching one. A checkmark reads as "picked", never as "running".
   var SELECT_ICON =
@@ -421,6 +432,33 @@
       }).join("");
   }
 
+  /** Ship velocity + forecast from the ticket history alone — the Pivotal-Tracker planning signal,
+   *  without the sprint ceremony. A ticket "shipped" when its history last moved to shipped/closed
+   *  (falling back to updatedAt for old tickets with no such entry). Buckets the last 8 weeks;
+   *  velocity is the mean of the last 4; forecast divides the open backlog by that velocity. */
+  function shipStats(tickets) {
+    var list = tickets || [];
+    var now = Date.now();
+    var WEEK = 7 * 24 * 3600 * 1000;
+    var buckets = [0, 0, 0, 0, 0, 0, 0, 0]; // index 0 = 7 weeks ago … 7 = this week
+    list.forEach(function (t) {
+      if (!TERMINAL_STATES.has(t.state)) return;
+      var at = null;
+      (Array.isArray(t.history) ? t.history : []).forEach(function (h) {
+        if (h.to === "shipped" || h.to === "closed") at = h.at;
+      });
+      at = at || t.updatedAt;
+      if (!at) return;
+      var wk = Math.floor((now - new Date(at).getTime()) / WEEK);
+      if (wk >= 0 && wk < 8) buckets[7 - wk]++;
+    });
+    var last4 = buckets[4] + buckets[5] + buckets[6] + buckets[7];
+    var velocity = last4 / 4;
+    var open = list.filter(function (t) { return !TERMINAL_STATES.has(t.state); }).length;
+    var forecast = velocity > 0 ? open / velocity : null;
+    return { buckets: buckets, velocity: velocity, open: open, forecast: forecast, anyShipped: buckets.some(function (b) { return b > 0; }) };
+  }
+
   function renderInsights(stats, coverage, agents) {
     if (!stats) {
       statRow.innerHTML = '<p class="empty-note">Insights unavailable.</p>';
@@ -434,6 +472,19 @@
         value: progress.pct.toFixed(0) + "%",
         label: "Progress",
         sub: fmtNum(progress.done) + " of " + fmtNum(progress.total) + " shipped or closed",
+      });
+    }
+    var velo = shipStats(latestTickets);
+    if (velo.anyShipped || velo.open > 0) {
+      tiles.push({
+        value: velo.velocity > 0 ? velo.velocity.toFixed(1) + "/wk" : "—",
+        label: "Velocity",
+        sub: "shipped, last 4 weeks",
+      });
+      tiles.push({
+        value: velo.forecast != null ? "~" + Math.ceil(velo.forecast) + " wk" : "—",
+        label: "Forecast",
+        sub: "to clear " + fmtNum(velo.open) + " open at this rate",
       });
     }
     tiles = tiles.concat([
@@ -486,14 +537,28 @@
 
     renderCoverageModules(coverage);
 
-    var topLangs = stats.topLanguages || [];
-    if (topLangs.length === 0) {
-      langs.innerHTML = "";
-      return;
+    // Shipped-per-week bars (newest last) — the velocity tile's shape, so a reader sees whether the
+    // rate is climbing or stalling, not only its mean.
+    var veloHtml = "";
+    if (velo.anyShipped) {
+      var vmax = Math.max.apply(null, velo.buckets.concat([1]));
+      veloHtml =
+        "<h3>Shipped per week (last 8)</h3>" +
+        velo.buckets.map(function (c, i) {
+          var label = i === 7 ? "this wk" : (7 - i) + " wk ago";
+          var p = Math.round((c / vmax) * 100);
+          return (
+            '<div class="lang-row"><span class="name">' + label + "</span>" +
+            '<span class="bar-track"><span class="bar-fill" style="width:' + p + '%"></span></span>' +
+            '<span class="amount mono">' + c + "</span></div>"
+          );
+        }).join("");
     }
-    var max = Math.max.apply(null, topLangs.map(function (l) { return l.linesApprox; }));
+    var topLangs = stats.topLanguages || [];
+    var max = topLangs.length ? Math.max.apply(null, topLangs.map(function (l) { return l.linesApprox; })) : 0;
     langs.innerHTML =
-      "<h3>Top languages (approx. lines)</h3>" +
+      veloHtml +
+      (topLangs.length ? "<h3>Top languages (approx. lines)</h3>" : "") +
       topLangs.map(function (l) {
         var pct = max > 0 ? Math.round((l.linesApprox / max) * 100) : 0;
         return (
@@ -739,6 +804,8 @@
   function cardEl(t) {
     var card = document.createElement("article");
     card.className = "card";
+    card.dataset.id = t.id;
+    card.draggable = true;
     // The card face carries only what someone scans a lane for: priority, and whether it is running
     // or blocked by a control. Everything else the card used to crowd its top with — risk, epic,
     // tags, phase, blocked-on — now lives in the detail modal, one click away. See PRIORITY_META:
@@ -748,6 +815,12 @@
       ? '<span class="badge prio prio-' + esc(prio) + '" title="priority: ' + esc(prio) + '">' +
         PRIORITY_META[prio].glyph + " " + esc(PRIORITY_META[prio].label) + "</span>"
       : "";
+    // Every card shows its type glyph (Pivotal-Tracker style), feature included — the icon alone,
+    // with the word in the tooltip, so the strip stays compact.
+    var tk = typeOf(t);
+    var tm = TYPE_META[tk] || TYPE_META[DEFAULT_TYPE];
+    var typeBadge = '<span class="badge ttype ttype-' + esc(tk) + '" title="type: ' + esc(tk) + '">' +
+      tm.glyph + "</span>";
     // The owner used to ride in `.card-top` alongside the project tag, the risk badge and every
     // ticket tag — four competing chips in one wrapping row. It now sits alone on the footer's
     // left, opposite the state-move buttons, so it can never crowd the tag row again.
@@ -853,8 +926,8 @@
     // description, then the footer. Description prefers the free-text body, falling back to the
     // acceptance line so a card without a body still shows what "done" means. CSS clamps it to two
     // lines; the full text is in the modal.
-    var statusStrip = prioBadge || queueTag || controlTag
-      ? '<div class="card-top">' + prioBadge + queueTag + controlTag + "</div>"
+    var statusStrip = typeBadge || prioBadge || queueTag || controlTag
+      ? '<div class="card-top">' + typeBadge + prioBadge + queueTag + controlTag + "</div>"
       : "";
     // The headline is the ticket's title, falling back to its intent when it has none (every ticket
     // written before the title field existed). It is the only text on the card face and clamps to two
@@ -1065,6 +1138,20 @@
     );
   }
 
+  /** Ticket kind, editable in place. */
+  function typeControl(t) {
+    var cur = typeOf(t);
+    return (
+      '<select class="type-select" data-id="' + esc(t.id) + '" aria-label="Type for this ticket">' +
+      TYPES.map(function (k) {
+        var m = TYPE_META[k] || { label: k, glyph: "" };
+        return '<option value="' + k + '"' + (cur === k ? " selected" : "") + ">" +
+          (m.glyph ? m.glyph + " " : "") + esc(m.label) + "</option>";
+      }).join("") +
+      "</select>"
+    );
+  }
+
   /** Priority is editable here for the same reason risk is: it is a judgement that shifts over a
    *  ticket's life (a normal task becomes urgent when someone is blocked on it). Every change is a
    *  commit, recorded in history. */
@@ -1128,6 +1215,7 @@
       ["Title", titleControl(t)],
       ["ID", '<span class="mono">' + esc(t.id) + "</span>"],
       ["State", esc(t.state || "—")],
+      ["Type", typeControl(t)],
       ["Priority", priorityControl(t)],
       ["Risk", riskControl(t)],
       ["Tags", Array.isArray(t.tags) && t.tags.length ? t.tags.map(esc).join(", ") : "—"],
@@ -1222,6 +1310,21 @@
           }
         } finally {
           titleInput.disabled = false;
+        }
+      });
+    }
+    var typeSelect = ticketModalBody.querySelector(".type-select");
+    if (typeSelect) {
+      typeSelect.addEventListener("change", async function () {
+        typeSelect.disabled = true;
+        try {
+          var res = await apiPost("/api/tickets/" + encodeURIComponent(typeSelect.dataset.id) + "/type", {
+            type: typeSelect.value,
+          });
+          if (res && res.error) { window.alert(res.error); typeSelect.value = typeOf(t); }
+          else t.type = typeSelect.value;
+        } finally {
+          typeSelect.disabled = false;
         }
       });
     }
@@ -1370,6 +1473,7 @@
         body: newTicketForm.body.value.trim(),
         risk: newTicketForm.risk.value,
         priority: newTicketForm.priority.value,
+        type: newTicketForm.type.value,
         epic: newTicketForm.epic.value.trim() || null,
         createdBy: createdBy || null,
       });
@@ -1405,6 +1509,17 @@
     return list.slice().sort(function (a, b) {
       return (PRIORITY_RANK[prioOf(b)] || 0) - (PRIORITY_RANK[prioOf(a)] || 0);
     });
+  }
+
+  /** The lane's order: hand-ranked cards first (by rank, the drag order), then everything not yet
+   *  dragged in the usual priority→recency order. So an untouched board looks exactly as before, and
+   *  each card you drag "sticks" above the automatic pile — the Pivotal-Tracker ordered backlog,
+   *  opt-in per card. */
+  function laneSort(list, dir) {
+    var ranked = list.filter(function (t) { return typeof t.rank === "number"; })
+      .sort(function (a, b) { return a.rank - b.rank; });
+    var rest = sortByPriority(sortByModified(list.filter(function (t) { return typeof t.rank !== "number"; }), dir));
+    return ranked.concat(rest);
   }
 
   // Grouping is a view preference, not ticket data — same treatment as the sort direction.
@@ -1508,6 +1623,57 @@
   var runningId = null;
   var chatSessions = {}; // ticketId -> sessionId of an open conversation
 
+  /** The card the pointer is currently above, for drag-insert: the first not-dragging card whose
+   *  vertical midpoint sits below the cursor. null means "past the last card" (append). */
+  function dragAfterCard(body, y) {
+    var cards = Array.prototype.slice.call(body.querySelectorAll(".card:not(.dragging)"));
+    var closest = null, closestOffset = -Infinity;
+    for (var i = 0; i < cards.length; i++) {
+      var box = cards[i].getBoundingClientRect();
+      var offset = y - (box.top + box.height / 2);
+      if (offset < 0 && offset > closestOffset) { closestOffset = offset; closest = cards[i]; }
+    }
+    return closest;
+  }
+
+  /** Hand-reordering a lane by dragging (non-grouped view only — grouped cards live inside epic
+   *  boxes). The DOM is reordered live for feedback; on drop the lane's new top-to-bottom id order
+   *  is persisted in one call, which writes a `rank` on each moved card. */
+  function enableLaneDnD(body) {
+    body.addEventListener("dragstart", function (e) {
+      var card = e.target.closest && e.target.closest(".card");
+      if (!card || !body.contains(card)) return;
+      body._drag = card;
+      card.classList.add("dragging");
+      e.dataTransfer.effectAllowed = "move";
+      try { e.dataTransfer.setData("text/plain", card.dataset.id); } catch (_) {}
+    });
+    body.addEventListener("dragend", function () {
+      if (body._drag) body._drag.classList.remove("dragging");
+      body._drag = null;
+    });
+    body.addEventListener("dragover", function (e) {
+      if (!body._drag) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = "move";
+      var after = dragAfterCard(body, e.clientY);
+      var d = body._drag;
+      if (after == null) { if (body.lastElementChild !== d) body.appendChild(d); }
+      else if (after !== d && after.previousElementSibling !== d) { body.insertBefore(d, after); }
+    });
+    body.addEventListener("drop", async function (e) {
+      if (!body._drag) return;
+      e.preventDefault();
+      body._drag.classList.remove("dragging");
+      body._drag = null;
+      var ids = Array.prototype.map.call(body.querySelectorAll(".card"), function (c) { return c.dataset.id; });
+      if (!ids.length) return;
+      var res = await apiPost("/api/tickets/rank", { ids: ids });
+      if (res && res.error) { window.alert(res.error); return; }
+      if (res && res.state) render(res.state);
+    });
+  }
+
   var latestTickets = [];
   function renderBoard(tickets) {
     latestTickets = tickets;
@@ -1523,7 +1689,7 @@
     });
     board.innerHTML = "";
     LANES.forEach(function (s) {
-      var inLane = sortByPriority(sortByModified(visible.filter(function (t) { return s.states.indexOf(t.state) !== -1; }), dir));
+      var inLane = laneSort(visible.filter(function (t) { return s.states.indexOf(t.state) !== -1; }), dir);
       var lane = document.createElement("section");
       lane.className = "lane";
       // A lane fills with tickets finished in every sense except the last click — forty verified at
@@ -1570,6 +1736,7 @@
         });
       } else {
         inLane.forEach(function (t) { body.appendChild(cardEl(t)); });
+        enableLaneDnD(body);
       }
       var bulkEl = lane.querySelector("[data-bulk]");
       if (bulkEl) {

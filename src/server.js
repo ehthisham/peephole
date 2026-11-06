@@ -589,6 +589,16 @@ export async function startServer(initialRepoRoot, { port = 4173, remote = "orig
         await ctx.refresh({ doFetch: false });
         return sendJson(res, 200, { ...result, state: ctx.publicState() });
       }
+      const typeMatch = url.pathname.match(/^\/api\/tickets\/([^/]+)\/type$/);
+      if (req.method === "POST" && typeMatch) {
+        const body = await readJsonBody(req);
+        const result = await writer.setType(
+          ctx.repoRoot, ctx.stateBranch, typeMatch[1], body.type,
+          body.actor || (ctx.gitUser && ctx.gitUser.name) || "peephole-ui",
+        );
+        await ctx.refresh({ doFetch: false });
+        return sendJson(res, 200, { ...result, state: ctx.publicState() });
+      }
       const priorityMatch = url.pathname.match(/^\/api\/tickets\/([^/]+)\/priority$/);
       if (req.method === "POST" && priorityMatch) {
         const body = await readJsonBody(req);
@@ -823,6 +833,17 @@ export async function startServer(initialRepoRoot, { port = 4173, remote = "orig
       if (req.method === "POST" && assignMatch) {
         const body = await readJsonBody(req);
         const result = await writer.assignTicket(ctx.repoRoot, ctx.stateBranch, assignMatch[1], body.assignee ?? null, body.actor);
+        await ctx.refresh({ doFetch: false });
+        return sendJson(res, 200, { ...result, state: ctx.publicState() });
+      }
+      if (req.method === "POST" && url.pathname === "/api/tickets/rank") {
+        const body = await readJsonBody(req);
+        const ids = Array.isArray(body.ids) ? body.ids.map(String) : [];
+        if (!ids.length) return sendJson(res, 400, { error: "no ids given" });
+        const result = await writer.setRanks(
+          ctx.repoRoot, ctx.stateBranch, ids,
+          body.actor || (ctx.gitUser && ctx.gitUser.name) || "peephole-ui",
+        );
         await ctx.refresh({ doFetch: false });
         return sendJson(res, 200, { ...result, state: ctx.publicState() });
       }
