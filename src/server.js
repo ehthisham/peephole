@@ -548,7 +548,7 @@ export async function startServer(initialRepoRoot, { port = 4173, remote = "orig
       }
       if (req.method === "POST" && url.pathname === "/api/tickets") {
         const body = await readJsonBody(req);
-        const id = body.id || slugify(body.intent || "ticket");
+        const id = body.id || slugify(body.title || body.intent || "ticket");
         const session = await ctx.sessionFromBody(body, body.owner || body.createdBy || body.actor);
         const result = await writer.createTicket(ctx.repoRoot, ctx.stateBranch, { ...body, id, session });
         await ctx.refresh({ doFetch: false });
@@ -574,6 +574,26 @@ export async function startServer(initialRepoRoot, { port = 4173, remote = "orig
         const body = await readJsonBody(req);
         const result = await writer.setRisk(
           ctx.repoRoot, ctx.stateBranch, riskMatch[1], body.risk,
+          body.actor || (ctx.gitUser && ctx.gitUser.name) || "peephole-ui",
+        );
+        await ctx.refresh({ doFetch: false });
+        return sendJson(res, 200, { ...result, state: ctx.publicState() });
+      }
+      const titleMatch = url.pathname.match(/^\/api\/tickets\/([^/]+)\/title$/);
+      if (req.method === "POST" && titleMatch) {
+        const body = await readJsonBody(req);
+        const result = await writer.setTitle(
+          ctx.repoRoot, ctx.stateBranch, titleMatch[1], body.title,
+          body.actor || (ctx.gitUser && ctx.gitUser.name) || "peephole-ui",
+        );
+        await ctx.refresh({ doFetch: false });
+        return sendJson(res, 200, { ...result, state: ctx.publicState() });
+      }
+      const priorityMatch = url.pathname.match(/^\/api\/tickets\/([^/]+)\/priority$/);
+      if (req.method === "POST" && priorityMatch) {
+        const body = await readJsonBody(req);
+        const result = await writer.setPriority(
+          ctx.repoRoot, ctx.stateBranch, priorityMatch[1], body.priority,
           body.actor || (ctx.gitUser && ctx.gitUser.name) || "peephole-ui",
         );
         await ctx.refresh({ doFetch: false });

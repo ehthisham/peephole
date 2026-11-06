@@ -54,6 +54,20 @@
   var CONTROLS = ["pause", "skip"];
   var CONTROL_ICON = { pause: "⏸", skip: "⏭" };
 
+  // Ascending urgency, matching schema.PRIORITIES. `normal` is the default and what a ticket with no
+  // `priority` field is read as, so it never shows a badge — only the off-default values do, the same
+  // way risk only badges `irreversible`. RANK drives the lane sort (urgent floats to the top).
+  var PRIORITIES = ["low", "normal", "high", "urgent"];
+  var DEFAULT_PRIORITY = "normal";
+  var PRIORITY_RANK = { urgent: 3, high: 2, normal: 1, low: 0 };
+  var PRIORITY_META = {
+    urgent: { label: "urgent", glyph: "🔺" },
+    high: { label: "high", glyph: "▲" },
+    normal: { label: "normal", glyph: "" },
+    low: { label: "low", glyph: "▽" },
+  };
+  function prioOf(t) { return (t && t.priority) || DEFAULT_PRIORITY; }
+
   // Stroked SVGs for the two acts the old ▶ was conflating: marking a ticket for execution, and
   // actually dispatching one. A checkmark reads as "picked", never as "running".
   var SELECT_ICON =
@@ -725,42 +739,27 @@
   function cardEl(t) {
     var card = document.createElement("article");
     card.className = "card";
-    var risk = t.risk === "irreversible" ? '<span class="badge risk">⚠ irreversible</span>' : "";
-    // blockedOn carries whole ticket ids, and often several comma-separated — rendered raw in a
-    // nowrap badge that was wider than the card and spilled over its neighbour. Show what it is
-    // blocked on, count the rest, and keep the full list in the tooltip.
-    var blockedIds = (t.blockedOn || "").split(",").map(function (b) { return b.trim(); }).filter(Boolean);
-    var blocked = blockedIds.length
-      ? '<span class="badge blocked" title="' + esc("blocked on: " + blockedIds.join("\n")) + '">⛓ ' +
-        esc(blockedIds[0]) + (blockedIds.length > 1 ? " +" + (blockedIds.length - 1) : "") + "</span>"
+    // The card face carries only what someone scans a lane for: priority, and whether it is running
+    // or blocked by a control. Everything else the card used to crowd its top with — risk, epic,
+    // tags, phase, blocked-on — now lives in the detail modal, one click away. See PRIORITY_META:
+    // normal is the default and shows nothing, so a badge here always means off-default urgency.
+    var prio = prioOf(t);
+    var prioBadge = prio !== DEFAULT_PRIORITY && PRIORITY_META[prio]
+      ? '<span class="badge prio prio-' + esc(prio) + '" title="priority: ' + esc(prio) + '">' +
+        PRIORITY_META[prio].glyph + " " + esc(PRIORITY_META[prio].label) + "</span>"
       : "";
     // The owner used to ride in `.card-top` alongside the project tag, the risk badge and every
     // ticket tag — four competing chips in one wrapping row. It now sits alone on the footer's
     // left, opposite the state-move buttons, so it can never crowd the tag row again.
     var owner = ownerChip(t);
-    // A card sitting in a state that is not its lane's headline state says so on its own face —
-    // "Built"/"Verified" inside the In progress lane, "Closed" inside Shipped — tinted with that
-    // state's palette entry, so the lane stays coarse while the card stays exact.
-    // The project name was the same on every card of a single-project board — pure noise. The
-    // epic is what actually varies and what a reader groups by, so it takes that slot; a ticket
-    // with no epic simply has one less chip.
-    var epicTag = t.epic ? '<span class="epic-tag" title="epic: ' + esc(t.epic) + '">' + esc(t.epic) + "</span>" : "";
-    // A control flag used to change nothing but a faint border tint on one 24px button, so setting
-    // it looked like nothing happened. It now says so on the card's face, like every other state.
+    // A control flag (pause/skip) is worth a card-face badge because it stops the agent — it belongs
+    // in the slim status strip alongside priority and running.
     var controlTag = t.control && t.control !== "run"
       ? '<span class="badge control-' + esc(t.control) + '">' + (t.control === "pause" ? "⏸ paused" : "⏭ skipped") + "</span>"
       : "";
     var queueTag = runningId === t.id
       ? '<span class="badge queued running">▶ running</span>'
       : (queuedIds.indexOf(t.id) !== -1 ? '<span class="badge queued">queued</span>' : "");
-    var phaseState = PHASE_STATES.has(t.state) ? STATES.find(function (x) { return x.key === t.state; }) : null;
-    var phase = phaseState
-      ? '<span class="badge phase" style="color:' + STATE_COLOR[phaseState.key] + ";background:" + STATE_BG[phaseState.key] +
-        '">' + esc(phaseState.label) + "</span>"
-      : "";
-    var tags = Array.isArray(t.tags) && t.tags.length
-      ? t.tags.map(function (tg) { return '<span class="badge tag">' + esc(tg) + "</span>"; }).join("")
-      : "";
     var isTerminal = TERMINAL_STATES.has(t.state);
     // Pause/skip toggle: clicking a lit one writes `run` back, which is what un-pausing is.
     var controls = isTerminal ? "" : CONTROLS.map(function (c) {
@@ -850,10 +849,26 @@
     var foot = ctlGroup || owner || moves
       ? '<div class="card-foot">' + ctlGroup + owner + moves + "</div>"
       : "";
+    // Slim card: a status strip (only when it has something to say), the title, up to two lines of
+    // description, then the footer. Description prefers the free-text body, falling back to the
+    // acceptance line so a card without a body still shows what "done" means. CSS clamps it to two
+    // lines; the full text is in the modal.
+    var statusStrip = prioBadge || queueTag || controlTag
+      ? '<div class="card-top">' + prioBadge + queueTag + controlTag + "</div>"
+      : "";
+    // The headline is the ticket's title, falling back to its intent when it has none (every ticket
+    // written before the title field existed). It is the only text on the card face and clamps to two
+    // lines (CSS). The full story — title, the intent/why, and any description — rides along as the
+    // headline's tooltip (alt text), so nothing is lost off the face; the whole lot is in the modal.
+    var headline = (t.title && t.title.trim()) || t.intent || "";
+    var tipParts = [headline];
+    if (t.title && t.title.trim() && t.intent && t.intent !== t.title.trim()) tipParts.push(t.intent);
+    var descText = (t.body || t.acceptance || "").trim();
+    if (descText) tipParts.push(descText);
+    var tip = esc(tipParts.join("\n\n"));
     card.innerHTML =
-      '<div class="card-top">' + epicTag + queueTag + controlTag + phase + tags + risk + "</div>" +
-      '<p class="intent">' + esc(t.intent) + "</p>" +
-      (blocked ? "<div>" + blocked + "</div>" : "") +
+      statusStrip +
+      '<p class="intent" title="' + tip + '">' + esc(headline) + "</p>" +
       foot;
     // Scoped to [data-ctl]: the select and execute buttons share the .ctl look but are not control
     // writes, and an unscoped selector posted `control: undefined` for them — which serialized a
@@ -1041,6 +1056,31 @@
     );
   }
 
+  /** The ticket's short headline, editable in place. Free text, optional: left blank, the card falls
+   *  back to the intent, so clearing it is valid. */
+  function titleControl(t) {
+    return (
+      '<input class="title-input" data-id="' + esc(t.id) + '" value="' + esc(t.title || "") +
+      '" placeholder="(none — card shows the intent)" aria-label="Title for this ticket">'
+    );
+  }
+
+  /** Priority is editable here for the same reason risk is: it is a judgement that shifts over a
+   *  ticket's life (a normal task becomes urgent when someone is blocked on it). Every change is a
+   *  commit, recorded in history. */
+  function priorityControl(t) {
+    var cur = prioOf(t);
+    return (
+      '<select class="prio-select" data-id="' + esc(t.id) + '" aria-label="Priority for this ticket">' +
+      PRIORITIES.slice().reverse().map(function (p) {
+        var m = PRIORITY_META[p] || { label: p, glyph: "" };
+        return '<option value="' + p + '"' + (cur === p ? " selected" : "") + ">" +
+          (m.glyph ? m.glyph + " " : "") + esc(m.label) + "</option>";
+      }).join("") +
+      "</select>"
+    );
+  }
+
   /** Free text with the existing epics offered as suggestions: a new epic is created by typing
    *  one, which is the whole ceremony — see writer.setEpic on why epics aren't records. */
   function epicControl(t) {
@@ -1082,10 +1122,13 @@
   /** Detail popup for one ticket — everything the compact card leaves out, including the
    *  branch it was (or is being) built on, if the ticket ever recorded one. */
   function openTicketModal(t) {
-    ticketModalTitle.textContent = "#" + t.id;
+    ticketModalTitle.textContent = (t.title && t.title.trim()) || t.intent || ("#" + t.id);
     var cost = ticketCost(t);
     var rows = [
+      ["Title", titleControl(t)],
+      ["ID", '<span class="mono">' + esc(t.id) + "</span>"],
       ["State", esc(t.state || "—")],
+      ["Priority", priorityControl(t)],
       ["Risk", riskControl(t)],
       ["Tags", Array.isArray(t.tags) && t.tags.length ? t.tags.map(esc).join(", ") : "—"],
       // Owner is the human; the session id that did the work is machine detail — useful for
@@ -1159,6 +1202,41 @@
           else t.risk = riskSelect.value;
         } finally {
           riskSelect.disabled = false;
+        }
+      });
+    }
+    var titleInput = ticketModalBody.querySelector(".title-input");
+    if (titleInput) {
+      // On change (blur/Enter), not per keystroke — each write is a commit.
+      titleInput.addEventListener("change", async function () {
+        var value = titleInput.value.trim();
+        titleInput.disabled = true;
+        try {
+          var res = await apiPost("/api/tickets/" + encodeURIComponent(titleInput.dataset.id) + "/title", {
+            title: value, actor: "peephole-ui",
+          });
+          if (res && res.error) { window.alert(res.error); titleInput.value = t.title || ""; }
+          else {
+            t.title = value;
+            ticketModalTitle.textContent = value || t.intent || ("#" + t.id);
+          }
+        } finally {
+          titleInput.disabled = false;
+        }
+      });
+    }
+    var prioSelect = ticketModalBody.querySelector(".prio-select");
+    if (prioSelect) {
+      prioSelect.addEventListener("change", async function () {
+        prioSelect.disabled = true;
+        try {
+          var res = await apiPost("/api/tickets/" + encodeURIComponent(prioSelect.dataset.id) + "/priority", {
+            priority: prioSelect.value,
+          });
+          if (res && res.error) { window.alert(res.error); prioSelect.value = prioOf(t); }
+          else t.priority = prioSelect.value;
+        } finally {
+          prioSelect.disabled = false;
         }
       });
     }
@@ -1286,9 +1364,12 @@
     try {
       var res = await apiPost("/api/tickets", {
         project: newTicketForm.project.value.trim(),
+        title: newTicketForm.title.value.trim(),
         intent: newTicketForm.intent.value.trim(),
         acceptance: newTicketForm.acceptance.value.trim(),
+        body: newTicketForm.body.value.trim(),
         risk: newTicketForm.risk.value,
+        priority: newTicketForm.priority.value,
         epic: newTicketForm.epic.value.trim() || null,
         createdBy: createdBy || null,
       });
@@ -1314,6 +1395,15 @@
     return list.slice().sort(function (a, b) {
       var diff = Date.parse(b.updatedAt || 0) - Date.parse(a.updatedAt || 0);
       return dir === "asc" ? -diff : diff;
+    });
+  }
+
+  /** Priority is the primary order within a lane: urgent floats to the top, low sinks. Applied on
+   *  top of the modified sort, which stays as the tiebreak — Array.sort is stable, so two tickets of
+   *  the same priority keep the recency order sortByModified just gave them. */
+  function sortByPriority(list) {
+    return list.slice().sort(function (a, b) {
+      return (PRIORITY_RANK[prioOf(b)] || 0) - (PRIORITY_RANK[prioOf(a)] || 0);
     });
   }
 
@@ -1433,7 +1523,7 @@
     });
     board.innerHTML = "";
     LANES.forEach(function (s) {
-      var inLane = sortByModified(visible.filter(function (t) { return s.states.indexOf(t.state) !== -1; }), dir);
+      var inLane = sortByPriority(sortByModified(visible.filter(function (t) { return s.states.indexOf(t.state) !== -1; }), dir));
       var lane = document.createElement("section");
       lane.className = "lane";
       // A lane fills with tickets finished in every sense except the last click — forty verified at

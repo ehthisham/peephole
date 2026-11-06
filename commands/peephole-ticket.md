@@ -11,7 +11,8 @@ Steps:
 1. Make sure the board is up (`curl -s http://127.0.0.1:4173/api/state`); if not, start it per the
    `/peephole-board` flow.
 2. Create the ticket with a one-sentence intent (the *why*), from the repo root. Add
-   `--risk irreversible` if the change is hard to undo. Pass `--transcript <your transcript_path>`:
+   `--risk irreversible` if the change is hard to undo, and `--priority high|urgent` (or `low`) if it
+   is not a normal-priority task. Pass `--transcript <your transcript_path>`:
    ```
    node "${CLAUDE_PLUGIN_ROOT}/cli/peephole.js" ticket new \
      --project "<this project>" --intent "$ARGUMENTS" \

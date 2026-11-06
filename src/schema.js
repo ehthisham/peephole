@@ -10,6 +10,11 @@ export const STATES = ["proposed", "in-progress", "built", "verified", "shipped"
 export const FORWARD_STATES = ["proposed", "in-progress", "built", "verified", "shipped"];
 export const CONTROLS = ["run", "pause", "skip", "restart"];
 export const RISKS = ["reversible", "irreversible"];
+// Ascending urgency. `normal` is the default and the value a ticket with no `priority` is read as,
+// so the field stays optional — every ticket written before priority existed keeps parsing and is
+// treated as normal rather than breaking validation.
+export const PRIORITIES = ["low", "normal", "high", "urgent"];
+export const DEFAULT_PRIORITY = "normal";
 
 const REQUIRED_TICKET_FIELDS = ["id", "project", "intent", "state", "risk", "control", "owner", "history"];
 
@@ -22,6 +27,7 @@ export function defaultConfig(project, remoteUrl, stateBranch) {
     states: STATES,
     control: CONTROLS,
     risk: RISKS,
+    priority: PRIORITIES,
   };
 }
 
@@ -73,6 +79,11 @@ export function validateTicket(t, id) {
   }
   if (t.control && !CONTROLS.includes(t.control)) {
     errors.push(`${id}.md has invalid control "${t.control}" (expected one of ${CONTROLS.join(", ")})`);
+  }
+  // Optional: a ticket with no `priority` is read as the default elsewhere, so only a present-but-bad
+  // value is an error — never a missing one.
+  if (t.priority !== undefined && !PRIORITIES.includes(t.priority)) {
+    errors.push(`${id}.md has invalid priority "${t.priority}" (expected one of ${PRIORITIES.join(", ")})`);
   }
   if (t.history !== undefined && !Array.isArray(t.history)) {
     errors.push(`${id}.md's "history" must be a list`);

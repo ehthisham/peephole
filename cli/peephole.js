@@ -81,16 +81,18 @@ async function cmdTicketNew(argv) {
   const args = parseArgs(argv);
   const port = requirePort(args);
   if (!args.project || !args.intent) {
-    console.error('usage: peephole ticket new --project <p> --intent "<text>" [--id <id>] [--acceptance "<text>"] [--risk reversible|irreversible] [--owner <sessionId>] [--epic "<epic>"] [--transcript <path>] [--port 4173]');
+    console.error('usage: peephole ticket new --project <p> --intent "<text>" [--title "<headline>"] [--id <id>] [--acceptance "<text>"] [--risk reversible|irreversible] [--priority low|normal|high|urgent] [--owner <sessionId>] [--epic "<epic>"] [--transcript <path>] [--port 4173]');
     process.exit(1);
   }
-  const id = args.id || slugify(args.intent);
+  const id = args.id || slugify(args.title && args.title !== true ? String(args.title) : args.intent);
   const result = await apiCall(port, "POST", "/api/tickets", {
     id,
     project: args.project,
+    title: args.title && args.title !== true ? String(args.title) : "",
     intent: args.intent,
     acceptance: args.acceptance || "",
     risk: args.risk || "reversible",
+    priority: args.priority && args.priority !== true ? String(args.priority) : null,
     owner: args.owner || null,
     assignee: args.assignee && args.assignee !== true ? String(args.assignee) : null,
     epic: args.epic && args.epic !== true ? String(args.epic) : null,
@@ -207,6 +209,33 @@ async function cmdTicketRisk(argv) {
   console.log(`"${id}" risk -> ${result.ticket.risk}`);
 }
 
+async function cmdTicketTitle(argv) {
+  const id = argv[0];
+  const args = parseArgs(argv.slice(1));
+  const port = requirePort(args);
+  const clearing = args.clear === true;
+  if (!id || (!args.to && !clearing)) {
+    console.error('usage: peephole ticket title <id> --to "<title>" | --clear [--port 4173]');
+    process.exit(1);
+  }
+  const result = await apiCall(port, "POST", `/api/tickets/${encodeURIComponent(id)}/title`, {
+    title: clearing ? "" : String(args.to), actor: args.actor,
+  });
+  console.log(`"${id}" title -> ${result.ticket.title || "(none — falls back to intent)"}`);
+}
+
+async function cmdTicketPriority(argv) {
+  const id = argv[0];
+  const args = parseArgs(argv.slice(1));
+  const port = requirePort(args);
+  if (!id || !args.to) {
+    console.error("usage: peephole ticket priority <id> --to <low|normal|high|urgent> [--port 4173]");
+    process.exit(1);
+  }
+  const result = await apiCall(port, "POST", `/api/tickets/${encodeURIComponent(id)}/priority`, { priority: String(args.to), actor: args.actor });
+  console.log(`"${id}" priority -> ${result.ticket.priority}`);
+}
+
 async function cmdTicketAdvance(argv) {
   const id = argv[0];
   const args = parseArgs(argv.slice(1));
@@ -283,6 +312,8 @@ async function main() {
   if (cmd === "ticket" && argv[1] === "assign") return cmdTicketAssign(argv.slice(2));
   if (cmd === "ticket" && argv[1] === "epic") return cmdTicketEpic(argv.slice(2));
   if (cmd === "ticket" && argv[1] === "risk") return cmdTicketRisk(argv.slice(2));
+  if (cmd === "ticket" && argv[1] === "priority") return cmdTicketPriority(argv.slice(2));
+  if (cmd === "ticket" && argv[1] === "title") return cmdTicketTitle(argv.slice(2));
   if (cmd === "ticket" && argv[1] === "comment") return cmdTicketComment(argv.slice(2));
   if (cmd === "ledger" && argv[1] === "move") return cmdLedgerMove(argv.slice(2));
   if (cmd === "ticket" && argv[1] === "advance") return cmdTicketAdvance(argv.slice(2));
@@ -293,12 +324,14 @@ async function main() {
   console.error(
     "Usage:\n" +
     "  peephole serve [--repo <path>] [--port 4173] [--host 127.0.0.1] [--branch <state branch>]\n" +
-    '  peephole ticket new --project <p> --intent "<text>" [--id <id>] [--acceptance "<text>"] [--risk reversible|irreversible] [--owner <sessionId>]\n' +
+    '  peephole ticket new --project <p> --intent "<text>" [--title "<headline>"] [--id <id>] [--acceptance "<text>"] [--risk reversible|irreversible] [--priority low|normal|high|urgent] [--owner <sessionId>]\n' +
     "  peephole ticket claim <id> --owner <sessionId>\n" +
     "  peephole ticket unclaim <id>  # return to proposed, in-progress only\n" +
     '  peephole ticket assign <id> --to "<person>" | --clear  # reserve it; only that person can claim\n' +
     '  peephole ticket epic <id> --to "<epic>" | --clear      # file it under an epic\n' +
     "  peephole ticket risk <id> --to <reversible|irreversible>\n" +
+    "  peephole ticket priority <id> --to <low|normal|high|urgent>\n" +
+    '  peephole ticket title <id> --to "<title>" | --clear  # short headline, falls back to intent\n' +
     '  peephole ticket comment <id> --text "<comment>"\n' +
     '  peephole ledger move --repo <path> [--to peephole-state] [--push]  # carry the ledger to its own branch\n' +
     "  peephole ticket advance <id> --state <proposed|in-progress|built|verified|shipped|closed>\n" +

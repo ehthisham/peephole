@@ -429,11 +429,15 @@ export async function setState(repoRoot, remoteBranch, ticketId, state, actor = 
 }
 
 /** Creates a new ticket file with a schema-correct frontmatter — the deterministic alternative to an agent hand-writing YAML. Always its own commit. */
-export async function createTicket(repoRoot, remoteBranch, { id, project, intent, acceptance = "", body = "", risk = "reversible", owner = null, assignee = null, epic = null, tags = [], createdBy = null, state: stateOverride, actor, session = null }) {
+export async function createTicket(repoRoot, remoteBranch, { id, project, title = "", intent, acceptance = "", body = "", risk = "reversible", priority, owner = null, assignee = null, epic = null, tags = [], createdBy = null, state: stateOverride, actor, session = null }) {
   if (!project || !intent) throw new Error("project and intent are required");
-  const { STATES } = await import("./schema.js");
+  const { STATES, PRIORITIES, DEFAULT_PRIORITY } = await import("./schema.js");
   if (stateOverride && !STATES.includes(stateOverride)) {
     throw new Error(`invalid state "${stateOverride}" (expected one of ${STATES.join(", ")})`);
+  }
+  const prio = priority == null || priority === "" ? DEFAULT_PRIORITY : priority;
+  if (!PRIORITIES.includes(prio)) {
+    throw new Error(`invalid priority "${priority}" (expected one of ${PRIORITIES.join(", ")})`);
   }
   const { worktreePath, localBranch } = await prepWorktree(repoRoot, remoteBranch);
   const dir = path.join(worktreePath, ".peephole", "tickets");
@@ -445,7 +449,7 @@ export async function createTicket(repoRoot, remoteBranch, { id, project, intent
   const state = stateOverride || (owner ? "in-progress" : "proposed");
   const who = actor || createdBy || "agent";
   const ticket = {
-    id, project, intent, acceptance, body, state, risk, blockedOn: "", control: "run", owner,
+    id, project, title: title || "", intent, acceptance, body, state, risk, priority: prio, blockedOn: "", control: "run", owner,
     ownerName: owner ? session?.author?.name ?? null : null, assignee: assignee || null,
     epic: epic || null, selected: false, comments: [],
     tags: Array.isArray(tags) ? tags : [], createdBy,
@@ -532,6 +536,64 @@ export async function setRisk(repoRoot, remoteBranch, ticketId, risk, actor = "p
 
   await fs.writeFile(file, serializeTicket(ticket), "utf8");
   const sha = await git.commitAll(worktreePath, `peephole: ${ticketId} risk -> ${risk}`);
+  const unpushed = await git.unpushedCount(worktreePath, localBranch, remoteBranch);
+  return { committed: Boolean(sha), sha, unpushed, ticket };
+}
+
+/** Changes a ticket's priority. Like risk, priority is a judgement that moves over a ticket's life —
+ * something starts as normal and becomes urgent when a customer is blocked on it — so it has to be
+ * settable after creation, not only at `new`. A ticket with no `priority` field is read as normal
+ * everywhere, so the field stays optional; every change is recorded in history. */
+export async function setPriority(repoRoot, remoteBranch, ticketId, priority, actor = "peephole-ui") {
+  const { PRIORITIES, DEFAULT_PRIORITY, parseTicket } = await import("./schema.js");
+  if (!PRIORITIES.includes(priority)) {
+    throw new Error(`invalid priority "${priority}" (expected one of ${PRIORITIES.join(", ")})`);
+  }
+  const { worktreePath, localBranch } = await prepWorktree(repoRoot, remoteBranch);
+  const file = path.join(worktreePath, ".peephole", "tickets", `${ticketId}.md`);
+  if (!(await fileExists(file))) throw new Error(`ticket "${ticketId}" not found`);
+
+  const parsed = parseTicket(await fs.readFile(file, "utf8"), ticketId);
+  if (!parsed.ok) throw new Error(`Cannot set priority on ${ticketId}: ${parsed.errors.join("; ")}`);
+  const ticket = parsed.ticket;
+  const from = ticket.priority || DEFAULT_PRIORITY;
+  if (from === priority) return { committed: false, ticket };
+
+  ticket.priority = priority;
+  ticket.updatedAt = new Date().toISOString();
+  ticket.history = Array.isArray(ticket.history) ? ticket.history : [];
+  ticket.history.push({ at: ticket.updatedAt, from: `priority:${from}`, to: `priority:${priority}`, by: actor });
+
+  await fs.writeFile(file, serializeTicket(ticket), "utf8");
+  const sha = await git.commitAll(worktreePath, `peephole: ${ticketId} priority -> ${priority}`);
+  const unpushed = await git.unpushedCount(worktreePath, localBranch, remoteBranch);
+  return { committed: Boolean(sha), sha, unpushed, ticket };
+}
+
+/** Sets a ticket's short title — the headline shown on the card, distinct from `intent` (the why).
+ * Free text, optional: a ticket with no title falls back to its intent on the board, so clearing it
+ * (empty string) is valid and just restores that fallback. Recorded in history like every other
+ * mutation. Always its own commit. */
+export async function setTitle(repoRoot, remoteBranch, ticketId, title, actor = "peephole-ui") {
+  const { worktreePath, localBranch } = await prepWorktree(repoRoot, remoteBranch);
+  const file = path.join(worktreePath, ".peephole", "tickets", `${ticketId}.md`);
+  if (!(await fileExists(file))) throw new Error(`ticket "${ticketId}" not found`);
+
+  const { parseTicket } = await import("./schema.js");
+  const parsed = parseTicket(await fs.readFile(file, "utf8"), ticketId);
+  if (!parsed.ok) throw new Error(`Cannot set title on ${ticketId}: ${parsed.errors.join("; ")}`);
+  const ticket = parsed.ticket;
+
+  const next = title == null ? "" : String(title).trim();
+  const from = ticket.title || "";
+  if (from === next) return { committed: false, ticket };
+  ticket.title = next;
+  ticket.updatedAt = new Date().toISOString();
+  ticket.history = Array.isArray(ticket.history) ? ticket.history : [];
+  ticket.history.push({ at: ticket.updatedAt, from: `title:${from || "none"}`, to: `title:${next || "none"}`, by: actor });
+
+  await fs.writeFile(file, serializeTicket(ticket), "utf8");
+  const sha = await git.commitAll(worktreePath, `peephole: ${ticketId} title updated`);
   const unpushed = await git.unpushedCount(worktreePath, localBranch, remoteBranch);
   return { committed: Boolean(sha), sha, unpushed, ticket };
 }

@@ -276,6 +276,12 @@
     overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
   .badge.tag{color:var(--ink-dim); background:var(--surface-2); border:1px solid var(--border);}
   .badge.phase{font-weight:700; letter-spacing:0.01em;}
+  .badge.prio{font-weight:700;}
+  .badge.prio-urgent{color:var(--accent); background:var(--accent-wash);}
+  .badge.prio-high{color:var(--proposed); background:var(--proposed-bg);}
+  .badge.prio-low{color:var(--ink-dim); background:var(--surface-2); border:1px solid var(--border); font-weight:600;}
+  .prio-select{font:inherit; font-size:12px; padding:2px 5px; border:1px solid var(--border); border-radius:5px; background:var(--bg); color:var(--ink);}
+  .prio-select:disabled{opacity:0.6;}
   .epic-tag{font-size:10.5px; font-weight:700; color:var(--verified); background:var(--verified-bg); border-radius:5px; padding:2px 6px; max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
   .lane-group{display:flex; flex-direction:column; gap:8px; margin-bottom:12px;}
   .lane-group:last-child{margin-bottom:0;}
@@ -283,7 +289,10 @@
   .group-head .count{margin-left:auto; color:var(--ink-dim); font-weight:600;}
   .group-head .dim{color:var(--ink-dim);}
   .dim{opacity:0.75;}
-  .intent{margin:0; font-size:13px; line-height:1.4; font-weight:500;}
+  /* The title is the card's only text and clamps to two lines; the full intent + description is the
+     title's tooltip (alt text), and everything is in the detail modal. */
+  .intent{margin:0; font-size:13px; line-height:1.4; font-weight:500;
+    display:-webkit-box; -webkit-line-clamp:2; line-clamp:2; -webkit-box-orient:vertical; overflow:hidden;}
   .card-foot{display:flex; align-items:center; justify-content:space-between; gap:6px; flex-wrap:nowrap; margin-top:2px; padding-top:7px; border-top:1px solid var(--border);}
   .owner-chip{display:inline-flex; align-items:center; gap:4px; flex:0 1 auto; margin-inline:auto 0; font-size:10.5px; font-weight:600; color:var(--ink-dim); max-width:100%; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
   .owner-dot{width:7px; height:7px; border-radius:50%; flex:none;}
@@ -294,6 +303,8 @@
   .assign-select:disabled{opacity:0.6;}
   .epic-input{font:inherit; font-size:12px; padding:2px 6px; border:1px solid var(--border); border-radius:5px; background:var(--bg); color:var(--ink); max-width:220px;}
   .epic-input:disabled{opacity:0.6;}
+  .title-input{font:inherit; font-size:12px; padding:2px 6px; border:1px solid var(--border); border-radius:5px; background:var(--bg); color:var(--ink); width:100%; max-width:320px;}
+  .title-input:disabled{opacity:0.6;}
   .owner-chip.agent .owner-name{font-family:"IBM Plex Mono",ui-monospace,monospace; letter-spacing:-0.01em;}
   .owner-name{min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
   .move-group{display:inline-flex; align-items:stretch; gap:4px; margin-left:auto; flex:none;}
@@ -596,8 +607,16 @@
             <input id="nt-project" name="project" required>
           </div>
           <div class="field">
+            <label for="nt-title">Title — short headline (optional; the card falls back to the intent)</label>
+            <input id="nt-title" name="title" autocomplete="off">
+          </div>
+          <div class="field">
             <label for="nt-intent">Intent — one sentence, the why</label>
             <textarea id="nt-intent" name="intent" rows="2" required></textarea>
+          </div>
+          <div class="field">
+            <label for="nt-body">Description — detail (optional)</label>
+            <textarea id="nt-body" name="body" rows="3"></textarea>
           </div>
           <div class="field">
             <label for="nt-acceptance">Acceptance criteria</label>
@@ -608,6 +627,15 @@
             <select id="nt-risk" name="risk">
               <option value="reversible" selected>Reversible</option>
               <option value="irreversible">Irreversible</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="nt-priority">Priority</label>
+            <select id="nt-priority" name="priority">
+              <option value="urgent">🔺 Urgent</option>
+              <option value="high">▲ High</option>
+              <option value="normal" selected>Normal</option>
+              <option value="low">▽ Low</option>
             </select>
           </div>
           <div class="field">
