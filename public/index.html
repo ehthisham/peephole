@@ -225,6 +225,13 @@
   .modal-history .ev-body{flex:1; min-width:0;}
   .modal-history .ev-comment .ev-body{color:var(--ink); white-space:pre-wrap;}
   .modal-history .ev-comment{background:var(--surface-2); border-radius:6px; padding:6px 8px; margin:2px 0;}
+  /* Provenance dot + gate stamp on each state move (gated-transitions feature). */
+  .ev-mode{font-size:10px; vertical-align:middle;}
+  .ev-mode-human{color:var(--ink-dim);}
+  .ev-mode-auto{color:var(--progress);}
+  .ev-gate{margin-left:6px; font-size:11px; color:var(--accent); font-weight:600;}
+  .modal-history li.ev-gated .ev-body{font-weight:600;}
+  .badge.gate{color:var(--accent); background:var(--accent-wash);}
 
   .exec-modal{max-width:440px;}
   .exec-note{margin:0 0 14px; font-size:12.5px; line-height:1.5; color:var(--ink-dim);}

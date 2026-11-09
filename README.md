@@ -210,8 +210,71 @@ you click **Push to remote** and confirm.
   missing and commits locally.
 - **Control** — Run / Pause / Skip per ticket, written to that ticket's `control` field
   and committed locally; every write appends to the ticket's `history`.
+- **Gated transitions + provenance** — every state move records its provenance: `human` (a person
+  decided) or `auto` (an agent advanced it with no human in the loop), set with
+  `peephole ticket advance <id> --state <s> --mode auto|human` (default `human`). A project can make
+  chosen transitions require a review stamp by listing them under `gates:` in `.peephole/config.yaml`:
+
+  ```yaml
+  gates:
+    - verified->shipped   # moving a ticket into "shipped" from "verified" is stamped
+    - shipped             # bare target: ANY move into "shipped" is stamped
+  ```
+
+  Crossing a gate records a `gate: true` stamp on the history entry (carrying who, when and the
+  mode); the board shows a 🔒 on the card and a stamped, provenance-dotted trail in the ticket's
+  Activity. `gates:` absent or empty means every transition is ungated — advance stays free, exactly
+  as before.
 - **Agents panel** — reads `.peephole/agents/*.json` heartbeats, marks a session `stale` once its
   heartbeat goes quiet for 5+ minutes.
+- **Jira CSV interop** — move tickets between Peephole and Jira over CSV, no live Jira API:
+
+  ```bash
+  peephole ticket export --repo <path> [--out tickets.csv]       # Jira-import-ready CSV (stdout if no --out)
+  peephole ticket import --repo <path> --file jira.csv [--dry-run]  # create/update tickets from a Jira CSV
+  ```
+
+  The CSV carries Jira's own columns — `Issue Type, Summary, Description, Acceptance, Status,
+  Priority, Assignee, Epic Link` — plus a `peephole-id` column that makes export→import a stable
+  round-trip and the dedup key, so re-importing updates tickets rather than duplicating them (an
+  `Issue key` column, or a slug of the Summary, is used when no `peephole-id` is present). `--dry-run`
+  prints the create/update/skip plan without writing. Field map: `title`↔Summary, `intent`↔Description,
+  `acceptance`↔Acceptance, `state`↔Status, `priority`↔Priority, `type`↔Issue Type, `epic`↔Epic Link.
+  An unknown Status/Priority/Issue Type falls back to the Peephole default with a warning, never a
+  hard fail. State mapping is lossy by nature — Jira has fewer stages, so `built` and `in-progress`
+  both export as "In Progress" and import back as `in-progress`.
+
+## Opting a clone in (`peephole.enabled`)
+
+Peephole leaves one stable, plugin-independent signal in each developer's clone that a repo's git
+hooks and CI scripts can rely on:
+
+```bash
+git config --local --get peephole.enabled   # -> "true"
+```
+
+- **`true`** — this developer tracks their work on the Peephole board and accepts ticket-reference
+  checks (e.g. a `commit-msg` hook that requires a ticket id in the message).
+- **`false`** — this developer has opted out; Peephole will **never** flip it back.
+- **unset** — undecided; Peephole sets it to `true` the first time it runs in the checkout.
+
+It is written `--local` (lives in `.git/config`, never committed), so it marks **you**, not your
+teammates — a repo where some people use Peephole and some don't can require a ticket reference only
+from those who opted in. `peephole serve --repo <path>` and the plugin's SessionStart hook set it
+when unset; the board's own ledger checkouts (the sparse clone under `~/.peephole/ledgers`, or a
+`.peephole-worktree`) are never marked. Opt in or out explicitly at any time:
+
+```bash
+peephole enable  [--repo <path>]   # git config --local peephole.enabled true
+peephole disable [--repo <path>]   # opt out; serve/SessionStart won't re-enable it
+```
+
+A commit hook can gate on it like this (only enabled developers are checked):
+
+```bash
+[ "$(git config --local --get peephole.enabled)" = "true" ] || exit 0
+# ...require a ticket reference here...
+```
 
 ## Executing tickets
 

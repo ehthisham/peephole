@@ -48,6 +48,29 @@ export async function currentBranch(repoRoot) {
   return (await run(repoRoot, ["rev-parse", "--abbrev-ref", "HEAD"])).trim();
 }
 
+/** True when `dir` is inside a git working tree (not a bare repo, not a plain directory). */
+export async function isInsideWorkTree(dir) {
+  try {
+    return (await run(dir, ["rev-parse", "--is-inside-work-tree"])).trim() === "true";
+  } catch {
+    return false;
+  }
+}
+
+/** Reads one `--local` git config value, or null when it is unset (git exits 1). */
+export async function localConfigGet(dir, key) {
+  try {
+    return (await run(dir, ["config", "--local", "--get", key])).trim();
+  } catch {
+    return null;
+  }
+}
+
+/** Writes one `--local` git config value into this checkout's `.git/config`. */
+export async function localConfigSet(dir, key, value) {
+  await run(dir, ["config", "--local", key, String(value)]);
+}
+
 /** The remote's default branch (Bitbucket/GitHub/GitLab all expose this the same way), falling back to the current local branch when it can't be determined. */
 export async function defaultRemoteBranch(repoRoot, remote = "origin") {
   try {

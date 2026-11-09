@@ -35,6 +35,32 @@ async function ensureDir(p) {
   await fs.mkdir(p, { recursive: true });
 }
 
+/** Reads the ledger's `.peephole/config.yaml` and returns its `gates` list (normalized), or [] when
+ *  the file is missing/unparsable/has none. The gate rule is read straight from the ledger the write
+ *  is about to touch, so it is always the config a teammate committed — no dependence on a server
+ *  cache being fresh. */
+async function readGates(worktreePath) {
+  try {
+    const { parseConfig, normalizeGates } = await import("./schema.js");
+    const raw = await fs.readFile(path.join(worktreePath, ".peephole", "config.yaml"), "utf8");
+    const parsed = parseConfig(raw);
+    return parsed.config ? normalizeGates(parsed.config.gates) : [];
+  } catch {
+    return [];
+  }
+}
+
+/** Builds one history entry for a state move, tagging it with provenance (`mode`) and, when the move
+ *  crosses a declared gate, a `gate: true` stamp — the recorded "this transition was reviewed"
+ *  marker the board renders as a gate trail. A `human`-mode, ungated move adds neither key, so
+ *  pre-feature history stays byte-identical. */
+function stateHistoryEntry(at, from, to, by, mode, gated) {
+  const entry = { at, from, to, by };
+  if (mode && mode !== "human") entry.mode = mode;
+  if (gated) entry.gate = true;
+  return entry;
+}
+
 async function fileExists(p) {
   try {
     await fs.access(p);
@@ -325,11 +351,13 @@ export async function touchTicketSession(repoRoot, remoteBranch, ticketId, { ses
  * A ticket that cannot make the move is skipped and reported, never forced — a blocked control, a
  * backward move, an unparsable file. The caller gets both lists back.
  */
-export async function advanceMany(repoRoot, remoteBranch, ticketIds, state, actor = "peephole-ui") {
-  const { STATES, FORWARD_STATES, parseTicket } = await import("./schema.js");
+export async function advanceMany(repoRoot, remoteBranch, ticketIds, state, actor = "peephole-ui", mode = "human") {
+  const { STATES, FORWARD_STATES, MODES, isGatedTransition, parseTicket } = await import("./schema.js");
   if (!STATES.includes(state)) throw new Error(`invalid state "${state}"`);
+  if (!MODES.includes(mode)) throw new Error(`invalid mode "${mode}" (expected one of ${MODES.join(", ")})`);
 
   const { worktreePath, localBranch } = await prepWorktree(repoRoot, remoteBranch);
+  const gates = await readGates(worktreePath);
   const moved = [];
   const skipped = [];
   const at = new Date().toISOString();
@@ -367,7 +395,7 @@ export async function advanceMany(repoRoot, remoteBranch, ticketIds, state, acto
     ticket.state = state;
     ticket.updatedAt = at;
     ticket.history = Array.isArray(ticket.history) ? ticket.history : [];
-    ticket.history.push({ at, from, to: state, by: actor });
+    ticket.history.push(stateHistoryEntry(at, from, state, actor, mode, isGatedTransition(gates, from, state)));
     if (["shipped", "closed"].includes(state) && actor && !MACHINE_ACTORS.has(actor)) ticket.finishedBy = actor;
     await fs.writeFile(file, serializeTicket(ticket), "utf8");
     moved.push({ id: ticketId, from });
@@ -384,16 +412,20 @@ export async function advanceMany(repoRoot, remoteBranch, ticketIds, state, acto
 /** Moves a ticket's `state` — forward (proposed→...→shipped) or to `closed`, per the ledger rule
  * (state only ever advances or closes, never drags backward, never deletes). Always its own commit:
  * unlike `control` clicks this is a meaningful milestone, never rapid-fire. */
-export async function setState(repoRoot, remoteBranch, ticketId, state, actor = "peephole-ui", session = null) {
+export async function setState(repoRoot, remoteBranch, ticketId, state, actor = "peephole-ui", session = null, mode = "human") {
   // Whoever moves a ticket to a terminal state is the closest thing to an author the ledger has for
   // work that was never claimed. Recorded as `finishedBy` so it can be attributed without pretending
   // somebody owned it — an unclaimed ticket has no owner, and inventing one would be a lie the
   // member pages then report as fact.
-  const { STATES, FORWARD_STATES, parseTicket } = await import("./schema.js");
+  const { STATES, FORWARD_STATES, MODES, isGatedTransition, parseTicket } = await import("./schema.js");
   if (!STATES.includes(state)) {
     throw new Error(`invalid state "${state}" (expected one of ${STATES.join(", ")})`);
   }
+  if (!MODES.includes(mode)) {
+    throw new Error(`invalid mode "${mode}" (expected one of ${MODES.join(", ")})`);
+  }
   const { worktreePath, localBranch } = await prepWorktree(repoRoot, remoteBranch);
+  const gates = await readGates(worktreePath);
   const file = path.join(worktreePath, ".peephole", "tickets", `${ticketId}.md`);
   if (!(await fileExists(file))) throw new Error(`ticket "${ticketId}" not found`);
   const raw = await fs.readFile(file, "utf8");
@@ -414,7 +446,7 @@ export async function setState(repoRoot, remoteBranch, ticketId, state, actor = 
   ticket.state = state;
   ticket.updatedAt = new Date().toISOString();
   ticket.history = Array.isArray(ticket.history) ? ticket.history : [];
-  ticket.history.push({ at: ticket.updatedAt, from, to: state, by: actor });
+  ticket.history.push(stateHistoryEntry(ticket.updatedAt, from, state, actor, mode, isGatedTransition(gates, from, state)));
   if (session) upsertSession(ticket, { sessionId: session.sessionId || actor, transcriptPath: session.transcriptPath, tokens: session.tokens });
 
   const MACHINE_ACTORS = new Set(["peephole-ui", "peephole-queue", "agent", ""]);
@@ -465,6 +497,94 @@ export async function createTicket(repoRoot, remoteBranch, { id, project, title 
   const sha = await git.commitAll(worktreePath, `peephole: new ticket ${id}`);
   const unpushed = await git.unpushedCount(worktreePath, localBranch, remoteBranch);
   return { committed: Boolean(sha), sha, unpushed, ticket };
+}
+
+/** Imports normalized Jira-CSV records into the ledger in ONE commit: a record whose id is new is
+ *  created, one that matches an existing ticket updates only the fields that differ, and an
+ *  unchanged match is skipped. `dryRun` computes the same create/update/skip decisions and returns
+ *  them without writing or committing (acceptance item 4). Dedup is by ticket id — the round-trip
+ *  key the export carries as the `peephole-id` column — so re-importing the same CSV updates rather
+ *  than duplicates (item 3). */
+export async function importTickets(repoRoot, remoteBranch, records, { dryRun = false, actor = "peephole-ui", project } = {}) {
+  const { parseTicket, STATES, PRIORITIES, TYPES, DEFAULT_PRIORITY, DEFAULT_TYPE } = await import("./schema.js");
+  const { worktreePath, localBranch } = await prepWorktree(repoRoot, remoteBranch);
+  const dir = path.join(worktreePath, ".peephole", "tickets");
+  await ensureDir(dir);
+
+  const created = [];
+  const updated = [];
+  const skipped = [];
+  const now = new Date().toISOString();
+
+  // The project a created ticket is filed under: the caller's --project, else whatever the ledger's
+  // config declares, else the repo folder name — never left blank (project is a required field).
+  let proj = project;
+  if (!proj) {
+    try {
+      const { parseConfig } = await import("./schema.js");
+      const cfg = parseConfig(await fs.readFile(path.join(worktreePath, ".peephole", "config.yaml"), "utf8"));
+      proj = cfg.config && cfg.config.project;
+    } catch {}
+  }
+  if (!proj) proj = path.basename(repoRoot);
+
+  for (const rec of records) {
+    let id;
+    try {
+      id = ticketPath(dir, rec.id, "ticket id");
+    } catch {
+      skipped.push({ id: rec.id, reason: "invalid id" });
+      continue;
+    }
+    const safeState = STATES.includes(rec.state) ? rec.state : "proposed";
+    const safePrio = PRIORITIES.includes(rec.priority) ? rec.priority : DEFAULT_PRIORITY;
+    const safeType = TYPES.includes(rec.type) ? rec.type : DEFAULT_TYPE;
+
+    if (await fileExists(id)) {
+      const parsed = parseTicket(await fs.readFile(id, "utf8"), rec.id);
+      if (!parsed.ok) { skipped.push({ id: rec.id, reason: parsed.errors[0] }); continue; }
+      const t = parsed.ticket;
+      const changes = {};
+      if (rec.title && (t.title || "") !== rec.title) changes.title = rec.title;
+      if (rec.intent && t.intent !== rec.intent) changes.intent = rec.intent;
+      if (rec.acceptance != null && (t.acceptance || "") !== rec.acceptance) changes.acceptance = rec.acceptance;
+      if (safeState !== t.state) changes.state = safeState;
+      if (safePrio !== (t.priority || DEFAULT_PRIORITY)) changes.priority = safePrio;
+      if (safeType !== (t.type || DEFAULT_TYPE)) changes.type = safeType;
+      if ((rec.epic || null) !== (t.epic || null)) changes.epic = rec.epic || null;
+      if (Object.keys(changes).length === 0) { skipped.push({ id: rec.id, reason: "unchanged" }); continue; }
+      if (!dryRun) {
+        const fromState = t.state;
+        Object.assign(t, changes);
+        t.updatedAt = now;
+        t.history = Array.isArray(t.history) ? t.history : [];
+        t.history.push({ at: now, from: fromState, to: t.state, by: actor, via: "jira-import" });
+        await fs.writeFile(id, serializeTicket(t), "utf8");
+      }
+      updated.push({ id: rec.id, changes: Object.keys(changes) });
+    } else {
+      if (!dryRun) {
+        const ticket = {
+          id: rec.id, project: proj, title: rec.title || "", intent: rec.intent || rec.title || "",
+          acceptance: rec.acceptance || "", body: "", state: safeState, risk: "reversible",
+          priority: safePrio, type: safeType, blockedOn: "", control: "run", owner: null,
+          ownerName: null, assignee: rec.assignee || null, epic: rec.epic || null, selected: false,
+          comments: [], tags: [], createdBy: null, branch: null, pr: null, estimate: null,
+          createdAt: now, updatedAt: now,
+          history: [{ at: now, from: null, to: safeState, by: actor, via: "jira-import" }],
+        };
+        await fs.writeFile(id, serializeTicket(ticket), "utf8");
+      }
+      created.push({ id: rec.id });
+    }
+  }
+
+  if (dryRun || (created.length === 0 && updated.length === 0)) {
+    return { committed: false, dryRun, created, updated, skipped };
+  }
+  const sha = await git.commitAll(worktreePath, `peephole: import ${created.length} new + ${updated.length} updated from Jira CSV`);
+  const unpushed = await git.unpushedCount(worktreePath, localBranch, remoteBranch);
+  return { committed: Boolean(sha), dryRun: false, sha, unpushed, created, updated, skipped };
 }
 
 /** Claims (or re-affirms) ownership of an existing ticket, advancing proposed -> in-progress. Always its own commit. */

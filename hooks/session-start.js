@@ -4,6 +4,7 @@
 // Side-effect only: SessionStart has no blocking mechanism, and none is needed here.
 import { hostname } from "node:os";
 import { gitIdentity } from "./identity.js";
+import { markEnabledIfUnset } from "../src/enable.js";
 
 const PORT = process.env.PEEPHOLE_PORT || 4173;
 
@@ -22,6 +23,13 @@ async function main() {
   }
   const sessionId = payload.session_id;
   if (!sessionId) process.exit(0);
+
+  // Leave the per-developer opt-in mark (git config --local peephole.enabled true) in the repo this
+  // session is running in, when unset — so a plain `git commit` from this developer is detectable by
+  // a repo's hooks even with no board running. Best-effort; never blocks the session.
+  try {
+    await markEnabledIfUnset(payload.cwd || process.cwd());
+  } catch {}
 
   try {
     const author = await gitIdentity();

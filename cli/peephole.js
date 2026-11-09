@@ -1,6 +1,12 @@
 #!/usr/bin/env node
 import path from "node:path";
-import { startServer } from "../src/server.js";
+import fs from "node:fs/promises";
+import { startServer, resolveStateBranch } from "../src/server.js";
+import { resolveLedger } from "../src/ledger.js";
+import { scan } from "../src/scan.js";
+import { importTickets } from "../src/writer.js";
+import { exportCsv, parseCsv, rowsToTickets } from "../src/jiracsv.js";
+import { setEnabled, ENABLED_KEY } from "../src/enable.js";
 import { gitIdentity } from "../hooks/identity.js";
 
 /** The identity a claim is checked against when a ticket is assigned: whatever `--author` says,
@@ -254,18 +260,23 @@ async function cmdTicketAdvance(argv) {
   const args = parseArgs(argv.slice(1));
   const port = requirePort(args);
   if (!id || !args.state) {
-    console.error("usage: peephole ticket advance <id> --state <proposed|in-progress|built|verified|shipped|closed> [--transcript <path>] [--port 4173]");
+    console.error("usage: peephole ticket advance <id> --state <proposed|in-progress|built|verified|shipped|closed> [--mode human|auto] [--transcript <path>] [--port 4173]");
     process.exit(1);
   }
+  // Provenance of this move: `human` (a person decided) unless --mode auto says an agent advanced it
+  // with no human in the loop. Recorded on the history entry so the board shows who DECIDED, not just
+  // what ran.
+  const mode = args.mode && args.mode !== true ? String(args.mode) : "human";
   // Default the actor to this machine's git identity. Without it the history recorded the literal
   // string "agent" — 63 of 65 finished tickets on a real board say exactly that, which is why none
   // of them can be attributed to anybody. Nothing can recover a name that was never written down;
   // all that can be fixed is writing it from now on.
   const who = args.actor && args.actor !== true ? String(args.actor) : (await resolveAuthor(args))?.name;
   const result = await apiCall(port, "POST", `/api/tickets/${encodeURIComponent(id)}/state`, {
-    state: args.state, actor: who, sessionId: args.owner || args.actor, transcriptPath: args.transcript || null,
+    state: args.state, actor: who, mode, sessionId: args.owner || args.actor, transcriptPath: args.transcript || null,
   });
-  console.log(`"${id}" -> ${result.ticket.state}`);
+  const gated = (result.ticket.history || []).slice(-1)[0]?.gate;
+  console.log(`"${id}" -> ${result.ticket.state}${gated ? ` (gated · stamped ${mode})` : mode === "auto" ? " (auto)" : ""}`);
 }
 
 async function cmdTicketRename(argv) {
@@ -314,6 +325,66 @@ async function cmdControlCheck(argv) {
   process.exit(ticket.control === "run" ? 0 : 1);
 }
 
+/** Resolve the ledger checkout for a repo without going through the server — the bulk file ops
+ *  (export/import) read and write the ledger directly. Returns {ledger, branch, repoRoot}. */
+async function resolveLedgerForCli(args) {
+  const repoRoot = path.resolve(args.repo && args.repo !== true ? String(args.repo) : process.cwd());
+  const { branch } = await resolveStateBranch(repoRoot, "origin", args.branch && args.branch !== true ? String(args.branch) : null);
+  const ledger = await resolveLedger(repoRoot, branch);
+  return { ledger, branch, repoRoot };
+}
+
+async function cmdTicketExport(argv) {
+  const args = parseArgs(argv);
+  const { ledger, repoRoot } = await resolveLedgerForCli(args);
+  const result = await scan(ledger.path, ledger.localBranch, { repoRoot });
+  const csv = exportCsv(result.tickets || []);
+  if (args.out && args.out !== true) {
+    await fs.writeFile(String(args.out), csv, "utf8");
+    console.error(`exported ${(result.tickets || []).length} ticket(s) to ${args.out}`);
+  } else {
+    process.stdout.write(csv);
+  }
+}
+
+async function cmdTicketImport(argv) {
+  const args = parseArgs(argv);
+  if (!args.file || args.file === true) {
+    console.error("usage: peephole ticket import --file <csv> [--repo <path>] [--project <p>] [--dry-run] [--branch <b>]");
+    process.exit(1);
+  }
+  const { branch, repoRoot } = await resolveLedgerForCli(args);
+  const text = await fs.readFile(String(args.file), "utf8");
+  const { records, warnings } = rowsToTickets(parseCsv(text), { slugify });
+  for (const w of warnings) console.error(`warn: ${w}`);
+  const dryRun = Boolean(args["dry-run"]);
+  const who = (await resolveAuthor(args))?.name || "peephole-ui";
+  const result = await importTickets(repoRoot, branch, records, {
+    dryRun, actor: who, project: args.project && args.project !== true ? String(args.project) : undefined,
+  });
+  const line = `${dryRun ? "[dry-run] " : ""}${result.created.length} created, ${result.updated.length} updated, ${result.skipped.length} skipped`;
+  console.log(line);
+  if (dryRun) {
+    result.created.forEach((c) => console.log(`  + ${c.id}`));
+    result.updated.forEach((u) => console.log(`  ~ ${u.id} (${u.changes.join(", ")})`));
+    result.skipped.forEach((s) => console.log(`  = ${s.id} (${s.reason})`));
+  }
+}
+
+async function cmdEnable(argv, enabled) {
+  const args = parseArgs(argv);
+  const dir = path.resolve(args.repo && args.repo !== true ? String(args.repo) : process.cwd());
+  const res = await setEnabled(dir, enabled);
+  if (!res.ok) {
+    console.error(`cannot ${enabled ? "enable" : "disable"} Peephole here: ${res.reason}`);
+    process.exit(1);
+  }
+  console.log(`${ENABLED_KEY}=${res.value} in ${dir}`);
+  console.log(enabled
+    ? "This clone now advertises that you track work on the Peephole board (repo hooks may require a ticket reference)."
+    : "Opted out — Peephole will not re-enable this clone automatically.");
+}
+
 async function main() {
   const argv = process.argv.slice(2);
   const cmd = argv[0] || "serve";
@@ -329,6 +400,10 @@ async function main() {
   if (cmd === "ticket" && argv[1] === "type") return cmdTicketType(argv.slice(2));
   if (cmd === "ticket" && argv[1] === "title") return cmdTicketTitle(argv.slice(2));
   if (cmd === "ticket" && argv[1] === "comment") return cmdTicketComment(argv.slice(2));
+  if (cmd === "ticket" && argv[1] === "export") return cmdTicketExport(argv.slice(2));
+  if (cmd === "ticket" && argv[1] === "import") return cmdTicketImport(argv.slice(2));
+  if (cmd === "enable") return cmdEnable(argv.slice(1), true);
+  if (cmd === "disable") return cmdEnable(argv.slice(1), false);
   if (cmd === "ledger" && argv[1] === "move") return cmdLedgerMove(argv.slice(2));
   if (cmd === "ticket" && argv[1] === "advance") return cmdTicketAdvance(argv.slice(2));
   if (cmd === "ticket" && argv[1] === "rename") return cmdTicketRename(argv.slice(2));
@@ -348,8 +423,11 @@ async function main() {
     "  peephole ticket type <id> --to <feature|bug|chore>\n" +
     '  peephole ticket title <id> --to "<title>" | --clear  # short headline, falls back to intent\n' +
     '  peephole ticket comment <id> --text "<comment>"\n' +
+    "  peephole ticket export [--repo <path>] [--out <file.csv>] [--branch <b>]   # Jira-import-ready CSV (stdout if no --out)\n" +
+    "  peephole ticket import --file <csv> [--repo <path>] [--project <p>] [--dry-run]  # create/update tickets from a Jira CSV\n" +
+    "  peephole enable | disable [--repo <path>]   # opt this clone in/out (git config --local peephole.enabled)\n" +
     '  peephole ledger move --repo <path> [--to peephole-state] [--push]  # carry the ledger to its own branch\n' +
-    "  peephole ticket advance <id> --state <proposed|in-progress|built|verified|shipped|closed>\n" +
+    "  peephole ticket advance <id> --state <proposed|in-progress|built|verified|shipped|closed> [--mode human|auto]\n" +
     "  peephole ticket rename <id> --to <new-id>\n" +
     "  peephole agent heartbeat --session <id> [--ticket <id>] [--status working|idle|paused|stopped]\n" +
     "  peephole control check <id>\n",

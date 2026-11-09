@@ -649,6 +649,14 @@
         ? "every " + esc(state.autoFetch.intervalMinutes) + " min" + (state.autoFetch.push ? ", fetch + push" : ", fetch only")
         : "off"],
       ["States", Array.isArray(cfg.states) ? cfg.states.map(esc).join(" → ") : "—"],
+      // Gated transitions require a recorded review stamp to cross — a null `from` ("→ to") gates
+      // every move into that state. Empty = every transition is ungated (free advance).
+      ["Gated transitions", Array.isArray(cfg.gates) && cfg.gates.length
+        ? cfg.gates.map(function (g) {
+            if (typeof g === "string") return esc(g);
+            return esc((g && g.from ? g.from : "*") + " → " + (g && g.to ? g.to : "?"));
+          }).join(", ")
+        : '<span class="dim">none — advance is free</span>'],
       ["Control values", Array.isArray(cfg.control) ? cfg.control.map(esc).join(", ") : "—"],
       ["Risk values", Array.isArray(cfg.risk) ? cfg.risk.map(esc).join(", ") : "—"],
     ];
@@ -926,8 +934,13 @@
     // description, then the footer. Description prefers the free-text body, falling back to the
     // acceptance line so a card without a body still shows what "done" means. CSS clamps it to two
     // lines; the full text is in the modal.
-    var statusStrip = typeBadge || prioBadge || queueTag || controlTag
-      ? '<div class="card-top">' + typeBadge + prioBadge + queueTag + controlTag + "</div>"
+    // A tiny lock when any transition on this ticket crossed a gate and was stamped — the card-face
+    // signal that this one's progress is reviewed, not free. The full trail (who/when/mode) is in
+    // the modal timeline.
+    var gated = (Array.isArray(t.history) ? t.history : []).some(function (h) { return h && h.gate; });
+    var gateBadge = gated ? '<span class="badge gate" title="has a stamped (gated) transition — see Activity">🔒</span>' : "";
+    var statusStrip = typeBadge || prioBadge || gateBadge || queueTag || controlTag
+      ? '<div class="card-top">' + typeBadge + prioBadge + gateBadge + queueTag + controlTag + "</div>"
       : "";
     // The headline is the ticket's title, falling back to its intent when it has none (every ticket
     // written before the title field existed). It is the only text on the card face and clamps to two
@@ -1243,7 +1256,7 @@
     // explaining it are minutes apart and belong on the same timeline, newest first.
     var events = [];
     (Array.isArray(t.history) ? t.history : []).forEach(function (h) {
-      events.push({ at: h.at, kind: "event", by: h.by, from: h.from, to: h.to });
+      events.push({ at: h.at, kind: "event", by: h.by, from: h.from, to: h.to, mode: h.mode, gate: h.gate });
     });
     (Array.isArray(t.comments) ? t.comments : []).forEach(function (c) {
       events.push({ at: c.at, kind: "comment", by: c.by, text: c.text, control: c.control });
@@ -1258,9 +1271,20 @@
               esc(e.text) + '</span><span class="by">' + esc(e.by || "") + "</span></li>"
             );
           }
+          // Provenance dot: a gated transition carries a recorded review stamp (🔒 + who decided),
+          // and every state move shows whether a human decided it (●) or an agent advanced it on
+          // auto (⚙). A plain legacy entry with no mode reads as human and shows the human dot.
+          var mode = e.mode === "auto" ? "auto" : "human";
+          var dot = '<span class="ev-mode ev-mode-' + mode + '" title="' +
+            (mode === "auto" ? "advanced on auto — no human in the loop" : "decided by a human") + '">' +
+            (mode === "auto" ? "⚙" : "●") + "</span>";
+          var stamp = e.gate
+            ? '<span class="ev-gate" title="gated transition — review stamped (' + esc(mode) + ")\">🔒 stamped</span>"
+            : "";
           return (
-            '<li><span class="ev-when">' + relTime(e.at) + '</span><span class="ev-body">' +
-            esc(e.from || "—") + " → " + esc(e.to || "—") +
+            '<li class="' + (e.gate ? "ev-gated" : "") + '"><span class="ev-when">' + relTime(e.at) +
+            '</span><span class="ev-body">' + dot + " " +
+            esc(e.from || "—") + " → " + esc(e.to || "—") + stamp +
             '</span><span class="by">' + esc(e.by || "") + "</span></li>"
           );
         }).join("") + "</ul>"

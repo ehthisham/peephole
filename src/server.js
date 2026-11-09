@@ -10,6 +10,7 @@ import * as tokenUsage from "./tokens.js";
 import { createQueue, listSessions, attachInTerminal, safeSessionId, promptFor, stopSession } from "./execute.js";
 import { DEFAULT_STATE_BRANCH } from "./schema.js";
 import { resolveLedger } from "./ledger.js";
+import { markEnabledIfUnset } from "./enable.js";
 import { listProjects, rememberProject, forgetProject, validateRepo } from "./projects.js";
 import { detectCoverage } from "./coverage.js";
 import { ownershipMap } from "./ownership.js";
@@ -64,7 +65,7 @@ const DEFAULT_HOST = "127.0.0.1";
  * and is deleted, the tickets leave the default line with it, and anyone whose `git remote show`
  * fails falls back to their own checked-out branch and quietly reads a different board.
  */
-async function resolveStateBranch(repoRoot, remote, override) {
+export async function resolveStateBranch(repoRoot, remote, override) {
   const fallback = await git.defaultRemoteBranch(repoRoot, remote);
   if (override) return { branch: override, source: "--branch" };
   // `peephole/<default>` first: that is this machine's own ledger branch, which is always at or
@@ -128,6 +129,11 @@ export async function startServer(initialRepoRoot, { port = 4173, remote = "orig
         ? await git.checkMailmap(repoRoot, rawGitUser.name, rawGitUser.email)
         : rawGitUser;
       await rememberProject(repoRoot, { remoteUrl, stateBranch });
+      // Leave the per-developer opt-in mark in THIS checkout (the code repo, never the ledger) so a
+      // repo's commit hooks / CI can tell a Peephole user from a teammate who doesn't use it. Only
+      // when unset — an explicit `peephole disable` is never overridden. Best-effort: a failure here
+      // must never stop the board from serving.
+      markEnabledIfUnset(repoRoot).catch(() => {});
     }
 
     await openProject(initialRepoRoot);
@@ -852,7 +858,7 @@ export async function startServer(initialRepoRoot, { port = 4173, remote = "orig
         const ids = Array.isArray(body.ticketIds) ? body.ticketIds.map(String) : [];
         if (!ids.length) return sendJson(res, 400, { error: "no tickets given" });
         const who = body.actor || (ctx.gitUser && ctx.gitUser.name) || "peephole-ui";
-        const result = await writer.advanceMany(ctx.repoRoot, ctx.stateBranch, ids, body.state, who);
+        const result = await writer.advanceMany(ctx.repoRoot, ctx.stateBranch, ids, body.state, who, body.mode || "human");
         await ctx.refresh({ doFetch: false });
         return sendJson(res, 200, { ...result, state: ctx.publicState() });
       }
@@ -860,7 +866,7 @@ export async function startServer(initialRepoRoot, { port = 4173, remote = "orig
       if (req.method === "POST" && stateMatch) {
         const body = await readJsonBody(req);
         const session = await ctx.sessionFromBody(body, body.sessionId || body.actor);
-        const result = await writer.setState(ctx.repoRoot, ctx.stateBranch, stateMatch[1], body.state, body.actor, session);
+        const result = await writer.setState(ctx.repoRoot, ctx.stateBranch, stateMatch[1], body.state, body.actor, session, body.mode || "human");
         await ctx.refresh({ doFetch: false });
         return sendJson(res, 200, { ...result, state: ctx.publicState() });
       }

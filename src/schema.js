@@ -20,6 +20,37 @@ export const DEFAULT_PRIORITY = "normal";
 export const TYPES = ["feature", "bug", "chore"];
 export const DEFAULT_TYPE = "feature";
 
+// Provenance of a state change: `human` means a person decided it, `auto` means an agent/automation
+// advanced it with no human in the loop. Recorded on every history entry — who DECIDED a move, not
+// just what ran. `human` is the default and the value a history entry with no `mode` is read as, so
+// entries written before provenance existed keep parsing.
+export const MODES = ["human", "auto"];
+export const DEFAULT_MODE = "human";
+
+/** Parse a `gates:` config block into a normalized list of {from, to} transitions that require a
+ *  review stamp. Accepts "from->to" strings (whitespace-tolerant) or {from, to} objects; a bare
+ *  "to" string (or {to}) gates every transition INTO that state. Absent/empty = no gates, which is
+ *  the back-compatible default: every transition is ungated, exactly as before this feature. */
+export function normalizeGates(gates) {
+  if (!Array.isArray(gates)) return [];
+  const out = [];
+  for (const g of gates) {
+    if (typeof g === "string") {
+      const [from, to] = g.includes("->") ? g.split("->").map((s) => s.trim()) : [null, g.trim()];
+      if (to) out.push({ from: from || null, to });
+    } else if (g && typeof g === "object" && g.to) {
+      out.push({ from: g.from ? String(g.from).trim() : null, to: String(g.to).trim() });
+    }
+  }
+  return out;
+}
+
+/** True when moving `from` -> `to` crosses a declared gate (so the move must be stamped). A gate
+ *  with a null `from` matches any origin. */
+export function isGatedTransition(gates, from, to) {
+  return normalizeGates(gates).some((g) => g.to === to && (g.from === null || g.from === from));
+}
+
 const REQUIRED_TICKET_FIELDS = ["id", "project", "intent", "state", "risk", "control", "owner", "history"];
 
 export function defaultConfig(project, remoteUrl, stateBranch) {
@@ -33,6 +64,9 @@ export function defaultConfig(project, remoteUrl, stateBranch) {
     risk: RISKS,
     priority: PRIORITIES,
     type: TYPES,
+    // No transition is gated by default — advance stays free until a project opts in by listing
+    // "from->to" (or a bare target state) here. e.g. gates: [verified->shipped].
+    gates: [],
   };
 }
 
@@ -95,6 +129,16 @@ export function validateTicket(t, id) {
   }
   if (t.history !== undefined && !Array.isArray(t.history)) {
     errors.push(`${id}.md's "history" must be a list`);
+  }
+  // Provenance is optional per history entry: an entry with no `mode` reads as `human`, so only a
+  // present-but-invalid value is an error — never a missing one. Keeps every pre-provenance history
+  // entry parsing unchanged.
+  if (Array.isArray(t.history)) {
+    for (const h of t.history) {
+      if (h && h.mode !== undefined && !MODES.includes(h.mode)) {
+        errors.push(`${id}.md has a history entry with invalid mode "${h.mode}" (expected one of ${MODES.join(", ")})`);
+      }
+    }
   }
   return errors;
 }
