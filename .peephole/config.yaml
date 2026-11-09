@@ -17,3 +17,6 @@ control:
 risk:
   - reversible
   - irreversible
+# Gated transitions: moving a ticket into "shipped" (from "verified") records a review stamp.
+gates:
+  - verified->shipped
