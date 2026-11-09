@@ -1,6 +1,6 @@
 {
   "name": "peephole",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Local-first task tracking for multi-agent AI work, read straight from a git repo — ticket lifecycle CLI, a live board, and cooperative stop/claim control, wired into Claude Code as hooks + a skill.",
   "author": { "name": "ehthisham" },
   "license": "MIT",
