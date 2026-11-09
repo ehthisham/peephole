@@ -4,6 +4,27 @@ Local-first live status interface into multi-agent AI work. Reads `.peephole/**`
 git repo (no server, no auth, no bot credential) and writes control changes back through your own
 git identity.
 
+## Screenshots
+
+The board — three lanes (proposed → in-progress → shipped), cards carrying priority, type and gate
+badges, with per-ticket run/pause/skip and advance controls:
+
+![Peephole board](docs/screens/board.png)
+
+Insights — ticket-progress donut, ship velocity and forecast, shipped-per-week, lines of code and
+token spend, all derived from the ledger:
+
+![Insights](docs/screens/insights.png)
+
+Configuration — how Peephole is wired for this repo, including the gated transitions that require a
+review stamp (`verified->shipped` here):
+
+![Configuration](docs/screens/configuration.png)
+
+Coding standards — a repo's `CONTRIBUTING.md` rendered right on the board:
+
+![Coding standards](docs/screens/coding-standards.png)
+
 ## Install as a Claude Code plugin
 
 This repo is also a Claude Code plugin: it ships the ticket-lifecycle **hooks** (session presence +
