@@ -232,6 +232,18 @@
   .ev-gate{margin-left:6px; font-size:11px; color:var(--accent); font-weight:600;}
   .modal-history li.ev-gated .ev-body{font-weight:600;}
   .badge.gate{color:var(--accent); background:var(--accent-wash);}
+  /* About page */
+  .about-page{max-width:720px; margin:0 auto; padding:8px 4px;}
+  .about-head{display:flex; align-items:baseline; gap:12px; margin-bottom:4px;}
+  .about-head h2{margin:0; color:var(--accent); font-size:24px;}
+  .about-version{font-family:var(--mono,monospace); font-size:14px; color:var(--ink-dim); background:var(--surface-2); padding:2px 8px; border-radius:6px;}
+  .about-tagline{color:var(--ink-dim); margin:0 0 16px; line-height:1.5;}
+  .about-page h3{margin:18px 0 8px; font-size:13px; text-transform:uppercase; letter-spacing:.04em; color:var(--ink-dim);}
+  .about-page ul{margin:0 0 8px; padding-left:18px; line-height:1.7;}
+  .about-meta{display:grid; grid-template-columns:auto 1fr; gap:4px 16px; font-size:13px;}
+  .about-meta dt{color:var(--ink-dim);}
+  .about-meta dd{margin:0;}
+  .about-meta a{color:var(--accent);}
 
   .exec-modal{max-width:440px;}
   .exec-note{margin:0 0 14px; font-size:12.5px; line-height:1.5; color:var(--ink-dim);}
@@ -536,6 +548,7 @@
     <button class="tab" data-tab="members" type="button" aria-selected="false">Members</button>
     <button class="tab" data-tab="standards" type="button" aria-selected="false">Coding standards</button>
     <button class="tab" data-tab="config" type="button" aria-selected="false">Configuration</button>
+    <button class="tab" data-tab="about" type="button" aria-selected="false">About</button>
   </nav>
 
   <div class="tab-panel" id="panel-tasks">
@@ -548,6 +561,11 @@
         </div>
         <button class="primary" id="execSelectedBtn" type="button" disabled>Execute selected</button>
         <button class="ghost" id="groupToggle" type="button" aria-pressed="false">Group by epic</button>
+        <button class="ghost" id="exportBtn" type="button"
+                title="Download the tickets currently shown (after filters) as a Jira-import-ready CSV">Export CSV</button>
+        <button class="ghost" id="importBtn" type="button"
+                title="Create or update tickets from a Jira-exported CSV">Import CSV</button>
+        <input type="file" id="importFile" accept=".csv,text/csv" hidden>
         <div class="filter-wrap">
           <button class="ghost icon-btn" id="filterBtn" type="button" aria-expanded="false" aria-haspopup="true"
                   title="Filter by member" aria-label="Filter by member">
@@ -597,6 +615,10 @@
 
   <div class="tab-panel" id="panel-config" hidden>
     <div class="modal-body standards-doc" id="configContent"></div>
+  </div>
+
+  <div class="tab-panel" id="panel-about" hidden>
+    <div class="about-page" id="aboutContent"></div>
   </div>
 
   <div class="modal-backdrop" id="ticketModalBackdrop" hidden>

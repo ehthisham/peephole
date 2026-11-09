@@ -1699,6 +1699,7 @@
   }
 
   var latestTickets = [];
+  var lastVisibleTickets = [];
   function renderBoard(tickets) {
     latestTickets = tickets;
     var dir = getLaneSortDir();
@@ -1711,6 +1712,9 @@
       return matchesMembers(t, selected) && matchesSelection(t, selMode) &&
         matchesTags(t, tagSel) && matchesEpics(t, epicSel);
     });
+    // The exact set the board is showing (after every filter) — Export CSV sends these ids so the
+    // file mirrors what the user sees, not the whole ledger.
+    lastVisibleTickets = visible;
     board.innerHTML = "";
     LANES.forEach(function (s) {
       var inLane = laneSort(visible.filter(function (t) { return s.states.indexOf(t.state) !== -1; }), dir);
@@ -2348,6 +2352,7 @@
     if (openMember) renderMemberDetail(openMember, state);
     else renderMembers((state.stats && state.stats.contributorList) || []);
     renderConfig(state);
+    renderAbout(state);
   }
 
   pullBtn.addEventListener("click", async function () {
@@ -3053,6 +3058,107 @@
   var ACTIVE_TAB_KEY = "peephole.activeTab";
   var standardsLoaded = false;
 
+  // --- Export / Import (Jira CSV) -------------------------------------------------
+  var exportBtn = document.getElementById("exportBtn");
+  var importBtn = document.getElementById("importBtn");
+  var importFile = document.getElementById("importFile");
+  var aboutContent = document.getElementById("aboutContent");
+
+  if (exportBtn) {
+    exportBtn.addEventListener("click", async function () {
+      // Send the ids the board is currently SHOWING (after filters) so the CSV mirrors the view.
+      var ids = (lastVisibleTickets || []).map(function (t) { return t.id; });
+      var old = exportBtn.textContent;
+      exportBtn.disabled = true;
+      exportBtn.textContent = "Exporting…";
+      try {
+        var res = await fetch(withProject("/api/tickets/export"), {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ids: ids }),
+        });
+        if (!res.ok) { window.alert("Export failed (" + res.status + ")"); return; }
+        var text = await res.text();
+        var url = URL.createObjectURL(new Blob([text], { type: "text/csv" }));
+        var a = document.createElement("a");
+        a.href = url;
+        a.download = "peephole-" + ((latestState && latestState.project) || "tickets") + ".csv";
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
+      } finally {
+        exportBtn.disabled = false;
+        exportBtn.textContent = old;
+      }
+    });
+  }
+
+  if (importBtn && importFile) {
+    importBtn.addEventListener("click", function () { importFile.click(); });
+    importFile.addEventListener("change", async function () {
+      var file = importFile.files && importFile.files[0];
+      importFile.value = ""; // allow re-picking the same file later
+      if (!file) return;
+      var old = importBtn.textContent;
+      importBtn.disabled = true;
+      importBtn.textContent = "Reading…";
+      try {
+        var text = await file.text();
+        // Dry-run first so the user confirms before anything is written.
+        var dry = await apiPost("/api/tickets/import", { csv: text, dryRun: true });
+        if (dry && dry.error) { window.alert("Import failed: " + dry.error); return; }
+        var msg = "Import preview:\n  " + dry.created.length + " new\n  " +
+          dry.updated.length + " updated\n  " + dry.skipped.length + " unchanged";
+        if (dry.warnings && dry.warnings.length) {
+          msg += "\n\nWarnings:\n  " + dry.warnings.slice(0, 8).join("\n  ");
+          if (dry.warnings.length > 8) msg += "\n  …(" + (dry.warnings.length - 8) + " more)";
+        }
+        msg += "\n\nApply these changes?";
+        if (!window.confirm(msg)) return;
+        var res = await apiPost("/api/tickets/import", { csv: text, dryRun: false });
+        if (res && res.error) { window.alert("Import failed: " + res.error); return; }
+        window.alert("Imported: " + res.created.length + " new, " + res.updated.length +
+          " updated, " + res.skipped.length + " unchanged.");
+        if (res.state) render(res.state);
+      } catch (e) {
+        window.alert("Import failed: " + (e && e.message ? e.message : e));
+      } finally {
+        importBtn.disabled = false;
+        importBtn.textContent = old;
+      }
+    });
+  }
+
+  function renderAbout(state) {
+    if (!aboutContent) return;
+    state = state || latestState || {};
+    var v = state.peepholeVersion || "—";
+    var rows = [
+      ["Project", esc(state.project || "—")],
+      ["Checkout", state.repoRoot ? '<span class="mono">' + esc(state.repoRoot) + "</span>" : "—"],
+      ["Remote", state.remoteUrl ? '<span class="mono">' + esc(state.remoteUrl) + "</span>" : "—"],
+      ["Ledger branch", esc(state.stateBranch || "—")],
+    ];
+    var feats = [
+      "Three-lane ticket board — lifecycle, priority, type, and gated transitions with human/auto provenance",
+      "Cooperative stop/claim control and live agent presence, wired in as Claude Code hooks",
+      "Insights — ship velocity, forecast, shipped-per-week, coverage, and token spend",
+      "Jira CSV export / import (export respects the board's current filters)",
+      "Per-developer opt-in via git config --local peephole.enabled",
+    ];
+    aboutContent.innerHTML =
+      '<div class="about-head"><h2>Peephole</h2><span class="about-version">v' + esc(v) + "</span></div>" +
+      '<p class="about-tagline">Local-first live status interface into multi-agent AI work — read straight ' +
+      "from a git repo, no server, no auth, no bot credential.</p>" +
+      "<h3>This board</h3><dl class=\"about-meta\">" +
+      rows.map(function (r) { return "<dt>" + r[0] + "</dt><dd>" + r[1] + "</dd>"; }).join("") + "</dl>" +
+      "<h3>What it does</h3><ul>" +
+      feats.map(function (x) { return "<li>" + esc(x) + "</li>"; }).join("") + "</ul>" +
+      "<h3>Links</h3><dl class=\"about-meta\">" +
+      '<dt>Homepage</dt><dd><a href="https://github.com/ehthisham/peephole" target="_blank" rel="noopener">github.com/ehthisham/peephole</a></dd>' +
+      "<dt>License</dt><dd>MIT</dd></dl>";
+  }
+
   function setActiveTab(name) {
     tabButtons.forEach(function (btn) {
       var active = btn.dataset.tab === name;
@@ -3062,6 +3168,7 @@
     });
     try { localStorage.setItem(ACTIVE_TAB_KEY, name); } catch (e) {}
     if (name === "standards" && !standardsLoaded) loadStandards();
+    if (name === "about") renderAbout(latestState);
   }
   tabButtons.forEach(function (btn) {
     btn.addEventListener("click", function () { setActiveTab(btn.dataset.tab); });

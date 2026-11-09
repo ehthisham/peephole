@@ -11,6 +11,8 @@ import { createQueue, listSessions, attachInTerminal, safeSessionId, promptFor, 
 import { DEFAULT_STATE_BRANCH } from "./schema.js";
 import { resolveLedger } from "./ledger.js";
 import { markEnabledIfUnset } from "./enable.js";
+import { exportCsv, parseCsv, rowsToTickets } from "./jiracsv.js";
+import { readFileSync } from "node:fs";
 import { listProjects, rememberProject, forgetProject, validateRepo } from "./projects.js";
 import { detectCoverage } from "./coverage.js";
 import { ownershipMap } from "./ownership.js";
@@ -20,6 +22,16 @@ import { selfStats } from "./selfstats.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, "..", "public");
+
+// Peephole's own version, read once from package.json — surfaced in the state so the board's About
+// tab can show which version is running.
+const PEEPHOLE_VERSION = (() => {
+  try {
+    return JSON.parse(readFileSync(path.join(__dirname, "..", "package.json"), "utf8")).version || null;
+  } catch {
+    return null;
+  }
+})();
 
 function slugify(text, maxLen = 48) {
   return text.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, maxLen).replace(/-+$/, "");
@@ -240,6 +252,7 @@ export async function startServer(initialRepoRoot, { port = 4173, remote = "orig
         // project (a clone into `work/`, a second checkout) had every ticket filtered out as
         // belonging to "another project", leaving an empty board and no hint why.
         project: (cache.config && cache.config.project) || path.basename(repoRoot),
+        peepholeVersion: PEEPHOLE_VERSION,
         remoteUrl,
         remote,
         stateBranch,
@@ -861,6 +874,34 @@ export async function startServer(initialRepoRoot, { port = 4173, remote = "orig
         const result = await writer.advanceMany(ctx.repoRoot, ctx.stateBranch, ids, body.state, who, body.mode || "human");
         await ctx.refresh({ doFetch: false });
         return sendJson(res, 200, { ...result, state: ctx.publicState() });
+      }
+      if (req.method === "POST" && url.pathname === "/api/tickets/export") {
+        // Export the tickets the client asks for, in the order given — the board posts the ids it is
+        // currently SHOWING (after its filters), so the CSV mirrors what the user sees, not the whole
+        // ledger. No `ids` = the whole project (the CLI's default).
+        const body = await readJsonBody(req);
+        const all = ctx.cache.tickets || [];
+        const ids = Array.isArray(body.ids) ? body.ids.map(String) : null;
+        const chosen = ids
+          ? ids.map((id) => all.find((t) => t.id === id)).filter(Boolean)
+          : all;
+        res.writeHead(200, {
+          "Content-Type": "text/csv; charset=utf-8",
+          "Content-Disposition": `attachment; filename="peephole-${(ctx.cache.config && ctx.cache.config.project) || "tickets"}.csv"`,
+        });
+        return res.end(exportCsv(chosen));
+      }
+      if (req.method === "POST" && url.pathname === "/api/tickets/import") {
+        const body = await readJsonBody(req);
+        const text = typeof body.csv === "string" ? body.csv : "";
+        if (!text.trim()) return sendJson(res, 400, { error: "no CSV content" });
+        const { records, warnings } = rowsToTickets(parseCsv(text));
+        const who = body.actor || (ctx.gitUser && ctx.gitUser.name) || "peephole-ui";
+        const result = await writer.importTickets(ctx.repoRoot, ctx.stateBranch, records, {
+          dryRun: Boolean(body.dryRun), actor: who,
+        });
+        if (!body.dryRun) await ctx.refresh({ doFetch: false });
+        return sendJson(res, 200, { ...result, warnings, state: ctx.publicState() });
       }
       const stateMatch = url.pathname.match(/^\/api\/tickets\/([^/]+)\/state$/);
       if (req.method === "POST" && stateMatch) {

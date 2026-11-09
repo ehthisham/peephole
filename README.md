@@ -248,11 +248,20 @@ you click **Push to remote** and confirm.
   as before.
 - **Agents panel** — reads `.peephole/agents/*.json` heartbeats, marks a session `stale` once its
   heartbeat goes quiet for 5+ minutes.
-- **Jira CSV interop** — move tickets between Peephole and Jira over CSV, no live Jira API:
+- **Jira CSV interop** — move tickets between Peephole and Jira over CSV, no live Jira API.
+
+  **On the board** (Tasks tab toolbar):
+  - **Export CSV** — downloads the tickets *currently shown* (after whatever member / tag / epic /
+    selection filters are active), not the whole ledger. Filter the board first, then export exactly
+    that set.
+  - **Import CSV** — pick a Jira-exported `.csv`; it previews the create/update/skip plan (and any
+    warnings) for confirmation before writing.
+
+  **From the CLI:**
 
   ```bash
-  peephole ticket export --repo <path> [--out tickets.csv]       # Jira-import-ready CSV (stdout if no --out)
-  peephole ticket import --repo <path> --file jira.csv [--dry-run]  # create/update tickets from a Jira CSV
+  peephole ticket export --repo <path> [--out tickets.csv]         # Jira-import-ready CSV (stdout if no --out)
+  peephole ticket import --repo <path> --file jira.csv [--dry-run] # create/update tickets from a Jira CSV
   ```
 
   The CSV carries Jira's own columns — `Issue Type, Summary, Description, Acceptance, Status,
@@ -264,6 +273,8 @@ you click **Push to remote** and confirm.
   An unknown Status/Priority/Issue Type falls back to the Peephole default with a warning, never a
   hard fail. State mapping is lossy by nature — Jira has fewer stages, so `built` and `in-progress`
   both export as "In Progress" and import back as `in-progress`.
+- **About tab** — shows the running Peephole version, this board's project/checkout/remote, a feature
+  summary, and links.
 
 ## Opting a clone in (`peephole.enabled`)
 
