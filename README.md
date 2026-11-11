@@ -246,7 +246,8 @@ you click **Push to remote** and confirm.
   refused.
 - **Board search** — the Tasks toolbar has a search box that filters the visible cards by **title,
   ticket id, or Jira key** (case-insensitive substring), ANDed with the other filters; Export CSV
-  respects it. Escape clears it.
+  respects it. Escape clears it. A ✕ badge on the filter icon appears whenever any filter *or* the
+  search is active — one click clears every filter and the search box at once.
 - **Jira issue link** — each ticket has an optional `jira` field (e.g. `PROJ-42`), editable in the
   modal and shown as a badge on the card; set it by hand (`peephole ticket jira <id> --to PROJ-42`)
   or let the Jira push stamp it. When the board knows a Jira base URL the key becomes a direct link.

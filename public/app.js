@@ -3408,7 +3408,7 @@
       "Closed is the only terminal state; shipped is an optional intermediate (ship-then-close, close-without-shipping, or abandon)",
       "Edit a ticket's intent / acceptance / notes after creation, in place",
       "Copy a ticket's description (intent + acceptance + notes) to the clipboard as markdown",
-      "Search the board by title, ticket id, or Jira key",
+      "Search the board by title, ticket id, or Jira key — with a one-click clear-all (✕) for filters + search",
       "Optional Jira issue link per ticket (badge on the card, editable in the modal)",
       "One-way manual push to Jira — create/update the issue, best-effort status, optional worklog",
       "Cooperative stop/claim control and live agent presence, wired in as Claude Code hooks",
