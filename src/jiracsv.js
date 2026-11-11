@@ -39,6 +39,12 @@ const STATE_TO_STATUS = {
 const PRIORITY_TO_JIRA = { low: "Low", normal: "Medium", high: "High", urgent: "Highest" };
 const TYPE_TO_ISSUETYPE = { feature: "Story", bug: "Bug", chore: "Task" };
 
+/** The Jira status name a peephole state maps to (shared by the CSV export and the live Jira push, so
+ *  the two never drift). Unknown -> "To Do". */
+export function jiraStatusForState(state) {
+  return STATE_TO_STATUS[state] || "To Do";
+}
+
 // Jira -> peephole (lowercased keys; several Jira values fold onto one peephole value).
 const STATUS_TO_STATE = {
   "to do": "proposed", backlog: "proposed", open: "proposed", "selected for development": "proposed",

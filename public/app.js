@@ -1203,6 +1203,25 @@
     );
   }
 
+  /** The one-way Jira push control: an optional worked-minutes input and a Push button, plus when it
+   *  last synced. Shown only when the server has Jira credentials; otherwise a hint. Creating or
+   *  updating the issue, moving its status (best-effort) and logging the minutes all happen server-side
+   *  — this is the "ticket button" that fires it. */
+  function jiraSyncControl(t) {
+    var last = t.jiraSyncedAt ? "synced " + relTime(t.jiraSyncedAt) : "never synced";
+    if (!jiraConfigured) {
+      return '<span class="dim">' + last + ' — Jira not configured (set ~/.peephole/jira.json)</span>';
+    }
+    return (
+      '<span class="jira-sync-wrap">' +
+      '<input class="jira-mins" type="number" min="0" step="1" placeholder="min" ' +
+      'title="Worked minutes to log to the Jira worklog (optional)" data-id="' + esc(t.id) + '">' +
+      '<button class="ghost sm jira-push" data-id="' + esc(t.id) + '" type="button" ' +
+      'title="Create or update this ticket in Jira, move its status, and log any minutes">Push to Jira</button>' +
+      '<span class="jira-sync-status dim">' + esc(last) + "</span></span>"
+    );
+  }
+
   /** Free text with the existing epics offered as suggestions: a new epic is created by typing
    *  one, which is the whole ceremony — see writer.setEpic on why epics aren't records. */
   function epicControl(t) {
@@ -1327,6 +1346,7 @@
       ["Assignee", assignControl(t)],
       ["Epic", epicControl(t)],
       ["Jira", jiraControl(t)],
+      ["Jira sync", jiraSyncControl(t)],
       ["Session", t.owner ? '<span class="mono">' + esc(t.owner) + "</span>" : "—"],
       ["Created by", t.createdBy ? esc(t.createdBy) : "—"],
       ["Branch", t.branch ? '<span class="mono">' + esc(t.branch) + "</span>" : "—"],
@@ -1527,6 +1547,37 @@
           }
         } finally {
           jiraInput.disabled = false;
+        }
+      });
+    }
+    var jiraPush = ticketModalBody.querySelector(".jira-push");
+    if (jiraPush) {
+      jiraPush.addEventListener("click", async function () {
+        var minsEl = ticketModalBody.querySelector(".jira-mins");
+        var mins = minsEl && minsEl.value ? Number(minsEl.value) : 0;
+        var payload = {};
+        if (mins > 0) payload.workedMinutes = mins;
+        jiraPush.disabled = true;
+        var old = jiraPush.textContent;
+        jiraPush.textContent = "Pushing…";
+        try {
+          var res = await apiPost("/api/tickets/" + encodeURIComponent(jiraPush.dataset.id) + "/jira-sync", payload);
+          if (res && res.error) { window.alert(res.error); return; }
+          t.jira = res.key || t.jira;
+          t.jiraSyncedAt = res.syncedAt || t.jiraSyncedAt;
+          var statusNote = res.transition
+            ? (res.transition.moved ? " → " + res.transition.to : " (status: " + res.transition.reason + ")")
+            : "";
+          window.alert(
+            (res.created ? "Created " : "Updated ") + res.key + statusNote +
+            (res.worklog ? " · logged " + res.worklog.minutes + "m" : "")
+          );
+          openTicketModal(t);
+        } catch (e) {
+          window.alert("Push failed.");
+        } finally {
+          jiraPush.disabled = false;
+          jiraPush.textContent = old;
         }
       });
     }
@@ -1815,6 +1866,9 @@
   // The Jira base URL the server advertises once Jira-push config exists; turns a bare key into a
   // clickable link. Empty until then — the key still renders as editable text.
   var jiraBaseUrl = "";
+  // Whether the server has Jira credentials (~/.peephole/jira.json or JIRA_* env). Gates the push
+  // control — no secret, no button, just a hint.
+  var jiraConfigured = false;
   var searchTerm = "";
   function matchesSearch(t, term) {
     if (!term) return true;
@@ -2376,6 +2430,7 @@
     // Advertised once Jira-push config exists (server-side); until then it stays empty and Jira keys
     // render as plain text rather than links.
     jiraBaseUrl = state.jiraBaseUrl || "";
+    jiraConfigured = !!state.jiraConfigured;
     var q = state.queue || { pending: [], running: null };
     queuedIds = (q.pending || []).map(function (p) { return p.ticketId; });
     runningId = q.running ? q.running.ticketId : null;
@@ -3284,6 +3339,7 @@
       "Edit a ticket's intent / acceptance / notes after creation, in place",
       "Search the board by title, ticket id, or Jira key",
       "Optional Jira issue link per ticket (badge on the card, editable in the modal)",
+      "One-way manual push to Jira — create/update the issue, best-effort status, optional worklog",
       "Cooperative stop/claim control and live agent presence, wired in as Claude Code hooks",
       "Insights — ship velocity, forecast, shipped-per-week, coverage, and token spend",
       "Jira CSV export / import (export respects the board's current filters)",

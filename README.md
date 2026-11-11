@@ -245,8 +245,17 @@ you click **Push to remote** and confirm.
   respects it. Escape clears it.
 - **Jira issue link** — each ticket has an optional `jira` field (e.g. `PROJ-42`), editable in the
   modal and shown as a badge on the card; set it by hand (`peephole ticket jira <id> --to PROJ-42`)
-  or let a future Jira push stamp it. When the board knows a Jira base URL the key becomes a direct
-  link.
+  or let the Jira push stamp it. When the board knows a Jira base URL the key becomes a direct link.
+- **One-way manual push to Jira** (REST) — the ticket modal's **Jira sync** control pushes this ticket
+  to Jira Cloud on demand: no `jira` key → **creates** an issue and stamps the key back; has one →
+  **updates** it (and falls back to create if the key 404s). It then moves the issue's status
+  (best-effort — a transition the Jira workflow won't allow is reported, not fatal) and, if you enter
+  worked minutes, logs them to the issue's worklog. One-way only (no pull, no webhooks); a last-synced
+  time is stamped on each push. Credentials live **outside** the repo — `~/.peephole/jira.json`
+  (`{ baseUrl, email, token, projectKey }`) or `JIRA_BASE_URL` / `JIRA_EMAIL` / `JIRA_TOKEN` /
+  `JIRA_PROJECT` — never committed, never in the ledger. Without them the control shows a hint instead
+  of a button. Jira v3 bodies are ADF; the field map is shared with the CSV interop so the two never
+  drift.
 - **Gated transitions + provenance** — every state move records its provenance: `human` (a person
   decided) or `auto` (an agent advanced it with no human in the loop), set with
   `peephole ticket advance <id> --state <s> --mode auto|human` (default `human`). A project can make

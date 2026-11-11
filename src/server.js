@@ -12,6 +12,7 @@ import { DEFAULT_STATE_BRANCH } from "./schema.js";
 import { resolveLedger } from "./ledger.js";
 import { markEnabledIfUnset } from "./enable.js";
 import { exportCsv, parseCsv, rowsToTickets } from "./jiracsv.js";
+import { loadJiraConfig, createJiraClient, pushTicketToJira } from "./jira.js";
 import { readFileSync } from "node:fs";
 import { listProjects, rememberProject, forgetProject, validateRepo } from "./projects.js";
 import { detectCoverage } from "./coverage.js";
@@ -253,6 +254,10 @@ export async function startServer(initialRepoRoot, { port = 4173, remote = "orig
         // belonging to "another project", leaving an empty board and no hint why.
         project: (cache.config && cache.config.project) || path.basename(repoRoot),
         peepholeVersion: PEEPHOLE_VERSION,
+        // The Jira base URL (when configured) turns a bare issue key into a link in the UI, and
+        // jiraConfigured gates the push button. The secret itself never leaves the server.
+        jiraBaseUrl: (() => { try { return loadJiraConfig().baseUrl || ""; } catch { return ""; } })(),
+        jiraConfigured: (() => { try { return loadJiraConfig().configured; } catch { return false; } })(),
         remoteUrl,
         remote,
         stateBranch,
@@ -637,6 +642,33 @@ export async function startServer(initialRepoRoot, { port = 4173, remote = "orig
         );
         await ctx.refresh({ doFetch: false });
         return sendJson(res, 200, { ...result, state: ctx.publicState() });
+      }
+      const jiraSyncMatch = url.pathname.match(/^\/api\/tickets\/([^/]+)\/jira-sync$/);
+      if (req.method === "POST" && jiraSyncMatch) {
+        const body = await readJsonBody(req);
+        const cfg = loadJiraConfig();
+        if (!cfg.configured) {
+          return sendJson(res, 400, { error: "Jira is not configured — set ~/.peephole/jira.json (baseUrl, email, token, projectKey) or the JIRA_* environment variables." });
+        }
+        const ticket = (ctx.cache.tickets || []).find((t) => t.id === jiraSyncMatch[1]);
+        if (!ticket) return sendJson(res, 404, { error: `ticket "${jiraSyncMatch[1]}" not found` });
+        const client = createJiraClient({ baseUrl: cfg.baseUrl, email: cfg.email, token: cfg.token });
+        let result;
+        try {
+          result = await pushTicketToJira(ticket, { projectKey: cfg.projectKey, workedMinutes: body.workedMinutes }, client);
+        } catch (e) {
+          return sendJson(res, 502, { error: `Jira push failed: ${e.message}` });
+        }
+        // Stamp the key + synced time back onto the ledger so the link lights up and the modal shows
+        // when it last synced.
+        const actor = body.actor || (ctx.gitUser && ctx.gitUser.name) || "peephole-ui";
+        await writer.recordJiraSync(ctx.repoRoot, ctx.stateBranch, ticket.id, result.key, actor, result.syncedAt);
+        await ctx.refresh({ doFetch: false });
+        return sendJson(res, 200, {
+          ...result,
+          url: `${cfg.baseUrl}/browse/${encodeURIComponent(result.key)}`,
+          state: ctx.publicState(),
+        });
       }
       const editMatch = url.pathname.match(/^\/api\/tickets\/([^/]+)\/edit$/);
       if (req.method === "POST" && editMatch) {

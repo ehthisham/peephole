@@ -808,6 +808,33 @@ export async function setJira(repoRoot, remoteBranch, ticketId, jira, actor = "p
   return { committed: Boolean(sha), sha, unpushed, ticket };
 }
 
+/** Records a successful Jira push: stamps the issue key (if new/changed) and the sync timestamp onto
+ *  the ticket in one commit. Separate from setJira because this is the machine writing back what the
+ *  push did, not a human linking a key — both land in `jira`, and `jiraSyncedAt` marks when. */
+export async function recordJiraSync(repoRoot, remoteBranch, ticketId, key, actor = "peephole-ui", at = new Date().toISOString()) {
+  const { worktreePath, localBranch } = await prepWorktree(repoRoot, remoteBranch);
+  const file = path.join(worktreePath, ".peephole", "tickets", `${ticketId}.md`);
+  if (!(await fileExists(file))) throw new Error(`ticket "${ticketId}" not found`);
+
+  const { parseTicket } = await import("./schema.js");
+  const parsed = parseTicket(await fs.readFile(file, "utf8"), ticketId);
+  if (!parsed.ok) throw new Error(`Cannot record Jira sync on ${ticketId}: ${parsed.errors.join("; ")}`);
+  const ticket = parsed.ticket;
+
+  const from = ticket.jira || "";
+  const next = key == null ? from : String(key).trim();
+  ticket.jira = next || null;
+  ticket.jiraSyncedAt = at;
+  ticket.updatedAt = at;
+  ticket.history = Array.isArray(ticket.history) ? ticket.history : [];
+  ticket.history.push({ at, from: `jira-sync:${from || "none"}`, to: `jira-sync:${next || "none"}`, by: actor });
+
+  await fs.writeFile(file, serializeTicket(ticket), "utf8");
+  const sha = await git.commitAll(worktreePath, `peephole: ${ticketId} jira-sync -> ${next || "none"}`);
+  const unpushed = await git.unpushedCount(worktreePath, localBranch, remoteBranch);
+  return { committed: Boolean(sha), sha, unpushed, ticket };
+}
+
 /** Edits a ticket's free-text description fields AFTER creation — `intent` (the why), `acceptance`
  * (done-when) and `body` (notes). These used to be write-once at `ticket new`; this is the supported
  * edit path so a human no longer has to hand-edit the markdown (which the next CLI op would clobber).
