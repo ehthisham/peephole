@@ -232,6 +232,29 @@ you click **Push to remote** and confirm.
   missing and commits locally.
 - **Control** — Run / Pause / Skip per ticket, written to that ticket's `control` field
   and committed locally; every write appends to the ticket's `history`.
+- **Claim / assign / unclaim** — a ticket is claimed (by a session id or a person) when work starts
+  and moves to in-progress; it can be **assigned** (reserved for a person before anyone claims it),
+  and **unclaimed** back to proposed (in-progress only — nothing past it rewinds).
+- **Comments & activity timeline** — free-text comments plus a merged, newest-first timeline of every
+  state change and comment, each state move carrying a provenance dot (● human / ⚙ auto) and a 🔒 stamp
+  where it crossed a gate.
+- **“What Claude did” log** — the ticket modal's **Load what Claude did** reads the session transcripts
+  for the window the ticket was claimed and replays it as what happened: a line per turn with the tools
+  each turn used, subagent (sidechain) turns marked. The durable link from a committed ticket back to
+  the ephemeral chat that produced it.
+- **Chat about a ticket** — the 💬 on a card opens a Claude session *about* that ticket (via
+  `claude attach`) without claiming, queuing or changing anything — because the ticket most worth
+  discussing is often one somebody already started.
+- **Execute & background workers** — select proposed tickets and hand them to live Claude sessions
+  (reusing an idle one, starting a background worker when there's none, queuing while all are busy);
+  **attach** a ticket to its own running session. See [Executing tickets](#executing-tickets).
+- **Per-ticket cost & durations** — each ticket shows time **waiting** before it was claimed, **work
+  duration** once claimed, **tokens spent** (the marginal spend attributable to this ticket's span, not
+  the whole session's lifetime), and created / finished timestamps.
+- **Epics, tags & filters** — file tickets under an **epic** (and **group by epic** across the lanes),
+  add **tags**, and filter the board by member, selection state, tag or epic; **manual backlog rank**
+  (drag to reorder), a per-lane **sort** toggle, and **bulk-advance** (e.g. ship every verified ticket
+  in one commit).
 - **State model** — `proposed → in-progress → built → verified → shipped → closed`. `closed` is the
   only terminal state; `shipped` is an optional intermediate, so a ticket can be **closed after
   shipping**, **closed without shipping** (`verified → closed`), or **closed without developing**
@@ -276,8 +299,22 @@ you click **Push to remote** and confirm.
   mode); the board shows a 🔒 on the card and a stamped, provenance-dotted trail in the ticket's
   Activity. `gates:` absent or empty means every transition is ungated — advance stays free, exactly
   as before.
-- **Agents panel** — reads `.peephole/agents/*.json` heartbeats, marks a session `stale` once its
-  heartbeat goes quiet for 5+ minutes.
+- **Tabs beyond the board:**
+  - **Insights** — ship velocity and a forecast, shipped-per-week, lines of code, test coverage, and
+    token spend across the work.
+  - **Members** — the people who have touched the ledger, with per-person token attribution joined from
+    the agent heartbeats.
+  - **Agents** — reads `.peephole/agents/*.json` heartbeats and shows who is running what, marking a
+    session `stale` once its heartbeat goes quiet for 5+ minutes.
+  - **Coverage** — detected test-coverage per module, when the repo produces it.
+  - **Coding standards** — whatever standards / agent-rules files the checkout carries (the policy
+    applied *before* code is written), picked from several candidates.
+  - **Configuration** — this board's project, checkout, remote, ledger branch + checkout, git identity,
+    hooks, autosync, the state list and any gated transitions.
+  - **About** — the running Peephole version, this board's project / checkout / remote, the feature
+    summary, and links.
+- **One board, several repos** — switch between projects without leaving the page; each keeps its own
+  ledger, queue and autosync. See [Several projects, one board](#several-projects-one-board).
 - **Jira CSV interop** — move tickets between Peephole and Jira over CSV, no live Jira API.
 
   **On the board** (Tasks tab toolbar):
@@ -304,8 +341,6 @@ you click **Push to remote** and confirm.
   hard fail. State mapping is lossy by nature — Jira has fewer stages, so `built` and `in-progress`
   both export as "In Progress" and import back as `in-progress`. `shipped`↔"Done" and `closed`↔"Closed"
   are kept distinct so both round-trip to themselves.
-- **About tab** — shows the running Peephole version, this board's project/checkout/remote, a feature
-  summary, and links.
 
 ## Opting a clone in (`peephole.enabled`)
 

@@ -1,6 +1,6 @@
 {
   "name": "peephole",
-  "version": "0.7.1",
+  "version": "0.7.2",
   "description": "Local-first live status interface into multi-agent AI work, read straight from a git repo.",
   "license": "MIT",
   "type": "module",

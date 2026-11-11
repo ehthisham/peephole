@@ -3404,16 +3404,19 @@
       ["Ledger branch", esc(state.stateBranch || "—")],
     ];
     var feats = [
-      "Three-lane ticket board — lifecycle, priority, type, and gated transitions with human/auto provenance",
+      "Three-lane ticket board — lifecycle, priority, type, risk, and gated transitions with human/auto provenance",
       "Closed is the only terminal state; shipped is an optional intermediate (ship-then-close, close-without-shipping, or abandon)",
-      "Edit a ticket's intent / acceptance / notes after creation, in place",
-      "Copy a ticket's description (intent + acceptance + notes) to the clipboard as markdown",
-      "Search the board by title, ticket id, or Jira key — with a one-click clear-all (✕) for filters + search",
-      "Optional Jira issue link per ticket (badge on the card, editable in the modal)",
-      "One-way manual push to Jira — create/update the issue, best-effort status, optional worklog",
-      "Cooperative stop/claim control and live agent presence, wired in as Claude Code hooks",
-      "Insights — ship velocity, forecast, shipped-per-week, coverage, and token spend",
-      "Jira CSV export / import (export respects the board's current filters)",
+      "Edit a ticket's intent / acceptance / notes in place; copy the whole description to the clipboard as markdown",
+      "“What Claude did” log — per-ticket transcript reader: the turns, tools and subagents for the window the ticket was claimed",
+      "Chat about a ticket (opens a Claude session, changes nothing); execute a ticket or a batch of selected ones; background workers + a dispatch queue; attach a ticket to its running session",
+      "Claim / unclaim / assign (reserve) tickets; threaded comments; a full activity timeline with provenance and gate stamps",
+      "Per-ticket cost & durations — time waiting before claim, work duration, tokens spent, created/finished",
+      "Search by title / id / Jira key with one-click clear-all; filter by member, selection, tag or epic; group by epic; manual backlog rank (drag) and lane sort",
+      "Bulk-advance a lane (e.g. Ship N at once); per-ticket pause / skip controls",
+      "One board, several repos — switch projects without leaving the page",
+      "Tabs: Insights (velocity, forecast, shipped-per-week, LOC, coverage, token spend), Members (per-person token attribution), Agents (live heartbeats, stale detection), Coverage, Coding standards, Configuration",
+      "Jira: optional issue link per ticket, one-way push (create/update + best-effort status + worklog), and CSV export/import (export respects the board's current filters)",
+      "Git-only sync — autosync / pull / push the ledger; cooperative stop & claim wired in as Claude Code hooks; self-healing ledger checkout",
       "Per-developer opt-in via git config --local peephole.enabled",
     ];
     aboutContent.innerHTML =
