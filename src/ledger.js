@@ -55,6 +55,19 @@ async function worktreeHasUnpushed(repoRoot, branch) {
   return count > 0;
 }
 
+/** Bring a leftover in-repo `.peephole-worktree` back in lockstep with the remote, so it can never
+ *  serve ticket state older than the clone. Fetches, then `syncWorktreeIfClean` fast-resets it to
+ *  `<remote>/<branch>` ONLY when it has zero unpushed commits — a worktree with unique commits is left
+ *  exactly as it is (those must be pushed first, and that case is handled upstream by staying in
+ *  worktree mode). No-op when no worktree exists. Never throws. */
+async function reconcileLeftoverWorktree(repoRoot, branch, remote) {
+  const worktreePath = path.join(repoRoot, ".peephole-worktree");
+  if (!(await exists(path.join(worktreePath, ".git")))) return;
+  const localBranch = `peephole/${branch}`;
+  await git.fetch(worktreePath, remote).catch(() => {});
+  await git.syncWorktreeIfClean(worktreePath, localBranch, branch, remote).catch(() => {});
+}
+
 async function ensureClone(repoRoot, branch, remoteUrl, remote, { fetch = false } = {}) {
   const dir = path.join(LEDGER_HOME, slugFor(repoRoot, remoteUrl));
   if (await exists(path.join(dir, ".git"))) {
@@ -119,6 +132,13 @@ async function resolveLedgerUncached(repoRoot, branch, { remote, allowClone, fet
   if (reasons.length === 0) {
     try {
       const dir = await ensureClone(repoRoot, branch, remoteUrl, remote, { fetch });
+      // Self-heal: once the clone is authoritative, a `.peephole-worktree` left over from before the
+      // branch was pushed sits idle but can drift behind the remote — and anything that reads it (a
+      // long-running server that cached worktree mode earlier, a tool opening it directly) would then
+      // serve stale ticket state. On a sync pass, bring a CLEAN leftover back in lockstep with the
+      // remote. A worktree holding unpushed commits is never touched (that case keeps us in worktree
+      // mode, not here), so no unpushed work can be lost. Gated on `fetch` so plain reads stay cheap.
+      if (fetch) await reconcileLeftoverWorktree(repoRoot, branch, remote);
       return { kind: "clone", path: dir, localBranch: branch, reason: null };
     } catch (e) {
       reasons.push(`clone failed: ${e.message}`);
