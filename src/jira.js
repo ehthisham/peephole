@@ -19,11 +19,22 @@ export function loadJiraConfig(env = process.env, home = homedir()) {
   if (existsSync(file)) {
     try { f = JSON.parse(readFileSync(file, "utf8")) || {}; } catch { f = {}; }
   }
+  // Extra raw Jira fields merged into every issue on create/update — for project-mandatory custom
+  // fields Peephole has no concept of (e.g. a required single-select "Task Type"). Each value is the
+  // raw Jira shape: a select is { "customfield_10032": { "value": "Development" } } or { "id": "10026" }.
+  // Set from jira.json "extraFields" (or legacy "fields"); JIRA_EXTRA_FIELDS may carry the same as JSON.
+  let extraFields = {};
+  const rawExtra = f.extraFields || f.fields;
+  if (rawExtra && typeof rawExtra === "object") extraFields = rawExtra;
+  if (env.JIRA_EXTRA_FIELDS) {
+    try { const e = JSON.parse(env.JIRA_EXTRA_FIELDS); if (e && typeof e === "object") extraFields = e; } catch { /* ignore */ }
+  }
   const cfg = {
     baseUrl: (env.JIRA_BASE_URL || f.baseUrl || "").replace(/\/+$/, ""),
     email: env.JIRA_EMAIL || f.email || "",
     token: env.JIRA_TOKEN || env.JIRA_API_TOKEN || f.token || "",
     projectKey: env.JIRA_PROJECT || env.JIRA_PROJECT_KEY || f.projectKey || f.project || "",
+    extraFields,
     source: existsSync(file) ? file : null,
   };
   cfg.configured = Boolean(cfg.baseUrl && cfg.email && cfg.token);
@@ -46,7 +57,7 @@ export function textToAdf(text) {
  *  push never drift. Status is deliberately absent — Jira only moves status through transitions, never
  *  a direct field write. Acceptance folds into the description as a labelled section (Jira has no
  *  acceptance field by default); the ticket keeps its own acceptance untouched. */
-export function ticketToFields(ticket, { projectKey } = {}) {
+export function ticketToFields(ticket, { projectKey, extraFields } = {}) {
   const row = ticketToRow(ticket);
   const parts = [];
   if (row.Description) parts.push(row.Description);
@@ -58,6 +69,9 @@ export function ticketToFields(ticket, { projectKey } = {}) {
   };
   if (projectKey) fields.project = { key: projectKey };
   if (row.Priority) fields.priority = { name: row.Priority };
+  // Project-mandatory custom fields last, so config can satisfy a required field (or deliberately
+  // override a derived one). Values are raw Jira field shapes — Peephole passes them through untouched.
+  if (extraFields && typeof extraFields === "object") Object.assign(fields, extraFields);
   return fields;
 }
 
@@ -151,11 +165,11 @@ export function createJiraClient({ baseUrl, email, token, request } = {}) {
  *  the key + synced time back onto the ledger. `statusFor` maps a peephole state to a Jira status name
  *  (defaults to the shared CSV map). `now` is injectable for deterministic tests. */
 export async function pushTicketToJira(ticket, opts, client, deps = {}) {
-  const { projectKey, workedMinutes } = opts || {};
+  const { projectKey, workedMinutes, extraFields } = opts || {};
   const statusFor = deps.statusFor || (await import("./jiracsv.js")).jiraStatusForState;
   const now = deps.now || (() => new Date());
 
-  const fields = ticketToFields(ticket, { projectKey });
+  const fields = ticketToFields(ticket, { projectKey, extraFields });
   let key = ticket.jira || null;
   let created = false;
 

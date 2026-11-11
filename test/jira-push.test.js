@@ -64,6 +64,17 @@ test("ticketToFields maps summary/issuetype/priority, folds acceptance into desc
   assert.ok(!("status" in f));
 });
 
+test("ticketToFields merges config extraFields last (satisfies a project-mandatory custom field)", () => {
+  const f = ticketToFields(TICKET, { projectKey: "ACME", extraFields: { customfield_10032: { value: "Development" } } });
+  assert.deepEqual(f.customfield_10032, { value: "Development" });
+  assert.equal(f.summary, "Crash on save"); // derived fields untouched
+});
+
+test("extraFields can override a derived field (merged last)", () => {
+  const f = ticketToFields(TICKET, { extraFields: { issuetype: { id: "10001" } } });
+  assert.deepEqual(f.issuetype, { id: "10001" });
+});
+
 test("jiraStarted uses an offset, not Z", () => {
   assert.match(jiraStarted(new Date("2026-11-11T09:00:00.000Z")), /\+0000$/);
 });

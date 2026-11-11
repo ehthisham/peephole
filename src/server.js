@@ -655,7 +655,7 @@ export async function startServer(initialRepoRoot, { port = 4173, remote = "orig
         const client = createJiraClient({ baseUrl: cfg.baseUrl, email: cfg.email, token: cfg.token });
         let result;
         try {
-          result = await pushTicketToJira(ticket, { projectKey: cfg.projectKey, workedMinutes: body.workedMinutes }, client);
+          result = await pushTicketToJira(ticket, { projectKey: cfg.projectKey, workedMinutes: body.workedMinutes, extraFields: cfg.extraFields }, client);
         } catch (e) {
           return sendJson(res, 502, { error: `Jira push failed: ${e.message}` });
         }
