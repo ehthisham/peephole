@@ -4,6 +4,7 @@ import os from "node:os";
 import {
   loadJiraConfig,
   textToAdf,
+  markdownToAdf,
   ticketToFields,
   jiraStarted,
   createJiraClient,
@@ -62,6 +63,49 @@ test("ticketToFields maps summary/issuetype/priority, folds acceptance into desc
   assert.ok(JSON.stringify(f.description).includes("Acceptance"));
   assert.equal("status", Object.keys(f).includes("status") ? "present" : "status"); // status must NOT be a field
   assert.ok(!("status" in f));
+});
+
+test("markdownToAdf renders headings, bullets and paragraphs", () => {
+  const doc = markdownToAdf("## Problem\nIt breaks.\n\n## Evidence\n- a\n- b");
+  assert.equal(doc.type, "doc");
+  const kinds = doc.content.map((n) => n.type);
+  assert.deepEqual(kinds, ["heading", "paragraph", "heading", "bulletList"]);
+  assert.equal(doc.content[0].attrs.level, 2);
+  assert.equal(doc.content[0].content[0].text, "Problem");
+  assert.equal(doc.content[3].content.length, 2); // two list items
+  assert.equal(doc.content[3].content[0].content[0].content[0].text, "a");
+});
+
+test("markdownToAdf renders ordered lists and switches list type cleanly", () => {
+  const doc = markdownToAdf("- a\n1. first\n2. second");
+  const kinds = doc.content.map((n) => n.type);
+  assert.deepEqual(kinds, ["bulletList", "orderedList"]);
+  assert.equal(doc.content[1].content.length, 2);
+  assert.equal(doc.content[1].content[0].content[0].content[0].text, "first");
+});
+
+test("markdownToAdf empty -> one empty paragraph (valid ADF)", () => {
+  const doc = markdownToAdf("");
+  assert.equal(doc.content.length, 1);
+  assert.equal(doc.content[0].type, "paragraph");
+});
+
+test("ticketToFields carries the Notes body into the description (not just intent)", () => {
+  const t = { ...TICKET, intent: "NPE in save()", acceptance: "no NPE", body: "## Problem\nnull deref at line 9\n\n## Resolution\nguard it" };
+  const f = ticketToFields(t, { projectKey: "ACME" });
+  const txt = JSON.stringify(f.description);
+  assert.ok(txt.includes("NPE in save()"), "intent present");
+  assert.ok(txt.includes("Acceptance"), "acceptance present");
+  assert.ok(txt.includes("Problem") && txt.includes("null deref"), "notes problem present");
+  assert.ok(txt.includes("Resolution") && txt.includes("guard it"), "notes resolution present");
+  // body already has its own headings -> no extra "Notes" wrapper heading
+  assert.ok(!txt.includes("\"text\":\"Notes\""), "no redundant Notes heading when body is already structured");
+});
+
+test("ticketToFields labels an unstructured body as Notes", () => {
+  const f = ticketToFields({ ...TICKET, body: "just a plain remark" }, {});
+  const headings = f.description.content.filter((n) => n.type === "heading").map((n) => n.content[0].text);
+  assert.ok(headings.includes("Notes"), "plain body gets a Notes heading");
 });
 
 test("ticketToFields merges config extraFields last (satisfies a project-mandatory custom field)", () => {

@@ -42,7 +42,8 @@ export function loadJiraConfig(env = process.env, home = homedir()) {
 }
 
 /** Minimal valid Atlassian Document Format doc from plain text (Jira v3 bodies are ADF, not text).
- *  Blank-line-separated paragraphs; an empty string becomes one empty paragraph. */
+ *  Blank-line-separated paragraphs; an empty string becomes one empty paragraph. Used for short,
+ *  unstructured text (e.g. a worklog comment). */
 export function textToAdf(text) {
   const t = String(text == null ? "" : text);
   const paras = t.split(/\n{2,}/).map((p) => p.trim()).filter(Boolean);
@@ -53,19 +54,70 @@ export function textToAdf(text) {
   return { type: "doc", version: 1, content };
 }
 
+/** A fuller ADF doc from the ticket's markdown (intent + acceptance + the Notes body). Peephole bodies
+ *  are structured markdown (`## Problem`, `## Evidence`, bullet lists), and a flat paragraph dump loses
+ *  that structure in Jira. This is a deliberately small converter — headings (`#`..`######`), bullet
+ *  lists (`-`/`*`), ordered lists (`1.`/`1)`) and paragraphs — enough for how tickets are actually
+ *  written; inline marks (**bold**, `code`) are left as plain text. Unknown syntax degrades to a
+ *  paragraph, never to a crash. */
+export function markdownToAdf(text) {
+  const lines = String(text == null ? "" : text).replace(/\r\n?/g, "\n").split("\n");
+  const content = [];
+  let para = [];
+  let list = null; // { type: "bulletList" | "orderedList", items: [...] }
+  const flushPara = () => {
+    if (para.length) { content.push({ type: "paragraph", content: [{ type: "text", text: para.join(" ") }] }); para = []; }
+  };
+  const flushList = () => {
+    if (list && list.items.length) { content.push({ type: list.type, content: list.items }); }
+    list = null;
+  };
+  const addItem = (type, text) => {
+    flushPara();
+    if (!list || list.type !== type) { flushList(); list = { type, items: [] }; }
+    list.items.push({ type: "listItem", content: [{ type: "paragraph", content: [{ type: "text", text }] }] });
+  };
+  for (const raw of lines) {
+    const line = raw.replace(/\s+$/, "");
+    const h = line.match(/^(#{1,6})\s+(.+)$/);
+    const b = line.match(/^[-*]\s+(.+)$/);
+    const o = line.match(/^\d+[.)]\s+(.+)$/);
+    if (h) {
+      flushPara(); flushList();
+      content.push({ type: "heading", attrs: { level: h[1].length }, content: [{ type: "text", text: h[2].trim() }] });
+    } else if (b) {
+      addItem("bulletList", b[1].trim());
+    } else if (o) {
+      addItem("orderedList", o[1].trim());
+    } else if (line.trim() === "") {
+      flushPara(); flushList();
+    } else {
+      flushList();
+      para.push(line.trim());
+    }
+  }
+  flushPara(); flushList();
+  if (!content.length) content.push({ type: "paragraph", content: [] });
+  return { type: "doc", version: 1, content };
+}
+
 /** The Jira issue `fields` object for a ticket, derived from the shared CSV field map so CSV and live
  *  push never drift. Status is deliberately absent — Jira only moves status through transitions, never
  *  a direct field write. Acceptance folds into the description as a labelled section (Jira has no
  *  acceptance field by default); the ticket keeps its own acceptance untouched. */
 export function ticketToFields(ticket, { projectKey, extraFields } = {}) {
   const row = ticketToRow(ticket);
+  // Full ticket, not just intent: intent, then acceptance, then the Notes body (Problem/Evidence/
+  // Impact/Resolution). Each section is labelled so Jira readers get the whole ticket, not a one-liner.
   const parts = [];
   if (row.Description) parts.push(row.Description);
-  if (row.Acceptance) parts.push("Acceptance:\n" + row.Acceptance);
+  if (row.Acceptance) parts.push("## Acceptance\n" + row.Acceptance);
+  const notes = String(ticket.body == null ? "" : ticket.body).trim();
+  if (notes) parts.push(/^#{1,6}\s/m.test(notes) ? notes : "## Notes\n" + notes);
   const fields = {
     summary: row.Summary,
     issuetype: { name: row["Issue Type"] || "Task" },
-    description: textToAdf(parts.join("\n\n")),
+    description: markdownToAdf(parts.join("\n\n")),
   };
   if (projectKey) fields.project = { key: projectKey };
   if (row.Priority) fields.priority = { name: row.Priority };
