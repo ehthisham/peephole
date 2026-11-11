@@ -231,6 +231,37 @@ async function cmdTicketTitle(argv) {
   console.log(`"${id}" title -> ${result.ticket.title || "(none — falls back to intent)"}`);
 }
 
+async function cmdTicketJira(argv) {
+  const id = argv[0];
+  const args = parseArgs(argv.slice(1));
+  const port = requirePort(args);
+  const clearing = args.clear === true;
+  if (!id || (!args.to && !clearing)) {
+    console.error("usage: peephole ticket jira <id> --to <PROJ-42> | --clear [--port 4173]");
+    process.exit(1);
+  }
+  const result = await apiCall(port, "POST", `/api/tickets/${encodeURIComponent(id)}/jira`, {
+    jira: clearing ? "" : String(args.to), actor: args.actor,
+  });
+  console.log(`"${id}" jira -> ${result.ticket.jira || "(none)"}`);
+}
+
+async function cmdTicketEdit(argv) {
+  const id = argv[0];
+  const args = parseArgs(argv.slice(1));
+  const port = requirePort(args);
+  const patch = {};
+  if (args.intent !== undefined) patch.intent = args.intent === true ? "" : String(args.intent);
+  if (args.acceptance !== undefined) patch.acceptance = args.acceptance === true ? "" : String(args.acceptance);
+  if (args.notes !== undefined) patch.body = args.notes === true ? "" : String(args.notes);
+  if (!id || Object.keys(patch).length === 0) {
+    console.error('usage: peephole ticket edit <id> [--intent "<text>"] [--acceptance "<text>"] [--notes "<text>"] [--port 4173]');
+    process.exit(1);
+  }
+  const result = await apiCall(port, "POST", `/api/tickets/${encodeURIComponent(id)}/edit`, { ...patch, actor: args.actor });
+  console.log(`"${id}" edited: ${(result.changed && result.changed.length ? result.changed.join(", ") : "no change")}`);
+}
+
 async function cmdTicketType(argv) {
   const id = argv[0];
   const args = parseArgs(argv.slice(1));
@@ -399,6 +430,8 @@ async function main() {
   if (cmd === "ticket" && argv[1] === "priority") return cmdTicketPriority(argv.slice(2));
   if (cmd === "ticket" && argv[1] === "type") return cmdTicketType(argv.slice(2));
   if (cmd === "ticket" && argv[1] === "title") return cmdTicketTitle(argv.slice(2));
+  if (cmd === "ticket" && argv[1] === "jira") return cmdTicketJira(argv.slice(2));
+  if (cmd === "ticket" && argv[1] === "edit") return cmdTicketEdit(argv.slice(2));
   if (cmd === "ticket" && argv[1] === "comment") return cmdTicketComment(argv.slice(2));
   if (cmd === "ticket" && argv[1] === "export") return cmdTicketExport(argv.slice(2));
   if (cmd === "ticket" && argv[1] === "import") return cmdTicketImport(argv.slice(2));
@@ -422,6 +455,8 @@ async function main() {
     "  peephole ticket priority <id> --to <low|normal|high|urgent>\n" +
     "  peephole ticket type <id> --to <feature|bug|chore>\n" +
     '  peephole ticket title <id> --to "<title>" | --clear  # short headline, falls back to intent\n' +
+    "  peephole ticket jira <id> --to <PROJ-42> | --clear  # link (or unlink) a Jira issue key\n" +
+    '  peephole ticket edit <id> [--intent "<text>"] [--acceptance "<text>"] [--notes "<text>"]  # edit description fields after creation\n' +
     '  peephole ticket comment <id> --text "<comment>"\n' +
     "  peephole ticket export [--repo <path>] [--out <file.csv>] [--branch <b>]   # Jira-import-ready CSV (stdout if no --out)\n" +
     "  peephole ticket import --file <csv> [--repo <path>] [--project <p>] [--dry-run]  # create/update tickets from a Jira CSV\n" +

@@ -145,6 +145,13 @@
   /* Board-scoped controls live with the board, not in the global status bar: they change what the
      lanes show, and nothing else on the page. Right-aligned so they sit over the last lane. */
   .board-toolbar{display:flex; align-items:center; justify-content:flex-end; gap:8px; width:100%;}
+  /* Search sits at the toolbar's left; margin-right:auto pushes every other control to the right. */
+  .board-search{margin-right:auto; min-width:160px; max-width:260px; flex:0 1 240px;
+    padding:7px 10px; border:1px solid var(--border); border-radius:7px;
+    background:var(--surface, var(--bg)); color:var(--fg); font-size:13px;}
+  .board-search::placeholder{color:var(--muted, #888);}
+  .board-search:focus{outline:none; border-color:var(--accent); box-shadow:0 0 0 2px color-mix(in srgb, var(--accent) 30%, transparent);}
+  @media (max-width:560px){ .board-search{flex-basis:140px; min-width:110px;} }
   .icon-btn{display:inline-flex; align-items:center; gap:5px; padding:7px 9px;}
   .worker-wrap{position:relative;}
   .worker-menu{position:absolute; right:0; top:calc(100% + 5px); z-index:25; min-width:320px;
@@ -332,6 +339,18 @@
   .epic-input:disabled{opacity:0.6;}
   .title-input{font:inherit; font-size:12px; padding:2px 6px; border:1px solid var(--border); border-radius:5px; background:var(--bg); color:var(--ink); width:100%; max-width:320px;}
   .title-input:disabled{opacity:0.6;}
+  .jira-input{font-family:"IBM Plex Mono",ui-monospace,monospace; font-size:12px; padding:2px 6px; border:1px solid var(--border); border-radius:5px; background:var(--bg); color:var(--ink); max-width:160px;}
+  .jira-input:disabled{opacity:0.6;}
+  .jira-link{font-size:11px; margin-left:8px; color:var(--accent); text-decoration:none;}
+  .jira-link:hover{text-decoration:underline;}
+  .badge.jira-badge{color:var(--accent); background:var(--accent-wash); font-family:"IBM Plex Mono",ui-monospace,monospace; letter-spacing:-0.01em;}
+  /* Editable description block (intent / acceptance / notes) in the ticket modal. */
+  .desc-head{display:flex; align-items:center; justify-content:space-between; gap:10px; margin-top:14px;}
+  .desc-head h3{margin:0;}
+  button.sm{font-size:12px; padding:3px 9px;}
+  .desc-label{display:block; font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:0.03em; color:var(--muted,#888); margin:10px 0 3px;}
+  .desc-ta{width:100%; box-sizing:border-box; font:inherit; font-size:13px; padding:7px 9px; border:1px solid var(--border); border-radius:6px; background:var(--bg); color:var(--ink); resize:vertical;}
+  .desc-actions{display:flex; gap:8px; margin-top:10px;}
   .owner-chip.agent .owner-name{font-family:"IBM Plex Mono",ui-monospace,monospace; letter-spacing:-0.01em;}
   .owner-name{min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
   .move-group{display:inline-flex; align-items:stretch; gap:4px; margin-left:auto; flex:none;}
@@ -554,6 +573,8 @@
   <div class="tab-panel" id="panel-tasks">
     <div class="layout board-layout">
       <div class="board-toolbar">
+        <input type="search" id="boardSearch" class="board-search" placeholder="Search title / id / jira…"
+               aria-label="Search tickets by title, id, or Jira id" autocomplete="off" spellcheck="false">
         <div class="worker-wrap">
           <button class="ghost" id="workerBtn" type="button" aria-expanded="false" aria-haspopup="true"
                   title="Background sessions for this repo — dispatches reuse an idle one">Start a worker</button>

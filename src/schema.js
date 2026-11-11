@@ -127,6 +127,12 @@ export function validateTicket(t, id) {
   if (t.type !== undefined && !TYPES.includes(t.type)) {
     errors.push(`${id}.md has invalid type "${t.type}" (expected one of ${TYPES.join(", ")})`);
   }
+  // Optional Jira issue key (e.g. PROJ-42). Free-form string so any Jira scheme is accepted; only a
+  // present-but-non-string value is an error. Absent/null reads as "not linked" — pre-existing tickets
+  // keep parsing unchanged.
+  if (t.jira !== undefined && t.jira !== null && typeof t.jira !== "string") {
+    errors.push(`${id}.md has invalid jira "${t.jira}" (expected a string issue key like PROJ-42)`);
+  }
   if (t.history !== undefined && !Array.isArray(t.history)) {
     errors.push(`${id}.md's "history" must be a list`);
   }

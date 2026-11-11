@@ -628,6 +628,28 @@ export async function startServer(initialRepoRoot, { port = 4173, remote = "orig
         await ctx.refresh({ doFetch: false });
         return sendJson(res, 200, { ...result, state: ctx.publicState() });
       }
+      const jiraMatch = url.pathname.match(/^\/api\/tickets\/([^/]+)\/jira$/);
+      if (req.method === "POST" && jiraMatch) {
+        const body = await readJsonBody(req);
+        const result = await writer.setJira(
+          ctx.repoRoot, ctx.stateBranch, jiraMatch[1], body.jira,
+          body.actor || (ctx.gitUser && ctx.gitUser.name) || "peephole-ui",
+        );
+        await ctx.refresh({ doFetch: false });
+        return sendJson(res, 200, { ...result, state: ctx.publicState() });
+      }
+      const editMatch = url.pathname.match(/^\/api\/tickets\/([^/]+)\/edit$/);
+      if (req.method === "POST" && editMatch) {
+        const body = await readJsonBody(req);
+        const patch = {};
+        for (const k of ["intent", "acceptance", "body"]) if (k in body) patch[k] = body[k];
+        const result = await writer.editTicket(
+          ctx.repoRoot, ctx.stateBranch, editMatch[1], patch,
+          body.actor || (ctx.gitUser && ctx.gitUser.name) || "peephole-ui",
+        );
+        await ctx.refresh({ doFetch: false });
+        return sendJson(res, 200, { ...result, state: ctx.publicState() });
+      }
       const commentMatch = url.pathname.match(/^\/api\/tickets\/([^/]+)\/comments$/);
       if (req.method === "POST" && commentMatch) {
         const body = await readJsonBody(req);

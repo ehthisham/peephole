@@ -6,8 +6,9 @@ git identity.
 
 ## Screenshots
 
-The board — three lanes (proposed → in-progress → shipped), cards carrying priority, type and gate
-badges, with per-ticket run/pause/skip and advance controls:
+The board — three lanes (proposed → in-progress → closed, with `shipped` an intermediate phase in the
+working lane), a search box, cards carrying priority, type, Jira and gate badges, with per-ticket
+run/pause/skip and advance controls:
 
 ![Peephole board](docs/screens/board.png)
 
@@ -231,6 +232,21 @@ you click **Push to remote** and confirm.
   missing and commits locally.
 - **Control** — Run / Pause / Skip per ticket, written to that ticket's `control` field
   and committed locally; every write appends to the ticket's `history`.
+- **State model** — `proposed → in-progress → built → verified → shipped → closed`. `closed` is the
+  only terminal state; `shipped` is an optional intermediate, so a ticket can be **closed after
+  shipping**, **closed without shipping** (`verified → closed`), or **closed without developing**
+  (abandoned, from any state). State only ever moves forward or to `closed`, never backward.
+- **Edit the description after creation** — a ticket's `intent`, `acceptance` and notes (the body) are
+  no longer write-once. The modal's **Description → ✎ Edit** saves them back to the ledger (so they
+  survive the next CLI op, which a hand-edit would not); also `peephole ticket edit <id>
+  [--intent …] [--acceptance …] [--notes …]`.
+- **Board search** — the Tasks toolbar has a search box that filters the visible cards by **title,
+  ticket id, or Jira key** (case-insensitive substring), ANDed with the other filters; Export CSV
+  respects it. Escape clears it.
+- **Jira issue link** — each ticket has an optional `jira` field (e.g. `PROJ-42`), editable in the
+  modal and shown as a badge on the card; set it by hand (`peephole ticket jira <id> --to PROJ-42`)
+  or let a future Jira push stamp it. When the board knows a Jira base URL the key becomes a direct
+  link.
 - **Gated transitions + provenance** — every state move records its provenance: `human` (a person
   decided) or `auto` (an agent advanced it with no human in the loop), set with
   `peephole ticket advance <id> --state <s> --mode auto|human` (default `human`). A project can make
@@ -272,7 +288,8 @@ you click **Push to remote** and confirm.
   `acceptance`↔Acceptance, `state`↔Status, `priority`↔Priority, `type`↔Issue Type, `epic`↔Epic Link.
   An unknown Status/Priority/Issue Type falls back to the Peephole default with a warning, never a
   hard fail. State mapping is lossy by nature — Jira has fewer stages, so `built` and `in-progress`
-  both export as "In Progress" and import back as `in-progress`.
+  both export as "In Progress" and import back as `in-progress`. `shipped`↔"Done" and `closed`↔"Closed"
+  are kept distinct so both round-trip to themselves.
 - **About tab** — shows the running Peephole version, this board's project/checkout/remote, a feature
   summary, and links.
 

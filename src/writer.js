@@ -461,7 +461,7 @@ export async function setState(repoRoot, remoteBranch, ticketId, state, actor = 
 }
 
 /** Creates a new ticket file with a schema-correct frontmatter — the deterministic alternative to an agent hand-writing YAML. Always its own commit. */
-export async function createTicket(repoRoot, remoteBranch, { id, project, title = "", intent, acceptance = "", body = "", risk = "reversible", priority, type, owner = null, assignee = null, epic = null, tags = [], createdBy = null, state: stateOverride, actor, session = null }) {
+export async function createTicket(repoRoot, remoteBranch, { id, project, title = "", intent, acceptance = "", body = "", risk = "reversible", priority, type, owner = null, assignee = null, epic = null, jira = null, tags = [], createdBy = null, state: stateOverride, actor, session = null }) {
   if (!project || !intent) throw new Error("project and intent are required");
   const { STATES, PRIORITIES, DEFAULT_PRIORITY, TYPES, DEFAULT_TYPE } = await import("./schema.js");
   if (stateOverride && !STATES.includes(stateOverride)) {
@@ -487,7 +487,7 @@ export async function createTicket(repoRoot, remoteBranch, { id, project, title 
   const ticket = {
     id, project, title: title || "", intent, acceptance, body, state, risk, priority: prio, type: kind, blockedOn: "", control: "run", owner,
     ownerName: owner ? session?.author?.name ?? null : null, assignee: assignee || null,
-    epic: epic || null, selected: false, comments: [],
+    epic: epic || null, jira: jira || null, selected: false, comments: [],
     tags: Array.isArray(tags) ? tags : [], createdBy,
     branch: null, pr: null, estimate: null, createdAt: now, updatedAt: now,
     history: [{ at: now, from: null, to: state, by: who }],
@@ -779,6 +779,74 @@ export async function setTitle(repoRoot, remoteBranch, ticketId, title, actor = 
   const sha = await git.commitAll(worktreePath, `peephole: ${ticketId} title updated`);
   const unpushed = await git.unpushedCount(worktreePath, localBranch, remoteBranch);
   return { committed: Boolean(sha), sha, unpushed, ticket };
+}
+
+/** Sets (or clears) a ticket's linked Jira issue key. Optional free-form string; empty string clears
+ * the link (field becomes null). Its own commit, recorded in history. This is both the field a human
+ * fills by hand and the reverse pointer the Jira push stamps back after creating an issue. */
+export async function setJira(repoRoot, remoteBranch, ticketId, jira, actor = "peephole-ui") {
+  const { worktreePath, localBranch } = await prepWorktree(repoRoot, remoteBranch);
+  const file = path.join(worktreePath, ".peephole", "tickets", `${ticketId}.md`);
+  if (!(await fileExists(file))) throw new Error(`ticket "${ticketId}" not found`);
+
+  const { parseTicket } = await import("./schema.js");
+  const parsed = parseTicket(await fs.readFile(file, "utf8"), ticketId);
+  if (!parsed.ok) throw new Error(`Cannot set jira on ${ticketId}: ${parsed.errors.join("; ")}`);
+  const ticket = parsed.ticket;
+
+  const next = jira == null ? "" : String(jira).trim();
+  const from = ticket.jira || "";
+  if (from === next) return { committed: false, ticket };
+  ticket.jira = next || null;
+  ticket.updatedAt = new Date().toISOString();
+  ticket.history = Array.isArray(ticket.history) ? ticket.history : [];
+  ticket.history.push({ at: ticket.updatedAt, from: `jira:${from || "none"}`, to: `jira:${next || "none"}`, by: actor });
+
+  await fs.writeFile(file, serializeTicket(ticket), "utf8");
+  const sha = await git.commitAll(worktreePath, `peephole: ${ticketId} jira -> ${next || "none"}`);
+  const unpushed = await git.unpushedCount(worktreePath, localBranch, remoteBranch);
+  return { committed: Boolean(sha), sha, unpushed, ticket };
+}
+
+/** Edits a ticket's free-text description fields AFTER creation — `intent` (the why), `acceptance`
+ * (done-when) and `body` (notes). These used to be write-once at `ticket new`; this is the supported
+ * edit path so a human no longer has to hand-edit the markdown (which the next CLI op would clobber).
+ * Only the keys present in `patch` change; each is trimmed. `intent` may not be blanked (schema
+ * requires it). One commit covers all the fields that actually changed; a no-op patch commits
+ * nothing. */
+export async function editTicket(repoRoot, remoteBranch, ticketId, patch, actor = "peephole-ui") {
+  const ALLOWED = ["intent", "acceptance", "body"];
+  const keys = Object.keys(patch || {}).filter((k) => ALLOWED.includes(k));
+  if (keys.length === 0) throw new Error(`no editable fields given (allowed: ${ALLOWED.join(", ")})`);
+
+  const { worktreePath, localBranch } = await prepWorktree(repoRoot, remoteBranch);
+  const file = path.join(worktreePath, ".peephole", "tickets", `${ticketId}.md`);
+  if (!(await fileExists(file))) throw new Error(`ticket "${ticketId}" not found`);
+
+  const { parseTicket } = await import("./schema.js");
+  const parsed = parseTicket(await fs.readFile(file, "utf8"), ticketId);
+  if (!parsed.ok) throw new Error(`Cannot edit ${ticketId}: ${parsed.errors.join("; ")}`);
+  const ticket = parsed.ticket;
+
+  const changed = [];
+  for (const k of keys) {
+    const next = patch[k] == null ? "" : String(patch[k]).trim();
+    const prev = ticket[k] == null ? "" : String(ticket[k]);
+    if (prev === next) continue;
+    if (k === "intent" && !next) throw new Error("intent cannot be empty");
+    ticket[k] = next;
+    changed.push(k);
+  }
+  if (changed.length === 0) return { committed: false, ticket, changed };
+
+  ticket.updatedAt = new Date().toISOString();
+  ticket.history = Array.isArray(ticket.history) ? ticket.history : [];
+  ticket.history.push({ at: ticket.updatedAt, from: `edit:${changed.join(",")}`, to: `edit:${changed.join(",")}`, by: actor });
+
+  await fs.writeFile(file, serializeTicket(ticket), "utf8");
+  const sha = await git.commitAll(worktreePath, `peephole: ${ticketId} edit ${changed.join(", ")}`);
+  const unpushed = await git.unpushedCount(worktreePath, localBranch, remoteBranch);
+  return { committed: Boolean(sha), sha, unpushed, ticket, changed };
 }
 
 /** Appends a comment to a ticket: free text, plus who wrote it and when. Comments are the only

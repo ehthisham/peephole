@@ -99,6 +99,28 @@ test("rowsToTickets: a row with no Summary is skipped with a warning", () => {
   assert.ok(warnings.some((w) => /no Summary/.test(w)));
 });
 
+test("closed maps to Jira Closed and back (distinct from shipped/Done)", () => {
+  assert.equal(ticketToRow({ id: "c", title: "Closed one", state: "closed" }).Status, "Closed");
+  assert.equal(ticketToRow({ id: "s", title: "Shipped one", state: "shipped" }).Status, "Done");
+  const { records } = rowsToTickets([
+    ["Summary", "Status", "peephole-id"],
+    ["Closed one", "Closed", "c"],
+    ["Shipped one", "Done", "s"],
+  ]);
+  assert.equal(records.find((r) => r.id === "c").state, "closed");
+  assert.equal(records.find((r) => r.id === "s").state, "shipped");
+});
+
+test("shipped (intermediate) and closed (terminal) each round-trip to themselves", () => {
+  const tickets = [
+    { id: "ship", title: "Ship me", intent: "x", state: "shipped" },
+    { id: "close", title: "Close me", intent: "y", state: "closed" },
+  ];
+  const { records } = rowsToTickets(parseCsv(exportCsv(tickets)));
+  assert.equal(records.find((r) => r.id === "ship").state, "shipped");
+  assert.equal(records.find((r) => r.id === "close").state, "closed");
+});
+
 test("export -> import is a stable round-trip on core fields", () => {
   const tickets = [
     { id: "a", title: "Alpha", intent: "do alpha", state: "shipped", priority: "high", type: "chore", epic: "E1" },

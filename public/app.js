@@ -32,14 +32,18 @@
   var LANES = [
     { key: "proposed", label: "Proposed", states: ["proposed"] },
     {
-      key: "in-progress", label: "In progress", states: ["in-progress", "built", "verified"],
+      // `shipped` is an intermediate status now, not a terminus: a ticket can be shipped and then
+      // closed, closed straight from verified (done but not shipped), or closed from anywhere
+      // (abandoned). So shipped lives in the working lane; only `closed` is terminal.
+      key: "in-progress", label: "In progress", states: ["in-progress", "built", "verified", "shipped"],
       // Verified work is done and waiting on somebody to say so; that is the move worth batching.
       bulk: { from: "verified", to: "shipped", label: "Ship" },
     },
-    { key: "shipped", label: "Shipped", states: ["shipped", "closed"] },
+    { key: "closed", label: "Closed", states: ["closed"] },
   ];
-  // The states that show as a badge because they are not their lane's headline state.
-  var PHASE_STATES = new Set(["built", "verified", "closed"]);
+  // The states that show as a badge because they are not their lane's headline state. `shipped` is a
+  // phase within the working lane now; `closed` is its own lane headline, so it drops off this list.
+  var PHASE_STATES = new Set(["built", "verified", "shipped"]);
 
   // No `restart`: it cleared `owner` in the same write that set the blocking value, so the deny
   // could never reach the session it was aimed at, and it left a stale control that denied the
@@ -734,10 +738,10 @@
     return res.json();
   }
 
-  // Once a ticket has shipped, Run/Pause/Skip/Restart no longer mean anything — the work is
-  // done, there's nothing left to control. "closed" (shipped's own successor state) is the
-  // same case.
-  var TERMINAL_STATES = new Set(["shipped", "closed"]);
+  // Only a CLOSED ticket is finished — Run/Pause/Skip no longer mean anything, and there is no
+  // forward move left. `shipped` is no longer terminal: a shipped ticket still advances (to closed),
+  // so it keeps its controls and its move button, like any other working state.
+  var TERMINAL_STATES = new Set(["closed"]);
 
   // `writer.setState` (server-side) has always enforced forward-or-close-only; this is the
   // client-side mirror so the button never even offers an invalid move. `closed` has no
@@ -939,8 +943,11 @@
     // the modal timeline.
     var gated = (Array.isArray(t.history) ? t.history : []).some(function (h) { return h && h.gate; });
     var gateBadge = gated ? '<span class="badge gate" title="has a stamped (gated) transition — see Activity">🔒</span>' : "";
-    var statusStrip = typeBadge || prioBadge || gateBadge || queueTag || controlTag
-      ? '<div class="card-top">' + typeBadge + prioBadge + gateBadge + queueTag + controlTag + "</div>"
+    // A linked Jira issue shows its key on the card face so the cross-system link is visible at a
+    // glance; the editable field and the "open ↗" link live in the modal.
+    var jiraBadge = t.jira ? '<span class="badge jira-badge" title="Jira ' + esc(t.jira) + '">' + esc(t.jira) + "</span>" : "";
+    var statusStrip = typeBadge || prioBadge || gateBadge || jiraBadge || queueTag || controlTag
+      ? '<div class="card-top">' + typeBadge + prioBadge + gateBadge + jiraBadge + queueTag + controlTag + "</div>"
       : "";
     // The headline is the ticket's title, falling back to its intent when it has none (every ticket
     // written before the title field existed). It is the only text on the card face and clamps to two
@@ -1181,6 +1188,21 @@
     );
   }
 
+  /** Linked Jira issue key, editable in place. Free-form so any Jira scheme fits; clearing it unlinks.
+   *  When the server knows a Jira base URL (set once the Jira-push config exists), the key also renders
+   *  as a direct link to the issue — until then it is plain editable text. */
+  function jiraControl(t) {
+    var key = t.jira || "";
+    var link = key && jiraBaseUrl
+      ? ' <a class="jira-link" href="' + esc(jiraBaseUrl.replace(/\/+$/, "")) + "/browse/" +
+        encodeURIComponent(key) + '" target="_blank" rel="noopener">open ↗</a>'
+      : "";
+    return (
+      '<input class="jira-input mono" data-id="' + esc(t.id) + '" value="' + esc(key) +
+      '" placeholder="e.g. PROJ-42" aria-label="Jira issue key for this ticket">' + link
+    );
+  }
+
   /** Free text with the existing epics offered as suggestions: a new epic is created by typing
    *  one, which is the whole ceremony — see writer.setEpic on why epics aren't records. */
   function epicControl(t) {
@@ -1221,6 +1243,72 @@
 
   /** Detail popup for one ticket — everything the compact card leaves out, including the
    *  branch it was (or is being) built on, if the ticket ever recorded one. */
+  // The ticket's description fields — intent (why), acceptance (done-when) and body (notes) — rendered
+  // read-only with an Edit affordance. These used to be write-once at creation; `editTicket` (server)
+  // now backs an in-place edit so nobody has to hand-edit the markdown the next CLI op would clobber.
+  function descReadHtml(t) {
+    return (
+      '<div class="desc-head"><h3>Description</h3>' +
+      '<button class="ghost sm" id="descEdit" type="button" title="Edit intent, acceptance and notes">✎ Edit</button></div>' +
+      '<h4>Intent</h4>' + (t.intent ? renderMarkdown(t.intent) : '<p class="dim">—</p>') +
+      '<h4>Acceptance</h4>' + (t.acceptance ? renderMarkdown(t.acceptance) : '<p class="dim">—</p>') +
+      '<h4>Notes</h4>' + (t.body ? renderMarkdown(t.body) : '<p class="dim">—</p>')
+    );
+  }
+  function descEditHtml(t) {
+    return (
+      '<div class="desc-head"><h3>Edit description</h3></div>' +
+      '<label class="desc-label" for="editIntent">Intent (required)</label>' +
+      '<textarea id="editIntent" class="desc-ta" rows="3">' + esc(t.intent || "") + '</textarea>' +
+      '<label class="desc-label" for="editAcceptance">Acceptance</label>' +
+      '<textarea id="editAcceptance" class="desc-ta" rows="3">' + esc(t.acceptance || "") + '</textarea>' +
+      '<label class="desc-label" for="editNotes">Notes</label>' +
+      '<textarea id="editNotes" class="desc-ta" rows="3">' + esc(t.body || "") + '</textarea>' +
+      '<div class="desc-actions"><button class="primary sm" id="descSave" type="button">Save</button>' +
+      '<button class="ghost sm" id="descCancel" type="button">Cancel</button></div>'
+    );
+  }
+  function wireDesc(t) {
+    var block = ticketModalBody.querySelector("#descBlock");
+    if (!block) return;
+    var editBtn = block.querySelector("#descEdit");
+    if (editBtn) editBtn.addEventListener("click", function () {
+      block.innerHTML = descEditHtml(t);
+      wireDesc(t);
+      var ta = block.querySelector("#editIntent");
+      if (ta) ta.focus();
+    });
+    var cancelBtn = block.querySelector("#descCancel");
+    if (cancelBtn) cancelBtn.addEventListener("click", function () {
+      block.innerHTML = descReadHtml(t);
+      wireDesc(t);
+    });
+    var saveBtn = block.querySelector("#descSave");
+    if (saveBtn) saveBtn.addEventListener("click", async function () {
+      var intent = block.querySelector("#editIntent").value;
+      var acceptance = block.querySelector("#editAcceptance").value;
+      var notes = block.querySelector("#editNotes").value;
+      if (!intent.trim()) { window.alert("Intent can't be empty."); return; }
+      saveBtn.disabled = true;
+      saveBtn.textContent = "Saving…";
+      try {
+        var res = await apiPost("/api/tickets/" + encodeURIComponent(t.id) + "/edit", {
+          intent: intent, acceptance: acceptance, body: notes, actor: "peephole-ui",
+        });
+        if (res && res.error) { window.alert(res.error); saveBtn.disabled = false; saveBtn.textContent = "Save"; return; }
+        t.intent = intent.trim();
+        t.acceptance = acceptance.trim();
+        t.body = notes.trim();
+        block.innerHTML = descReadHtml(t);
+        wireDesc(t);
+      } catch (e) {
+        window.alert("Save failed.");
+        saveBtn.disabled = false;
+        saveBtn.textContent = "Save";
+      }
+    });
+  }
+
   function openTicketModal(t) {
     ticketModalTitle.textContent = (t.title && t.title.trim()) || t.intent || ("#" + t.id);
     var cost = ticketCost(t);
@@ -1238,6 +1326,7 @@
       ["Owner", t.owner ? esc(ownerNameOf(t) || "unknown") : "—"],
       ["Assignee", assignControl(t)],
       ["Epic", epicControl(t)],
+      ["Jira", jiraControl(t)],
       ["Session", t.owner ? '<span class="mono">' + esc(t.owner) + "</span>" : "—"],
       ["Created by", t.createdBy ? esc(t.createdBy) : "—"],
       ["Branch", t.branch ? '<span class="mono">' + esc(t.branch) + "</span>" : "—"],
@@ -1291,9 +1380,7 @@
       : '<p class="empty-note">Nothing logged yet.</p>';
     ticketModalBody.innerHTML =
       rowsHtml +
-      "<h3>Intent</h3><p>" + esc(t.intent || "—") + "</p>" +
-      (t.acceptance ? "<h3>Acceptance</h3>" + renderMarkdown(t.acceptance) : "") +
-      (t.body ? "<h3>Notes</h3>" + renderMarkdown(t.body) : "") +
+      '<div id="descBlock">' + descReadHtml(t) + "</div>" +
       '<h3>Comments</h3>' +
       '<div class="comment-add"><textarea id="commentText" rows="2" placeholder="Add a comment — why this is blocked, skipped, or what you decided"></textarea>' +
       '<button class="ghost" id="commentAdd" type="button" data-id="' + esc(t.id) + '">Comment</button></div>' +
@@ -1302,6 +1389,7 @@
       '<div id="ticketLog"><button class="ghost" id="loadLog" type="button" data-id="' + esc(t.id) +
       '">Load what Claude did</button>' +
       '<p class="empty-note">Read from the session transcripts, for the window this ticket was claimed.</p></div>';
+    wireDesc(t);
     var riskSelect = ticketModalBody.querySelector(".risk-select");
     if (riskSelect) {
       riskSelect.addEventListener("change", async function () {
@@ -1418,6 +1506,27 @@
           }
         } finally {
           epicInput.disabled = false;
+        }
+      });
+    }
+    var jiraInput = ticketModalBody.querySelector(".jira-input");
+    if (jiraInput) {
+      // On change (blur/Enter), not per keystroke — each write is a commit.
+      jiraInput.addEventListener("change", async function () {
+        var value = jiraInput.value.trim();
+        jiraInput.disabled = true;
+        try {
+          var res = await apiPost("/api/tickets/" + encodeURIComponent(jiraInput.dataset.id) + "/jira", {
+            jira: value, actor: "peephole-ui",
+          });
+          if (res && res.error) { window.alert(res.error); jiraInput.value = t.jira || ""; }
+          else {
+            t.jira = value || null;
+            // Re-open so the "open ↗" link appears/updates against the stored base URL.
+            openTicketModal(t);
+          }
+        } finally {
+          jiraInput.disabled = false;
         }
       });
     }
@@ -1699,6 +1808,20 @@
   }
 
   var latestTickets = [];
+  // Free-text board search. Matches a case-insensitive substring across the three identifiers a
+  // person actually hunts by — the headline (title, or its intent fallback), the ticket id, and the
+  // linked Jira key. Empty query matches everything (no filtering). ANDed with the member/epic/tag
+  // filters, so search narrows within whatever is already shown.
+  // The Jira base URL the server advertises once Jira-push config exists; turns a bare key into a
+  // clickable link. Empty until then — the key still renders as editable text.
+  var jiraBaseUrl = "";
+  var searchTerm = "";
+  function matchesSearch(t, term) {
+    if (!term) return true;
+    var hay = [t.title || t.intent || "", t.id || "", t.jira || ""].join("\n").toLowerCase();
+    return hay.indexOf(term) !== -1;
+  }
+
   var lastVisibleTickets = [];
   function renderBoard(tickets) {
     latestTickets = tickets;
@@ -1710,7 +1833,7 @@
     var epicSel = getEpicFilter();
     var visible = forThisProject(tickets).filter(function (t) {
       return matchesMembers(t, selected) && matchesSelection(t, selMode) &&
-        matchesTags(t, tagSel) && matchesEpics(t, epicSel);
+        matchesTags(t, tagSel) && matchesEpics(t, epicSel) && matchesSearch(t, searchTerm);
     });
     // The exact set the board is showing (after every filter) — Export CSV sends these ids so the
     // file mirrors what the user sees, not the whole ledger.
@@ -2250,6 +2373,9 @@
 
   function render(state) {
     latestState = state;
+    // Advertised once Jira-push config exists (server-side); until then it stays empty and Jira keys
+    // render as plain text rather than links.
+    jiraBaseUrl = state.jiraBaseUrl || "";
     var q = state.queue || { pending: [], running: null };
     queuedIds = (q.pending || []).map(function (p) { return p.ticketId; });
     runningId = q.running ? q.running.ticketId : null;
@@ -3022,6 +3148,19 @@
     renderBoard(latestTickets);
   });
 
+  var boardSearch = document.getElementById("boardSearch");
+  if (boardSearch) {
+    // Live filter as the user types; re-render over the already-loaded tickets (no server round-trip).
+    boardSearch.addEventListener("input", function () {
+      searchTerm = boardSearch.value.trim().toLowerCase();
+      renderBoard(latestTickets);
+    });
+    // Escape clears the search and restores the full board.
+    boardSearch.addEventListener("keydown", function (e) {
+      if (e.key === "Escape") { boardSearch.value = ""; searchTerm = ""; renderBoard(latestTickets); }
+    });
+  }
+
   autoFetchToggle.addEventListener("click", async function () {
     var enabled = autoFetchToggle.getAttribute("aria-pressed") !== "true";
     await apiPost("/api/autosync", { enabled: enabled, intervalMinutes: Number(intervalInput.value) || 5, push: true });
@@ -3141,6 +3280,10 @@
     ];
     var feats = [
       "Three-lane ticket board — lifecycle, priority, type, and gated transitions with human/auto provenance",
+      "Closed is the only terminal state; shipped is an optional intermediate (ship-then-close, close-without-shipping, or abandon)",
+      "Edit a ticket's intent / acceptance / notes after creation, in place",
+      "Search the board by title, ticket id, or Jira key",
+      "Optional Jira issue link per ticket (badge on the card, editable in the modal)",
       "Cooperative stop/claim control and live agent presence, wired in as Claude Code hooks",
       "Insights — ship velocity, forecast, shipped-per-week, coverage, and token spend",
       "Jira CSV export / import (export respects the board's current filters)",

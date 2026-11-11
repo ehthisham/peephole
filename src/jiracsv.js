@@ -31,8 +31,10 @@ const STATE_TO_STATUS = {
   "in-progress": "In Progress",
   built: "In Progress",
   verified: "In Review",
+  // `shipped` is intermediate (released, not yet closed); `closed` is the terminal state. Giving them
+  // distinct Jira statuses keeps the round-trip stable — shipped<->Done, closed<->Closed.
   shipped: "Done",
-  closed: "Done",
+  closed: "Closed",
 };
 const PRIORITY_TO_JIRA = { low: "Low", normal: "Medium", high: "High", urgent: "Highest" };
 const TYPE_TO_ISSUETYPE = { feature: "Story", bug: "Bug", chore: "Task" };
@@ -42,7 +44,8 @@ const STATUS_TO_STATE = {
   "to do": "proposed", backlog: "proposed", open: "proposed", "selected for development": "proposed",
   "in progress": "in-progress", "in development": "in-progress",
   "in review": "verified", "code review": "verified", review: "verified",
-  done: "shipped", closed: "shipped", resolved: "shipped", complete: "shipped", completed: "shipped",
+  done: "shipped", resolved: "shipped", complete: "shipped", completed: "shipped",
+  closed: "closed", abandoned: "closed", "won't do": "closed", "cannot reproduce": "closed",
 };
 const JIRA_TO_PRIORITY = {
   lowest: "low", low: "low", trivial: "low", minor: "low",
