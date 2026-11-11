@@ -282,8 +282,13 @@ you click **Push to remote** and confirm.
   time is stamped on each push. Credentials live **outside** the repo — `~/.peephole/jira.json`
   (`{ baseUrl, email, token, projectKey }`) or `JIRA_BASE_URL` / `JIRA_EMAIL` / `JIRA_TOKEN` /
   `JIRA_PROJECT` — never committed, never in the ledger. Without them the control shows a hint instead
-  of a button. Jira v3 bodies are ADF; the field map is shared with the CSV interop so the two never
-  drift.
+  of a button. If your project marks a custom field **mandatory** on the create screen (a create
+  otherwise 400s, e.g. `Task Type is required`), add an optional `extraFields` object to `jira.json`
+  (or `JIRA_EXTRA_FIELDS` as JSON) holding raw Jira field shapes — e.g.
+  `"extraFields": { "customfield_10032": { "value": "Development" } }` — and Peephole merges it into
+  every create/update; look up field ids and allowed values at
+  `/rest/api/3/issue/createmeta?projectKeys=PROJ&expand=projects.issuetypes.fields`. Jira v3 bodies
+  are ADF; the field map is shared with the CSV interop so the two never drift.
 - **Gated transitions + provenance** — every state move records its provenance: `human` (a person
   decided) or `auto` (an agent advanced it with no human in the loop), set with
   `peephole ticket advance <id> --state <s> --mode auto|human` (default `human`). A project can make
