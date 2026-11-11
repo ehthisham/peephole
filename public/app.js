@@ -1262,13 +1262,50 @@
 
   /** Detail popup for one ticket — everything the compact card leaves out, including the
    *  branch it was (or is being) built on, if the ticket ever recorded one. */
+  // The ticket's description as markdown — each non-empty field under its own heading. What the Copy
+  // button puts on the clipboard; empty fields are skipped, and a ticket with no description at all
+  // falls back to its title/id so the copy is never blank.
+  function buildDescMarkdown(t) {
+    var parts = [];
+    if (t.intent) parts.push("## Intent\n" + t.intent);
+    if (t.acceptance) parts.push("## Acceptance\n" + t.acceptance);
+    if (t.body) parts.push("## Notes\n" + t.body);
+    if (!parts.length) parts.push((t.title && t.title.trim()) || t.id || "");
+    return parts.join("\n\n");
+  }
+  // clipboard.writeText is the happy path but is refused in some webviews / insecure origins; fall back
+  // to a hidden textarea + execCommand. Returns a promise resolving to whether the copy landed.
+  function copyTextToClipboard(text) {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      return navigator.clipboard.writeText(text).then(function () { return true; }, function () { return fallbackCopy(text); });
+    }
+    return Promise.resolve(fallbackCopy(text));
+  }
+  function fallbackCopy(text) {
+    try {
+      var ta = document.createElement("textarea");
+      ta.value = text;
+      ta.style.position = "fixed";
+      ta.style.top = "-1000px";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.focus();
+      ta.select();
+      var ok = document.execCommand("copy");
+      document.body.removeChild(ta);
+      return ok;
+    } catch (e) { return false; }
+  }
+
   // The ticket's description fields — intent (why), acceptance (done-when) and body (notes) — rendered
   // read-only with an Edit affordance. These used to be write-once at creation; `editTicket` (server)
   // now backs an in-place edit so nobody has to hand-edit the markdown the next CLI op would clobber.
   function descReadHtml(t) {
     return (
       '<div class="desc-head"><h3>Description</h3>' +
-      '<button class="ghost sm" id="descEdit" type="button" title="Edit intent, acceptance and notes">✎ Edit</button></div>' +
+      '<span class="desc-head-actions">' +
+      '<button class="ghost sm" id="descCopy" type="button" title="Copy intent + acceptance + notes to the clipboard">⧉ Copy</button>' +
+      '<button class="ghost sm" id="descEdit" type="button" title="Edit intent, acceptance and notes">✎ Edit</button></span></div>' +
       '<h4>Intent</h4>' + (t.intent ? renderMarkdown(t.intent) : '<p class="dim">—</p>') +
       '<h4>Acceptance</h4>' + (t.acceptance ? renderMarkdown(t.acceptance) : '<p class="dim">—</p>') +
       '<h4>Notes</h4>' + (t.body ? renderMarkdown(t.body) : '<p class="dim">—</p>')
@@ -1290,6 +1327,14 @@
   function wireDesc(t) {
     var block = ticketModalBody.querySelector("#descBlock");
     if (!block) return;
+    var copyBtn = block.querySelector("#descCopy");
+    if (copyBtn) copyBtn.addEventListener("click", async function () {
+      var ok = await copyTextToClipboard(buildDescMarkdown(t));
+      var old = copyBtn.innerHTML;
+      copyBtn.innerHTML = ok ? "✓ Copied" : "Copy failed";
+      copyBtn.disabled = true;
+      setTimeout(function () { copyBtn.innerHTML = old; copyBtn.disabled = false; }, 1500);
+    });
     var editBtn = block.querySelector("#descEdit");
     if (editBtn) editBtn.addEventListener("click", function () {
       block.innerHTML = descEditHtml(t);
@@ -3337,6 +3382,7 @@
       "Three-lane ticket board — lifecycle, priority, type, and gated transitions with human/auto provenance",
       "Closed is the only terminal state; shipped is an optional intermediate (ship-then-close, close-without-shipping, or abandon)",
       "Edit a ticket's intent / acceptance / notes after creation, in place",
+      "Copy a ticket's description (intent + acceptance + notes) to the clipboard as markdown",
       "Search the board by title, ticket id, or Jira key",
       "Optional Jira issue link per ticket (badge on the card, editable in the modal)",
       "One-way manual push to Jira — create/update the issue, best-effort status, optional worklog",

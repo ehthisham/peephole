@@ -240,6 +240,10 @@ you click **Push to remote** and confirm.
   no longer write-once. The modal's **Description → ✎ Edit** saves them back to the ledger (so they
   survive the next CLI op, which a hand-edit would not); also `peephole ticket edit <id>
   [--intent …] [--acceptance …] [--notes …]`.
+- **Copy the description** — a **⧉ Copy** button in the modal's Description header puts the ticket's
+  intent + acceptance + notes on the clipboard as markdown (each under its own heading), for pasting
+  into chat, a PR or Jira. Read-only; falls back to a hidden-textarea copy where the clipboard API is
+  refused.
 - **Board search** — the Tasks toolbar has a search box that filters the visible cards by **title,
   ticket id, or Jira key** (case-insensitive substring), ANDed with the other filters; Export CSV
   respects it. Escape clears it.
