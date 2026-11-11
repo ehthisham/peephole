@@ -170,6 +170,7 @@
   var filterBtn = document.getElementById("filterBtn");
   var filterMenu = document.getElementById("filterMenu");
   var filterCount = document.getElementById("filterCount");
+  var clearFiltersBtn = document.getElementById("clearFiltersBtn");
   var otherProjects = document.getElementById("otherProjects");
   var epicOptions = document.getElementById("epicOptions");
   var execSelectedBtn = document.getElementById("execSelectedBtn");
@@ -3070,6 +3071,23 @@
     filterCount.hidden = n === 0;
     filterCount.textContent = String(n);
     filterBtn.setAttribute("aria-pressed", String(n > 0));
+    // The clear-all ✕ shows whenever ANYTHING is narrowing the board — a filter or the search box —
+    // so it is one click to get back to the full board without opening the menu.
+    if (clearFiltersBtn) clearFiltersBtn.hidden = !(n > 0 || searchTerm);
+  }
+
+  /** Reset every board narrowing at once: member / tag / epic filters, selection mode, and the search
+   *  box. Re-renders the board, the filter count and (if open) the filter menu. */
+  function clearAllFilters() {
+    setMemberFilter([]);
+    setTagFilter([]);
+    setEpicFilter([]);
+    try { localStorage.setItem(SELECTION_FILTER_KEY, "all"); } catch (e) {}
+    searchTerm = "";
+    if (boardSearch) boardSearch.value = "";
+    renderBoard(latestTickets);
+    renderFilterState();
+    if (!filterMenu.hidden) renderFilterMenu();
   }
 
   filterBtn.addEventListener("click", function (ev) {
@@ -3079,6 +3097,12 @@
     filterMenu.hidden = !open;
     filterBtn.setAttribute("aria-expanded", String(open));
   });
+  if (clearFiltersBtn) {
+    clearFiltersBtn.addEventListener("click", function (ev) {
+      ev.stopPropagation();
+      clearAllFilters();
+    });
+  }
   document.addEventListener("click", function (ev) {
     if (!filterMenu.hidden && !filterMenu.contains(ev.target) && ev.target !== filterBtn) {
       filterMenu.hidden = true;
@@ -3254,10 +3278,11 @@
     boardSearch.addEventListener("input", function () {
       searchTerm = boardSearch.value.trim().toLowerCase();
       renderBoard(latestTickets);
+      renderFilterState();
     });
     // Escape clears the search and restores the full board.
     boardSearch.addEventListener("keydown", function (e) {
-      if (e.key === "Escape") { boardSearch.value = ""; searchTerm = ""; renderBoard(latestTickets); }
+      if (e.key === "Escape") { boardSearch.value = ""; searchTerm = ""; renderBoard(latestTickets); renderFilterState(); }
     });
   }
 
