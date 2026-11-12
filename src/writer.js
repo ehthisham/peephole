@@ -811,7 +811,7 @@ export async function setJira(repoRoot, remoteBranch, ticketId, jira, actor = "p
 /** Records a successful Jira push: stamps the issue key (if new/changed) and the sync timestamp onto
  *  the ticket in one commit. Separate from setJira because this is the machine writing back what the
  *  push did, not a human linking a key — both land in `jira`, and `jiraSyncedAt` marks when. */
-export async function recordJiraSync(repoRoot, remoteBranch, ticketId, key, actor = "peephole-ui", at = new Date().toISOString()) {
+export async function recordJiraSync(repoRoot, remoteBranch, ticketId, key, actor = "peephole-ui", at = new Date().toISOString(), worklogMinutesTotal = null) {
   const { worktreePath, localBranch } = await prepWorktree(repoRoot, remoteBranch);
   const file = path.join(worktreePath, ".peephole", "tickets", `${ticketId}.md`);
   if (!(await fileExists(file))) throw new Error(`ticket "${ticketId}" not found`);
@@ -825,6 +825,12 @@ export async function recordJiraSync(repoRoot, remoteBranch, ticketId, key, acto
   const next = key == null ? from : String(key).trim();
   ticket.jira = next || null;
   ticket.jiraSyncedAt = at;
+  // Record the running total of minutes logged to the Jira worklog so the board can disable the
+  // "Add to Jira worklog" button once the current duration is already logged (worklogs are
+  // append-only in Jira, so re-pushing the same span would double-count).
+  if (worklogMinutesTotal != null && Number.isFinite(worklogMinutesTotal) && worklogMinutesTotal >= 0) {
+    ticket.jiraWorklogMinutes = Math.round(worklogMinutesTotal);
+  }
   ticket.updatedAt = at;
   ticket.history = Array.isArray(ticket.history) ? ticket.history : [];
   ticket.history.push({ at, from: `jira-sync:${from || "none"}`, to: `jira-sync:${next || "none"}`, by: actor });

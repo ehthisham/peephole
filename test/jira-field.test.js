@@ -30,6 +30,20 @@ test("validateTicket: non-string jira is an error", () => {
   assert.match(errs[0], /invalid jira/);
 });
 
+test("validateTicket: jiraWorklogMinutes as a non-negative number is accepted (and absent is fine)", () => {
+  const base = { project: "t", intent: "x", state: "proposed", risk: "reversible", control: "run", owner: null, history: [] };
+  assert.deepEqual(validateTicket(base, "t1"), []);
+  assert.deepEqual(validateTicket({ ...base, jiraWorklogMinutes: 0 }, "t1"), []);
+  assert.deepEqual(validateTicket({ ...base, jiraWorklogMinutes: 31 }, "t1"), []);
+  assert.deepEqual(validateTicket({ ...base, jiraWorklogMinutes: null }, "t1"), []);
+});
+
+test("validateTicket: negative or non-number jiraWorklogMinutes is an error", () => {
+  const base = { project: "t", intent: "x", state: "proposed", risk: "reversible", control: "run", owner: null, history: [] };
+  assert.match(validateTicket({ ...base, jiraWorklogMinutes: -5 }, "t1")[0], /invalid jiraWorklogMinutes/);
+  assert.match(validateTicket({ ...base, jiraWorklogMinutes: "30" }, "t1")[0], /invalid jiraWorklogMinutes/);
+});
+
 // --- writer: createTicket / setJira / editTicket against a real remote-less repo ----------------
 
 let tmp, repo, ledgerHome, createTicket, setJira, editTicket, parseFile;

@@ -138,6 +138,12 @@ export function validateTicket(t, id) {
   if (t.jiraSyncedAt !== undefined && t.jiraSyncedAt !== null && typeof t.jiraSyncedAt !== "string") {
     errors.push(`${id}.md has invalid jiraSyncedAt "${t.jiraSyncedAt}" (expected an ISO timestamp string)`);
   }
+  // Optional cumulative minutes already logged to the Jira worklog from Peephole. Lets the UI avoid
+  // double-logging the same worked duration. Absent/null reads as "nothing logged yet".
+  if (t.jiraWorklogMinutes !== undefined && t.jiraWorklogMinutes !== null &&
+      (typeof t.jiraWorklogMinutes !== "number" || !Number.isFinite(t.jiraWorklogMinutes) || t.jiraWorklogMinutes < 0)) {
+    errors.push(`${id}.md has invalid jiraWorklogMinutes "${t.jiraWorklogMinutes}" (expected a non-negative number of minutes)`);
+  }
   if (t.history !== undefined && !Array.isArray(t.history)) {
     errors.push(`${id}.md's "history" must be a list`);
   }

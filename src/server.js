@@ -655,17 +655,25 @@ export async function startServer(initialRepoRoot, { port = 4173, remote = "orig
         const client = createJiraClient({ baseUrl: cfg.baseUrl, email: cfg.email, token: cfg.token });
         let result;
         try {
-          result = await pushTicketToJira(ticket, { projectKey: cfg.projectKey, workedMinutes: body.workedMinutes, extraFields: cfg.extraFields }, client);
+          result = await pushTicketToJira(
+            ticket,
+            { projectKey: cfg.projectKey, workedMinutes: body.workedMinutes, workedStartedAt: body.workedStartedAt, extraFields: cfg.extraFields },
+            client,
+          );
         } catch (e) {
           return sendJson(res, 502, { error: `Jira push failed: ${e.message}` });
         }
         // Stamp the key + synced time back onto the ledger so the link lights up and the modal shows
-        // when it last synced.
+        // when it last synced. Any minutes logged this push add to the ticket's running worklog total,
+        // which the board reads to avoid double-logging the same worked duration.
         const actor = body.actor || (ctx.gitUser && ctx.gitUser.name) || "peephole-ui";
-        await writer.recordJiraSync(ctx.repoRoot, ctx.stateBranch, ticket.id, result.key, actor, result.syncedAt);
+        const loggedNow = result.worklog ? Number(result.worklog.minutes) || 0 : 0;
+        const worklogTotal = loggedNow > 0 ? (Number(ticket.jiraWorklogMinutes) || 0) + loggedNow : null;
+        await writer.recordJiraSync(ctx.repoRoot, ctx.stateBranch, ticket.id, result.key, actor, result.syncedAt, worklogTotal);
         await ctx.refresh({ doFetch: false });
         return sendJson(res, 200, {
           ...result,
+          worklogMinutesTotal: worklogTotal != null ? Math.round(worklogTotal) : (Number(ticket.jiraWorklogMinutes) || 0),
           url: `${cfg.baseUrl}/browse/${encodeURIComponent(result.key)}`,
           state: ctx.publicState(),
         });

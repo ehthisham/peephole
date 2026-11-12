@@ -7,6 +7,10 @@
     { key: "shipped", label: "Shipped" },
     { key: "closed", label: "Closed" },
   ];
+  // The real lifecycle states. History also logs metadata events (title/control/id/epic/risk
+  // changes) with a prefixed `to:` like "title:…"; those are NOT state transitions and must be
+  // ignored when timing a ticket, or a late title edit reads as the moment work ended.
+  var STATE_KEY_SET = new Set(STATES.map(function (s) { return s.key; }));
   var STATE_COLOR = {
     "proposed": "var(--proposed)",
     "in-progress": "var(--progress)",
@@ -336,8 +340,16 @@
    *
    *  - `waitMs`  — created until somebody claimed it (or until now, while nobody has). Backlog
    *    latency: nothing is being spent, the ticket is just sitting there.
-   *  - `workMs`  — first claim until the ticket reached a terminal state (or until now, while
-   *    still open). The only span in which effort was actually going into it.
+   *  - `workMs`  — first claim (`in-progress`) until the ticket's last real STATE transition, i.e.
+   *    the moment it stopped moving forward (built/verified/shipped/closed). Runs to now ONLY while
+   *    the ticket is literally in-progress; a ticket parked in shipped is not still being worked, so
+   *    its clock stops at the shipped move rather than growing to "total opened time".
+   *
+   *    Two bugs used to inflate this to days. (1) The end was taken from the LAST history entry of
+   *    any kind, so a later metadata event — a bulk `title:` migration touched every ticket — became
+   *    the "end", turning a 31-minute ticket into 50 days. (2) Anything not yet `closed` ran to now,
+   *    so a ticket shipped weeks ago read as weeks of work. Both are fixed by measuring only between
+   *    real state transitions and stopping the clock once the ticket leaves in-progress.
    *
    *  They used to be one number measured from creation, which made a ticket filed 8 minutes ago
    *  and never touched report "8m in flight" as though someone were working it.
@@ -348,11 +360,17 @@
    *  bound (a session that never reported tokens) are skipped, not read as zero cost. */
   function ticketCost(t) {
     var history = Array.isArray(t.history) ? t.history : [];
-    var createdAt = t.createdAt || (history.length ? history[0].at : null);
-    var claimEntry = history.find(function (h) { return h.to === "in-progress"; });
+    // Only genuine state transitions count for timing — metadata events (title/control/id/…) share
+    // the history array but must not move the start or end of work.
+    var stateMoves = history.filter(function (h) { return STATE_KEY_SET.has(h.to); });
+    var createdAt = t.createdAt || (stateMoves.length ? stateMoves[0].at : null);
+    var claimEntry = stateMoves.find(function (h) { return h.to === "in-progress"; });
     var claimedAt = claimEntry ? claimEntry.at : null;
-    var isTerminal = TERMINAL_STATES.has(t.state);
-    var endedAt = isTerminal && history.length ? history[history.length - 1].at : null;
+    var working = t.state === "in-progress";
+    // End of work = the last real forward/terminal move. While still in-progress there is no end yet,
+    // so the clock runs to now; once parked (built/verified/shipped/closed) it stops at that move.
+    var lastMove = stateMoves.length ? stateMoves[stateMoves.length - 1].at : null;
+    var endedAt = working ? null : lastMove;
     var now = Date.now();
 
     var waitMs = createdAt ? (claimedAt ? Date.parse(claimedAt) : now) - Date.parse(createdAt) : null;
@@ -364,8 +382,9 @@
       ? scoped.reduce(function (sum, s) { return sum + Math.max(0, s.tokensAtLatest - s.tokensAtStart); }, 0)
       : null;
     return {
-      createdAt: createdAt, waitMs: waitMs, workMs: workMs, tokens: tokens,
-      waiting: !claimedAt, working: Boolean(claimedAt) && !isTerminal,
+      createdAt: createdAt, claimedAt: claimedAt, waitMs: waitMs, workMs: workMs,
+      workMins: workMs != null ? Math.max(1, Math.round(workMs / 60000)) : null,
+      tokens: tokens, waiting: !claimedAt, working: working,
     };
   }
 
@@ -1223,6 +1242,31 @@
     );
   }
 
+  /** The one-click "log this ticket's real work duration to the Jira worklog" button, sat next to the
+   *  Work duration row. Pushes the computed duration (claim → last forward move) as a worklog entry,
+   *  dated at the execution start. Jira worklogs are append-only, so once the current duration is
+   *  already logged (tracked by t.jiraWorklogMinutes) the button disables — re-pushing would
+   *  double-count. If the duration later grows (still in-progress), it offers to log only the delta. */
+  function worklogControl(t, cost) {
+    if (cost.workMins == null) return "";
+    var logged = Number(t.jiraWorklogMinutes) || 0;
+    var delta = cost.workMins - logged;
+    if (!jiraConfigured) {
+      return ' <button class="ghost sm worklog-push" type="button" disabled ' +
+        'title="Jira not configured (set ~/.peephole/jira.json)">Add to Jira worklog</button>';
+    }
+    if (delta <= 0) {
+      return ' <button class="ghost sm worklog-push" type="button" disabled ' +
+        'title="This duration is already logged to the Jira worklog">Logged ✓ (' + logged + 'm)</button>';
+    }
+    var label = logged > 0 ? ("Top up +" + delta + "m to Jira") : "Add to Jira worklog";
+    var title = logged > 0
+      ? ("Log the additional " + delta + "m of work since the last worklog (" + logged + "m already logged)")
+      : ("Log " + delta + "m to the Jira worklog, dated at the execution start");
+    return ' <button class="ghost sm worklog-push" type="button" data-id="' + esc(t.id) +
+      '" data-delta="' + delta + '" title="' + esc(title) + '">' + esc(label) + "</button>";
+  }
+
   /** Free text with the existing epics offered as suggestions: a new epic is created by typing
    *  one, which is the whole ceremony — see writer.setEpic on why epics aren't records. */
   function epicControl(t) {
@@ -1401,7 +1445,7 @@
       ["Blocked on", t.blockedOn ? esc(t.blockedOn) : "—"],
       ["Created", cost.createdAt ? esc(fmtDateTime(cost.createdAt)) + ' <span class="dim">(' + relTime(cost.createdAt) + ")</span>" : "—"],
       ["Waiting", cost.waitMs != null ? fmtDuration(cost.waitMs) + (cost.waiting ? " (unclaimed)" : " before claim") : "—"],
-      ["Work duration", cost.workMs != null ? fmtDuration(cost.workMs) + (cost.working ? " (open)" : "") : "—"],
+      ["Work duration", (cost.workMs != null ? fmtDuration(cost.workMs) + (cost.working ? " (open)" : "") : "—") + worklogControl(t, cost)],
       ["Tokens spent", cost.tokens != null ? fmtNum(cost.tokens) : "—"],
     ];
     var rowsHtml = rows.map(function (r) {
@@ -1624,6 +1668,37 @@
         } finally {
           jiraPush.disabled = false;
           jiraPush.textContent = old;
+        }
+      });
+    }
+    var worklogPush = ticketModalBody.querySelector(".worklog-push");
+    if (worklogPush && !worklogPush.disabled) {
+      worklogPush.addEventListener("click", async function () {
+        var delta = Number(worklogPush.dataset.delta) || 0;
+        if (delta <= 0) return;
+        // Date the worklog at the ticket's real execution start (first claim) so it lands on the day
+        // the work happened, not the day of the push.
+        var cost = ticketCost(t);
+        var payload = { workedMinutes: delta };
+        if (cost.claimedAt) payload.workedStartedAt = cost.claimedAt;
+        worklogPush.disabled = true;
+        var old = worklogPush.textContent;
+        worklogPush.textContent = "Logging…";
+        try {
+          var res = await apiPost("/api/tickets/" + encodeURIComponent(worklogPush.dataset.id) + "/jira-sync", payload);
+          if (res && res.error) { window.alert(res.error); worklogPush.disabled = false; worklogPush.textContent = old; return; }
+          t.jira = res.key || t.jira;
+          t.jiraSyncedAt = res.syncedAt || t.jiraSyncedAt;
+          if (res.worklogMinutesTotal != null) t.jiraWorklogMinutes = res.worklogMinutesTotal;
+          window.alert(
+            (res.created ? "Created " : "Updated ") + res.key +
+            (res.worklog ? " · logged " + res.worklog.minutes + "m (total " + (t.jiraWorklogMinutes || res.worklog.minutes) + "m)" : "")
+          );
+          openTicketModal(t);
+        } catch (e) {
+          window.alert("Worklog push failed.");
+          worklogPush.disabled = false;
+          worklogPush.textContent = old;
         }
       });
     }

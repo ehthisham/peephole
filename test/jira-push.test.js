@@ -242,6 +242,40 @@ test("pushTicketToJira: worklog logged only when workedMinutes > 0", async () =>
   assert.ok(!b.calls.some((c) => /\/worklog$/.test(c.url)), "0 minutes -> no worklog call");
 });
 
+test("pushTicketToJira: workedStartedAt dates the worklog at the execution start, not now", async () => {
+  const { client, calls } = pushHarness((req) => {
+    if (req.method === "POST" && /\/issue$/.test(req.url)) return { status: 201, json: { key: "ACME-1" } };
+    if (req.method === "GET") return { status: 200, json: { transitions: [] } };
+    return { status: 201, json: { id: "w" } };
+  });
+  await pushTicketToJira(
+    TICKET,
+    { projectKey: "ACME", workedMinutes: 31, workedStartedAt: "2026-09-17T12:09:51.446Z" },
+    client,
+    { now: () => new Date("2026-11-12T00:00:00.000Z") },
+  );
+  const wl = calls.find((c) => /\/worklog$/.test(c.url));
+  assert.ok(wl, "a worklog call was made");
+  assert.equal(wl.parsed.timeSpentSeconds, 31 * 60);
+  assert.match(wl.parsed.started, /^2026-09-17T12:09:51/, "started is the execution start, not the push time");
+});
+
+test("pushTicketToJira: a bad workedStartedAt falls back to now", async () => {
+  const { client, calls } = pushHarness((req) => {
+    if (req.method === "POST" && /\/issue$/.test(req.url)) return { status: 201, json: { key: "ACME-1" } };
+    if (req.method === "GET") return { status: 200, json: { transitions: [] } };
+    return { status: 201, json: { id: "w" } };
+  });
+  await pushTicketToJira(
+    TICKET,
+    { projectKey: "ACME", workedMinutes: 10, workedStartedAt: "not-a-date" },
+    client,
+    { now: () => new Date("2026-11-12T00:00:00.000Z") },
+  );
+  const wl = calls.find((c) => /\/worklog$/.test(c.url));
+  assert.match(wl.parsed.started, /^2026-11-12T00:00:00/, "falls back to now on an unparseable start");
+});
+
 test("pushTicketToJira: a transition Jira won't allow does not fail the push", async () => {
   const { client } = pushHarness((req) => {
     if (req.method === "POST" && /\/issue$/.test(req.url)) return { status: 201, json: { key: "ACME-1" } };

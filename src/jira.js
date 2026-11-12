@@ -217,7 +217,7 @@ export function createJiraClient({ baseUrl, email, token, request } = {}) {
  *  the key + synced time back onto the ledger. `statusFor` maps a peephole state to a Jira status name
  *  (defaults to the shared CSV map). `now` is injectable for deterministic tests. */
 export async function pushTicketToJira(ticket, opts, client, deps = {}) {
-  const { projectKey, workedMinutes, extraFields } = opts || {};
+  const { projectKey, workedMinutes, workedStartedAt, extraFields } = opts || {};
   const statusFor = deps.statusFor || (await import("./jiracsv.js")).jiraStatusForState;
   const now = deps.now || (() => new Date());
 
@@ -238,7 +238,11 @@ export async function pushTicketToJira(ticket, opts, client, deps = {}) {
   let worklog = null;
   const mins = Number(workedMinutes);
   if (Number.isFinite(mins) && mins > 0) {
-    await client.addWorklog(key, mins, { started: jiraStarted(now()), comment: `Logged from Peephole for ${ticket.id}` });
+    // Date the worklog at the real execution start when the caller supplies it, so the time lands on
+    // the day the work happened rather than the day of the push; fall back to now otherwise.
+    const startedSource = workedStartedAt ? new Date(workedStartedAt) : now();
+    const started = jiraStarted(Number.isNaN(startedSource.getTime()) ? now() : startedSource);
+    await client.addWorklog(key, mins, { started, comment: `Logged from Peephole for ${ticket.id}` });
     worklog = { minutes: mins };
   }
 
