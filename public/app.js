@@ -11,6 +11,8 @@
   // changes) with a prefixed `to:` like "title:…"; those are NOT state transitions and must be
   // ignored when timing a ticket, or a late title edit reads as the moment work ended.
   var STATE_KEY_SET = new Set(STATES.map(function (s) { return s.key; }));
+  var STATE_LABEL = STATES.reduce(function (m, s) { m[s.key] = s.label; return m; }, {});
+  function stateLabel(key) { return STATE_LABEL[key] || key; }
   var STATE_COLOR = {
     "proposed": "var(--proposed)",
     "in-progress": "var(--progress)",
@@ -966,8 +968,16 @@
     // A linked Jira issue shows its key on the card face so the cross-system link is visible at a
     // glance; the editable field and the "open ↗" link live in the modal.
     var jiraBadge = t.jira ? '<span class="badge jira-badge" title="Jira ' + esc(t.jira) + '">' + esc(t.jira) + "</span>" : "";
-    var statusStrip = typeBadge || prioBadge || gateBadge || jiraBadge || queueTag || controlTag
-      ? '<div class="card-top">' + typeBadge + prioBadge + gateBadge + jiraBadge + queueTag + controlTag + "</div>"
+    // A phase badge for the intermediate working states (built/verified/shipped). The in-progress
+    // lane bundles all four working states, so without this a built or verified card is
+    // indistinguishable from one still in progress — it reads only as "In progress". `in-progress`
+    // itself is the lane's headline, so it stays quiet (no badge), same "default is quiet" rule as
+    // priority and type.
+    var phaseBadge = PHASE_STATES.has(t.state)
+      ? '<span class="badge phase phase-' + esc(t.state) + '" title="phase: ' + esc(t.state) + '">' + esc(stateLabel(t.state)) + "</span>"
+      : "";
+    var statusStrip = phaseBadge || typeBadge || prioBadge || gateBadge || jiraBadge || queueTag || controlTag
+      ? '<div class="card-top">' + phaseBadge + typeBadge + prioBadge + gateBadge + jiraBadge + queueTag + controlTag + "</div>"
       : "";
     // The headline is the ticket's title, falling back to its intent when it has none (every ticket
     // written before the title field existed). It is the only text on the card face and clamps to two
@@ -1800,6 +1810,22 @@
   function getLaneSortDir() {
     try { return localStorage.getItem(LANE_SORT_KEY) === "asc" ? "asc" : "desc"; } catch (e) { return "desc"; }
   }
+
+  // Per-viewer preference: which multi-state lanes are expanded to show their phase breakdown
+  // (In progress → In progress | Built | Verified | Shipped). Collapsed by default so the board looks
+  // unchanged until asked. localStorage only — a view convenience, never shared state.
+  var LANE_PHASE_KEY = "peephole.lanePhasesExpanded";
+  function getExpandedLanes() {
+    try { return JSON.parse(localStorage.getItem(LANE_PHASE_KEY) || "{}") || {}; } catch (e) { return {}; }
+  }
+  function isLanePhaseExpanded(laneKey) {
+    return Boolean(getExpandedLanes()[laneKey]);
+  }
+  function toggleLanePhase(laneKey) {
+    var m = getExpandedLanes();
+    if (m[laneKey]) delete m[laneKey]; else m[laneKey] = true;
+    try { localStorage.setItem(LANE_PHASE_KEY, JSON.stringify(m)); } catch (e) {}
+  }
   function sortByModified(list, dir) {
     return list.slice().sort(function (a, b) {
       var diff = Date.parse(b.updatedAt || 0) - Date.parse(a.updatedAt || 0);
@@ -2029,8 +2055,17 @@
           '" title="Move ' + ready.length + " ticket" + (ready.length === 1 ? "" : "s") + " from " +
           esc(s.bulk.from) + " to " + esc(s.bulk.to) + '" type="button">' + esc(s.bulk.label) + " " + ready.length + "</button>"
         : "";
+      // A lane that bundles several states (In progress = in-progress + built + verified + shipped)
+      // gets a disclosure toggle: collapsed it is one flat list, expanded it splits into a sub-list
+      // per phase so you can see at a glance which cards are built vs verified vs shipped.
+      var phaseOpen = s.states.length > 1 && isLanePhaseExpanded(s.key);
+      var phaseToggle = s.states.length > 1
+        ? '<button class="phase-toggle" data-phase-lane="' + esc(s.key) + '" type="button" aria-expanded="' +
+          (phaseOpen ? "true" : "false") + '" title="' + (phaseOpen ? "Hide" : "Show") +
+          ' Built / Verified / Shipped breakdown">' + (phaseOpen ? "▾" : "▸") + "</button>"
+        : "";
       lane.innerHTML =
-        "<header><h2>" + s.label + '</h2><span class="count mono">' + inLane.length + "</span>" + bulkBtn +
+        "<header><h2>" + s.label + "</h2>" + phaseToggle + '<span class="count mono">' + inLane.length + "</span>" + bulkBtn +
         '<button class="sort-btn" data-lane-sort type="button" title="Sort: ' +
         (dir === "desc" ? "latest modified first" : "oldest modified first") + '" aria-pressed="' + (dir === "asc") + '">' +
         (dir === "desc" ? "↓" : "↑") + "</button></header>" +
@@ -2060,6 +2095,22 @@
           byEpic[key].forEach(function (t) { group.appendChild(cardEl(t)); });
           body.appendChild(group);
         });
+      } else if (phaseOpen) {
+        // One sub-section per phase, in lifecycle order (In progress → Built → Verified → Shipped),
+        // each with its own count. Empty phases are omitted. No drag-reorder here: rank is a single
+        // cross-lane order, and dragging between phase sub-lists would read as a state change it is
+        // not — the phase view is for seeing the split, the flat view is for reordering.
+        s.states.forEach(function (st) {
+          var group = inLane.filter(function (t) { return t.state === st; });
+          if (!group.length) return;
+          var sec = document.createElement("div");
+          sec.className = "lane-group";
+          sec.innerHTML = '<h3 class="group-head phase-head">' +
+            '<span class="phase-dot phase-' + esc(st) + '"></span>' + esc(stateLabel(st)) +
+            '<span class="count mono">' + group.length + "</span></h3>";
+          group.forEach(function (t) { sec.appendChild(cardEl(t)); });
+          body.appendChild(sec);
+        });
       } else {
         inLane.forEach(function (t) { body.appendChild(cardEl(t)); });
         enableLaneDnD(body);
@@ -2087,6 +2138,13 @@
         try { localStorage.setItem(LANE_SORT_KEY, next); } catch (e) {}
         renderBoard(latestTickets);
       });
+      var phaseBtn = lane.querySelector("[data-phase-lane]");
+      if (phaseBtn) {
+        phaseBtn.addEventListener("click", function () {
+          toggleLanePhase(phaseBtn.dataset.phaseLane);
+          renderBoard(latestTickets);
+        });
+      }
       board.appendChild(lane);
     });
   }
