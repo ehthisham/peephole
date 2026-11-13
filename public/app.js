@@ -342,16 +342,19 @@
    *
    *  - `waitMs`  — created until somebody claimed it (or until now, while nobody has). Backlog
    *    latency: nothing is being spent, the ticket is just sitting there.
-   *  - `workMs`  — first claim (`in-progress`) until the ticket's last real STATE transition, i.e.
-   *    the moment it stopped moving forward (built/verified/shipped/closed). Runs to now ONLY while
-   *    the ticket is literally in-progress; a ticket parked in shipped is not still being worked, so
-   *    its clock stops at the shipped move rather than growing to "total opened time".
+   *  - `workMs`  — total time the ticket actually spent in the `in-progress` state, summed across
+   *    every in-progress span (a ticket can be reopened). Work ends the moment the ticket LEAVES
+   *    in-progress (→ built/verified/shipped/closed); the time it then sits parked in built or the
+   *    later admin clicks that close it are NOT work. Runs to now only while it is literally
+   *    in-progress right now.
    *
-   *    Two bugs used to inflate this to days. (1) The end was taken from the LAST history entry of
-   *    any kind, so a later metadata event — a bulk `title:` migration touched every ticket — became
-   *    the "end", turning a 31-minute ticket into 50 days. (2) Anything not yet `closed` ran to now,
-   *    so a ticket shipped weeks ago read as weeks of work. Both are fixed by measuring only between
-   *    real state transitions and stopping the clock once the ticket leaves in-progress.
+   *    Three bugs used to inflate this to days/hours. (1) The end was taken from the LAST history
+   *    entry of any kind, so a later metadata event — a bulk `title:` migration touched every ticket
+   *    — became the "end", turning a 31-minute ticket into 50 days. (2) Anything not yet `closed` ran
+   *    to now, so a ticket shipped weeks ago read as weeks of work. (3) The end was taken from the
+   *    last STATE move (the final close), so a ticket parked in built overnight and closed by three
+   *    UI clicks the next morning read ~21h instead of its real in-progress span. All three are fixed
+   *    by summing only the time the ticket was genuinely in-progress.
    *
    *  They used to be one number measured from creation, which made a ticket filed 8 minutes ago
    *  and never touched report "8m in flight" as though someone were working it.
@@ -369,14 +372,24 @@
     var claimEntry = stateMoves.find(function (h) { return h.to === "in-progress"; });
     var claimedAt = claimEntry ? claimEntry.at : null;
     var working = t.state === "in-progress";
-    // End of work = the last real forward/terminal move. While still in-progress there is no end yet,
-    // so the clock runs to now; once parked (built/verified/shipped/closed) it stops at that move.
-    var lastMove = stateMoves.length ? stateMoves[stateMoves.length - 1].at : null;
-    var endedAt = working ? null : lastMove;
     var now = Date.now();
 
     var waitMs = createdAt ? (claimedAt ? Date.parse(claimedAt) : now) - Date.parse(createdAt) : null;
-    var workMs = claimedAt ? (endedAt ? Date.parse(endedAt) : now) - Date.parse(claimedAt) : null;
+    // Work = total time spent IN the in-progress state. Each in-progress move opens a span that ends
+    // at the next state move (when it left in-progress); an in-progress span with no later move is
+    // still running, so it runs to now. Parked time (built/verified/shipped) and the admin close are
+    // never counted, and reopens (in-progress again) add their own span.
+    var workMs = null;
+    if (claimedAt) {
+      var acc = 0;
+      for (var i = 0; i < stateMoves.length; i++) {
+        if (stateMoves[i].to !== "in-progress") continue;
+        var spanStart = Date.parse(stateMoves[i].at);
+        var spanEnd = i + 1 < stateMoves.length ? Date.parse(stateMoves[i + 1].at) : now;
+        acc += Math.max(0, spanEnd - spanStart);
+      }
+      workMs = acc;
+    }
 
     var sessions = Array.isArray(t.sessions) ? t.sessions : [];
     var scoped = sessions.filter(function (s) { return s.tokensAtStart != null && s.tokensAtLatest != null; });
