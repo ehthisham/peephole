@@ -338,26 +338,26 @@
     return Math.floor(d) + "d " + Math.round(h % 24) + "h";
   }
 
-  /** Cost of one ticket, split into the two spans that mean different things:
+  /** Cost of one ticket, split into spans that mean different things:
    *
-   *  - `waitMs`  — created until somebody claimed it (or until now, while nobody has). Backlog
+   *  - `waitMs`   — created until somebody claimed it (or until now, while nobody has). Backlog
    *    latency: nothing is being spent, the ticket is just sitting there.
-   *  - `workMs`  — total time the ticket actually spent in the `in-progress` state, summed across
-   *    every in-progress span (a ticket can be reopened). Work ends the moment the ticket LEAVES
-   *    in-progress (→ built/verified/shipped/closed); the time it then sits parked in built or the
-   *    later admin clicks that close it are NOT work. Runs to now only while it is literally
-   *    in-progress right now.
+   *  - `cycleMs`  — total time the ticket spent in the `in-progress` state, summed across every
+   *    in-progress span (a ticket can be reopened). Ends the moment it LEAVES in-progress; parked
+   *    time (built/verified/shipped) and the admin close never count. This is throughput/time-to-ship
+   *    — but it still counts the overnight a ticket sits claimed but untouched.
+   *  - `activeMs` — actual WORKED time: the server reads the session transcript(s) and sums only the
+   *    minutes showing real activity inside the in-progress span(s), idle gaps (> ~10m) removed. This
+   *    is what a human would call "how long it took". null when no transcript is on this machine
+   *    (unknown, not zero). A ticket claimed at noon, coded for 20m, then left claimed overnight and
+   *    marked built next morning has cycleMs ≈ 18h but activeMs ≈ 20m.
    *
-   *    Three bugs used to inflate this to days/hours. (1) The end was taken from the LAST history
-   *    entry of any kind, so a later metadata event — a bulk `title:` migration touched every ticket
-   *    — became the "end", turning a 31-minute ticket into 50 days. (2) Anything not yet `closed` ran
-   *    to now, so a ticket shipped weeks ago read as weeks of work. (3) The end was taken from the
-   *    last STATE move (the final close), so a ticket parked in built overnight and closed by three
-   *    UI clicks the next morning read ~21h instead of its real in-progress span. All three are fixed
-   *    by summing only the time the ticket was genuinely in-progress.
-   *
-   *  They used to be one number measured from creation, which made a ticket filed 8 minutes ago
-   *  and never touched report "8m in flight" as though someone were working it.
+   *    Cycle time itself used to be wrong three ways and inflate to days/hours: (1) the end came from
+   *    the LAST history entry of any kind, so a bulk `title:` migration became the "end" (31m → 50d);
+   *    (2) anything not yet `closed` ran to now (a ticket shipped weeks ago read as weeks); (3) the
+   *    end came from the last STATE move (the final close), so a ticket parked in built overnight read
+   *    ~21h. All three are fixed by summing only genuine in-progress time; worked time then strips the
+   *    idle inside that.
    *
    *  Tokens are likewise scoped to THIS ticket rather than the session's lifetime: a transcript
    *  has no per-ticket boundaries, so writer.js stores a {tokensAtStart, tokensAtLatest} pair per
@@ -375,11 +375,11 @@
     var now = Date.now();
 
     var waitMs = createdAt ? (claimedAt ? Date.parse(claimedAt) : now) - Date.parse(createdAt) : null;
-    // Work = total time spent IN the in-progress state. Each in-progress move opens a span that ends
-    // at the next state move (when it left in-progress); an in-progress span with no later move is
-    // still running, so it runs to now. Parked time (built/verified/shipped) and the admin close are
-    // never counted, and reopens (in-progress again) add their own span.
-    var workMs = null;
+    // CYCLE time = total time spent IN the in-progress state. Each in-progress move opens a span that
+    // ends at the next state move (when it left in-progress); an open span runs to now. Parked time
+    // (built/verified/shipped) and the admin close never count; reopens add their own span. This is
+    // the throughput metric — but it still counts the overnight a ticket sits claimed but untouched.
+    var cycleMs = null;
     if (claimedAt) {
       var acc = 0;
       for (var i = 0; i < stateMoves.length; i++) {
@@ -388,8 +388,13 @@
         var spanEnd = i + 1 < stateMoves.length ? Date.parse(stateMoves[i + 1].at) : now;
         acc += Math.max(0, spanEnd - spanStart);
       }
-      workMs = acc;
+      cycleMs = acc;
     }
+
+    // WORK duration = actual worked time: the server reads the session transcripts and sums only the
+    // minutes that show real activity inside the in-progress span(s), idle gaps removed. null when no
+    // transcript is on this machine (unknown, not zero) — then the UI shows cycle time alone.
+    var activeMs = typeof t.activeMs === "number" ? t.activeMs : null;
 
     var sessions = Array.isArray(t.sessions) ? t.sessions : [];
     var scoped = sessions.filter(function (s) { return s.tokensAtStart != null && s.tokensAtLatest != null; });
@@ -397,8 +402,9 @@
       ? scoped.reduce(function (sum, s) { return sum + Math.max(0, s.tokensAtLatest - s.tokensAtStart); }, 0)
       : null;
     return {
-      createdAt: createdAt, claimedAt: claimedAt, waitMs: waitMs, workMs: workMs,
-      workMins: workMs != null ? Math.max(1, Math.round(workMs / 60000)) : null,
+      createdAt: createdAt, claimedAt: claimedAt, waitMs: waitMs,
+      cycleMs: cycleMs, cycleMins: cycleMs != null ? Math.max(1, Math.round(cycleMs / 60000)) : null,
+      activeMs: activeMs, activeMins: activeMs != null ? Math.max(1, Math.round(activeMs / 60000)) : null,
       tokens: tokens, waiting: !claimedAt, working: working,
     };
   }
@@ -1265,19 +1271,25 @@
     );
   }
 
-  /** The one-click "log this ticket's real work duration to the Jira worklog" button, sat next to the
-   *  Work duration row. Pushes the computed duration (claim → last forward move) as a worklog entry,
-   *  dated at the execution start. Jira worklogs are append-only, so once the current duration is
-   *  already logged (tracked by t.jiraWorklogMinutes) the button disables — re-pushing would
-   *  double-count. If the duration later grows (still in-progress), it offers to log only the delta. */
+  /** The one-click "log this ticket's real worked time to the Jira worklog" button, sat next to the
+   *  Work duration row. Pushes the ACTUAL worked minutes (active transcript time, idle removed) — not
+   *  cycle time — as a worklog entry dated at the execution start. Jira worklogs are append-only, so
+   *  once the current worked time is already logged (tracked by t.jiraWorklogMinutes) the button
+   *  disables — re-pushing would double-count. If it later grows (still in-progress), it offers to log
+   *  only the delta. With no transcript on this machine the worked time is unknown, so there is
+   *  nothing honest to log and the button says so rather than logging inflated cycle time. */
   function worklogControl(t, cost) {
-    if (cost.workMins == null) return "";
-    var logged = Number(t.jiraWorklogMinutes) || 0;
-    var delta = cost.workMins - logged;
+    if (cost.cycleMins == null) return ""; // never claimed — no work at all
     if (!jiraConfigured) {
       return ' <button class="ghost sm worklog-push" type="button" disabled ' +
         'title="Jira not configured (set ~/.peephole/jira.json)">Add to Jira worklog</button>';
     }
+    if (cost.activeMins == null) {
+      return ' <button class="ghost sm worklog-push" type="button" disabled ' +
+        'title="Worked time needs this session’s transcript on this machine to measure">Worklog needs transcript</button>';
+    }
+    var logged = Number(t.jiraWorklogMinutes) || 0;
+    var delta = cost.activeMins - logged;
     if (delta <= 0) {
       return ' <button class="ghost sm worklog-push" type="button" disabled ' +
         'title="This duration is already logged to the Jira worklog">Logged ✓ (' + logged + 'm)</button>';
@@ -1468,7 +1480,13 @@
       ["Blocked on", t.blockedOn ? esc(t.blockedOn) : "—"],
       ["Created", cost.createdAt ? esc(fmtDateTime(cost.createdAt)) + ' <span class="dim">(' + relTime(cost.createdAt) + ")</span>" : "—"],
       ["Waiting", cost.waitMs != null ? fmtDuration(cost.waitMs) + (cost.waiting ? " (unclaimed)" : " before claim") : "—"],
-      ["Work duration", (cost.workMs != null ? fmtDuration(cost.workMs) + (cost.working ? " (open)" : "") : "—") + worklogControl(t, cost)],
+      ['<span title="Actual worked time from the session transcript — idle gaps removed">Work duration</span>',
+        (cost.activeMs != null
+          ? fmtDuration(cost.activeMs) + (cost.working ? " (so far)" : "")
+          : '<span class="dim">— <span title="No session transcript on this machine to measure worked time">(needs transcript)</span></span>')
+        + worklogControl(t, cost)],
+      ['<span title="Time the ticket sat in the in-progress state — claimed until done, idle included">Cycle time</span>',
+        cost.cycleMs != null ? fmtDuration(cost.cycleMs) + (cost.working ? " (open)" : "") : "—"],
       ["Tokens spent", cost.tokens != null ? fmtNum(cost.tokens) : "—"],
     ];
     var rowsHtml = rows.map(function (r) {
@@ -2257,7 +2275,7 @@
     var tokenTickets = 0;
     shipped.forEach(function (t) {
       var cost = ticketCost(t);
-      if (cost.workMs != null) durations.push(cost.workMs);
+      if (cost.cycleMs != null) durations.push(cost.cycleMs);
       if (cost.tokens != null && cost.tokens > 0) { tokens += cost.tokens; tokenTickets += 1; }
     });
 

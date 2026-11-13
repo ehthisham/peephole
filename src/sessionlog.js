@@ -84,6 +84,109 @@ async function tailLines(file, since) {
   }
 }
 
+/** The default idle gap: a pause longer than this inside an in-progress span is treated as the
+ *  person/agent being away (a break, an overnight, waiting on something external), not work. Ten
+ *  minutes is deliberately forgiving — a local test or build run between tool calls still counts. */
+export const DEFAULT_IDLE_GAP_MS = 10 * 60 * 1000;
+
+const STATE_SET = new Set(["proposed", "in-progress", "built", "verified", "shipped", "closed"]);
+
+/** The in-progress spans from a ticket's history: each claim (→ in-progress) until the NEXT real
+ *  state move (when it left in-progress), or `now` if it is still in-progress. A ticket reopened
+ *  into in-progress more than once yields more than one span. Metadata events (title:/control:/…)
+ *  share the history array and are ignored — only real state transitions bound a span. */
+export function inProgressSpans(ticket, now = Date.now()) {
+  const history = Array.isArray(ticket.history) ? ticket.history : [];
+  const moves = history.filter((h) => STATE_SET.has(h.to));
+  const spans = [];
+  for (let i = 0; i < moves.length; i++) {
+    if (moves[i].to !== "in-progress") continue;
+    const from = Date.parse(moves[i].at);
+    const to = i + 1 < moves.length ? Date.parse(moves[i + 1].at) : now;
+    if (Number.isFinite(from) && Number.isFinite(to) && to > from) spans.push({ from, to });
+  }
+  return spans;
+}
+
+// A transcript is append-only and shared across many tickets, so parse each file's timestamps once
+// per (size, mtime) version and reuse them for every ticket that reads it. Keyed by path.
+const stampCache = new Map();
+
+/** Every entry timestamp in a transcript, oldest first, read from the tail (bounded by MAX_SCAN)
+ *  and memoised by the file's size+mtime so one 500MB file is scanned once, not once per ticket. */
+async function transcriptStamps(file) {
+  let st;
+  try {
+    st = await fs.stat(file);
+  } catch {
+    return [];
+  }
+  const cached = stampCache.get(file);
+  if (cached && cached.size === st.size && cached.mtimeMs === st.mtimeMs) return cached.stamps;
+  const stamps = [];
+  try {
+    // since=0: never early-stop, so the cache holds the whole scannable tail regardless of which
+    // ticket's window asked for it first.
+    const lines = await tailLines(file, 0);
+    for (const line of lines) {
+      const m = line.match(/"timestamp":"([^"]+)"/);
+      if (!m) continue;
+      const t = Date.parse(m[1]);
+      if (Number.isFinite(t)) stamps.push(t);
+    }
+  } catch {
+    return [];
+  }
+  stamps.sort((a, b) => a - b);
+  stampCache.set(file, { size: st.size, mtimeMs: st.mtimeMs, stamps });
+  return stamps;
+}
+
+/**
+ * Actual worked time on a ticket: the time the transcript shows real activity inside the ticket's
+ * in-progress span(s), with idle gaps removed. This is "work duration" — distinct from cycle time
+ * (the raw in-progress span), which counts the overnight a ticket sits claimed but untouched.
+ *
+ * Timestamps from every transcript that touched the ticket are UNIONED (not summed per file) before
+ * clustering, so two agents working the same ticket in parallel yield wall-clock active time rather
+ * than double-counted effort. Returns { activeMs, spans, hadTranscript }: activeMs is null when no
+ * transcript is on this machine (unknown, not zero) and 0 when a transcript exists but shows no
+ * activity in the window.
+ */
+export async function ticketActiveMs(ticket, { idleGapMs = DEFAULT_IDLE_GAP_MS, now = Date.now() } = {}) {
+  const spans = inProgressSpans(ticket, now);
+  if (!spans.length) return { activeMs: null, spans: 0, hadTranscript: false };
+
+  const sessions = Array.isArray(ticket.sessions) ? ticket.sessions : [];
+  const ids = new Set(sessions.map((s) => s.sessionId).filter(Boolean));
+  if (ticket.owner && /^[0-9a-f]{8}-/i.test(ticket.owner)) ids.add(ticket.owner);
+
+  const files = new Set();
+  for (const sessionId of ids) {
+    const recorded = (sessions.find((s) => s.sessionId === sessionId) || {}).transcriptPath || null;
+    const file = await findTranscript(sessionId, recorded);
+    if (file) files.add(file);
+  }
+  if (!files.size) return { activeMs: null, spans: spans.length, hadTranscript: false };
+
+  const inWindow = [];
+  for (const file of files) {
+    const stamps = await transcriptStamps(file);
+    for (const t of stamps) {
+      if (spans.some((s) => t >= s.from && t <= s.to)) inWindow.push(t);
+    }
+  }
+  if (!inWindow.length) return { activeMs: 0, spans: spans.length, hadTranscript: true };
+
+  inWindow.sort((a, b) => a - b);
+  let active = 0;
+  for (let i = 1; i < inWindow.length; i++) {
+    const d = inWindow[i] - inWindow[i - 1];
+    if (d <= idleGapMs) active += d;
+  }
+  return { activeMs: active, spans: spans.length, hadTranscript: true };
+}
+
 /** One readable event per transcript entry that carries something a person would want to see. */
 function eventFrom(entry) {
   const at = entry.timestamp || null;

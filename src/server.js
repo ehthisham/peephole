@@ -17,7 +17,7 @@ import { readFileSync } from "node:fs";
 import { listProjects, rememberProject, forgetProject, validateRepo } from "./projects.js";
 import { detectCoverage } from "./coverage.js";
 import { ownershipMap } from "./ownership.js";
-import { ticketLog } from "./sessionlog.js";
+import { ticketLog, ticketActiveMs } from "./sessionlog.js";
 import { readStandard, STANDARD_CANDIDATES } from "./standards.js";
 import { selfStats } from "./selfstats.js";
 
@@ -152,6 +152,33 @@ export async function startServer(initialRepoRoot, { port = 4173, remote = "orig
     await openProject(initialRepoRoot);
 
     let cache = { config: null, tickets: [], agents: [], issues: [], lastFetchedAt: null, unpushed: 0, coverage: null };
+    // Actual-worked-time per ticket is derived from transcripts (expensive), so it is cached by a
+    // signature that changes only when the ticket's history or its latest touch changes. A ticket
+    // still in-progress is never cached: its transcript keeps growing, so its active time must be
+    // recomputed each refresh. See enrichActiveTime().
+    const activeTimeCache = new Map(); // ticketId -> { sig, activeMs }
+
+    /** Attaches `activeMs` (real worked minutes, idle removed) to each ticket that has been claimed.
+     *  Unclaimed tickets and tickets with no transcript on this machine get `activeMs: null`. Errors
+     *  never propagate — a bad transcript must not take the board down. */
+    async function enrichActiveTime(tickets) {
+      const list = Array.isArray(tickets) ? tickets : [];
+      await Promise.all(list.map(async (t) => {
+        const history = Array.isArray(t.history) ? t.history : [];
+        if (!history.some((h) => h.to === "in-progress")) { t.activeMs = null; return; }
+        const sig = `${t.updatedAt || ""}:${t.state}:${history.length}`;
+        const cached = activeTimeCache.get(t.id);
+        if (t.state !== "in-progress" && cached && cached.sig === sig) { t.activeMs = cached.activeMs; return; }
+        try {
+          const { activeMs } = await ticketActiveMs(t);
+          t.activeMs = activeMs;
+          if (t.state !== "in-progress") activeTimeCache.set(t.id, { sig, activeMs });
+        } catch {
+          t.activeMs = null;
+        }
+      }));
+      return list;
+    }
     let queueState = { pending: [], running: null, lastError: null };
     let lastCoverageStamp = null;
     // The ownership map shells out to `git log` over a year of history — 2.3s on a real repo — so
@@ -346,6 +373,8 @@ export async function startServer(initialRepoRoot, { port = 4173, remote = "orig
         : cache.coverage ?? null;
       knownProjects = await listProjects().catch(() => knownProjects);
     if (doFetch) queue.refreshWorkers().catch(() => {});
+      // Real worked time per ticket, read from transcripts (cached; in-progress tickets recompute).
+      await enrichActiveTime(state.tickets).catch((e) => console.error("active-time enrich failed:", e.message));
       cache = { ...state, stats: enrichedStats, coverage, checkoutBranch, stateBranchOnRemote, lastFetchedAt: new Date().toISOString(), unpushed };
       broadcast();
       return cache;
