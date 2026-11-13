@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { inProgressSpans, ticketActiveMs, DEFAULT_IDLE_GAP_MS } from "../src/sessionlog.js";
+import { inProgressSpans, ticketActiveMs, ticketLog, DEFAULT_IDLE_GAP_MS } from "../src/sessionlog.js";
 
 // --- inProgressSpans: only real state moves bound a span, reopens add their own ----------------
 
@@ -108,4 +108,33 @@ test("ticketActiveMs: claimed but no transcript on this machine → null, not ze
 
 test("DEFAULT_IDLE_GAP_MS is 10 minutes", () => {
   assert.equal(DEFAULT_IDLE_GAP_MS, 10 * 60 * 1000);
+});
+
+// --- ticketLog: events scoped to the in-progress span, not to `now` ----------------------------
+
+test("ticketLog: a built ticket's log excludes activity after it left in-progress", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "peephole-log-"));
+  const file = path.join(dir, "s.jsonl");
+  const line = (ts, text) => JSON.stringify({ type: "assistant", timestamp: ts, message: { content: [{ type: "text", text }] } });
+  // Claim 10:00 → built 11:00. One message inside the span, one AFTER built (work on another ticket).
+  fs.writeFileSync(file, [
+    line("2026-01-01T10:30:00.000Z", "working on THIS ticket"),
+    line("2026-01-01T15:00:00.000Z", "later work on ANOTHER ticket"),
+  ].join("\n") + "\n");
+  const t = {
+    id: "t-log", state: "built",
+    sessions: [{ sessionId: "aaaaaaaa-0000-0000-0000-000000000000", transcriptPath: file }],
+    history: [
+      { at: "2026-01-01T10:00:00.000Z", to: "in-progress" },
+      { at: "2026-01-01T11:00:00.000Z", to: "built" },
+    ],
+  };
+  const r = await ticketLog(t);
+  const texts = r.sessions.flatMap((s) => s.events.map((e) => e.text));
+  try {
+    assert.ok(texts.some((x) => x.includes("THIS ticket")), "in-span event is kept");
+    assert.ok(!texts.some((x) => x.includes("ANOTHER ticket")), "post-built event is excluded");
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });

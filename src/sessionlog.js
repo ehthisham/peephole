@@ -222,18 +222,26 @@ function eventFrom(entry) {
 }
 
 /**
- * The log for one ticket: every session that touched it, with the events inside that session's
- * window on this ticket. The window comes from the ticket's own history — claimed until finished,
- * or until now — because a session's transcript covers everything it ever did, most of which has
- * nothing to do with this ticket.
+ * The log for one ticket: every session that touched it, with the events inside that ticket's
+ * in-progress span(s). A session's transcript covers everything it ever did, most of which has
+ * nothing to do with this ticket, so events are kept ONLY while the ticket was actually in-progress.
+ *
+ * The window must close when the ticket LEAVES in-progress — not merely when it is shipped/closed.
+ * A ticket parked in `built` or `verified` is no longer being worked, so running the window to `now`
+ * dumped everything the session did on later tickets into this one's log (a built ticket claimed two
+ * days ago showed two days of unrelated activity). Only a ticket literally in-progress right now has
+ * an open span that reaches `now`.
  */
 export async function ticketLog(ticket) {
   const sessions = Array.isArray(ticket.sessions) ? ticket.sessions : [];
   const history = Array.isArray(ticket.history) ? ticket.history : [];
-  const claimedAt = history.find((h) => h.to === "in-progress");
-  const finishedAt = [...history].reverse().find((h) => ["shipped", "closed"].includes(h.to));
-  const from = claimedAt ? Date.parse(claimedAt.at) : (ticket.createdAt ? Date.parse(ticket.createdAt) : null);
-  const to = finishedAt ? Date.parse(finishedAt.at) : Date.now();
+  const spans = inProgressSpans(ticket);
+  // Events are kept iff they fall inside an in-progress span (60s grace at each end to catch the
+  // message that triggered the state change). Without spans (never claimed) nothing qualifies.
+  const GRACE = 60000;
+  const inWindow = (ts) => spans.some((s) => ts >= s.from - GRACE && ts <= s.to + GRACE);
+  const from = spans.length ? Math.min(...spans.map((s) => s.from)) : (ticket.createdAt ? Date.parse(ticket.createdAt) : null);
+  const to = spans.length ? Math.max(...spans.map((s) => s.to)) : Date.now();
 
   // A ticket whose owner was never recorded in sessions[] still has an owner worth trying.
   const ids = new Set(sessions.map((s) => s.sessionId).filter(Boolean));
@@ -269,7 +277,7 @@ export async function ticketLog(ticket) {
           continue; // a partial line at a chunk boundary
         }
         const ts = entry.timestamp ? Date.parse(entry.timestamp) : null;
-        if (ts == null || (from && ts < from) || ts > to + 60000) continue;
+        if (ts == null || !inWindow(ts)) continue;
         const event = eventFrom(entry);
         if (event) events.push(event);
       }
