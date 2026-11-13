@@ -286,20 +286,26 @@ export async function setControl(repoRoot, remoteBranch, ticketId, control, acto
  * entire lifetime total. Storing tokensAtStart (set once, on first touch) alongside
  * tokensAtLatest (advanced on every touch) lets the caller compute (tokensAtLatest -
  * tokensAtStart) — the marginal spend actually attributable to this ticket's span, not the
- * whole session. No-op if sessionId isn't given (nothing to link). */
-function upsertSession(ticket, { sessionId, transcriptPath, tokens }) {
+ * whole session. No-op if sessionId isn't given (nothing to link).
+ *
+ * transcriptPath is deliberately NOT persisted: it is an absolute path under the operator's home
+ * (e.g. /home/<user>/.claude/projects/…), which is personal/machine data in a file that gets
+ * committed and pushed, and it is redundant — the transcript is resolved from the sessionId (the
+ * file is `<sessionId>.jsonl`, searched across ~/.claude/projects). The field is kept in the shape
+ * for back-compat but always stored null, and any legacy value is cleared on the next touch. */
+function upsertSession(ticket, { sessionId, tokens }) {
   if (!sessionId) return;
   ticket.sessions = Array.isArray(ticket.sessions) ? ticket.sessions : [];
   const at = new Date().toISOString();
   const existing = ticket.sessions.find((s) => s.sessionId === sessionId);
   if (existing) {
-    existing.transcriptPath = transcriptPath || existing.transcriptPath;
+    existing.transcriptPath = null; // forward-migrate: drop any committed home path
     if (existing.tokensAtStart == null && tokens != null) existing.tokensAtStart = tokens;
     if (tokens != null) existing.tokensAtLatest = tokens;
     existing.at = at;
   } else {
     ticket.sessions.push({
-      sessionId, transcriptPath: transcriptPath || null,
+      sessionId, transcriptPath: null,
       tokensAtStart: tokens ?? null, tokensAtLatest: tokens ?? null, at,
     });
   }

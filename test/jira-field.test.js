@@ -97,6 +97,17 @@ test("createTicket defaults jira to null when omitted", async () => {
   assert.equal(r.ticket.jira, null);
 });
 
+test("createTicket does NOT persist a session transcriptPath (privacy — no home path in git)", async () => {
+  await createTicket(repo, "peephole-state", {
+    id: "tp", project: "t", intent: "x",
+    session: { sessionId: "sess-1", transcriptPath: "/home/someone/.claude/projects/x/sess-1.jsonl", tokens: 100 },
+  });
+  const raw = read("tp");
+  assert.match(raw, /sessionId: sess-1/);
+  assert.match(raw, /transcriptPath: null/);
+  assert.doesNotMatch(raw, /\/home\//, "no absolute home path is written to the committed ticket");
+});
+
 test("setJira links, then clears, with a no-op in between", async () => {
   await createTicket(repo, "peephole-state", { id: "settable", project: "t", intent: "x" });
 
