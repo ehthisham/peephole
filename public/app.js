@@ -704,10 +704,33 @@
         : '<span class="dim">none — advance is free</span>'],
       ["Control values", Array.isArray(cfg.control) ? cfg.control.map(esc).join(", ") : "—"],
       ["Risk values", Array.isArray(cfg.risk) ? cfg.risk.map(esc).join(", ") : "—"],
+      // Editable: the Jira project new issues from THIS ledger create under. Written to the committed
+      // config.yaml so it travels with the ledger and follows the project dropdown. Empty = inherit the
+      // jira.json default (shown as the placeholder). An already-linked ticket keeps its own project.
+      ["Jira project",
+        '<input class="jira-project-input mono" type="text" spellcheck="false" ' +
+        'value="' + esc(state.jiraProjectKeyConfig || "") + '" ' +
+        'placeholder="' + (state.jiraProjectKeyDefault ? esc(state.jiraProjectKeyDefault) + " (jira.json default)" : "e.g. PROJ") + '" ' +
+        'style="width:12ch;padding:2px 6px;border:1px solid var(--border,#ccc);border-radius:5px;background:transparent;color:inherit;font:inherit">' +
+        ' <span class="dim">new issues create here</span>'],
     ];
     configContent.innerHTML = rows.map(function (r) {
       return '<div class="modal-row"><span class="k">' + r[0] + '</span><span class="v">' + r[1] + "</span></div>";
     }).join("");
+    var jpInput = configContent.querySelector(".jira-project-input");
+    if (jpInput) {
+      // On change (blur/Enter), not per keystroke — each write is a config.yaml commit.
+      jpInput.addEventListener("change", async function () {
+        var value = jpInput.value.trim();
+        jpInput.disabled = true;
+        try {
+          var res = await apiPost("/api/config/jira-project", { jiraProjectKey: value });
+          if (res && res.error) { window.alert(res.error); jpInput.value = state.jiraProjectKeyConfig || ""; }
+        } finally {
+          jpInput.disabled = false;
+        }
+      });
+    }
   }
 
   function renderCoverageModules(coverage) {

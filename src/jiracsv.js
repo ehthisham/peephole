@@ -22,6 +22,9 @@ export const CSV_COLUMNS = [
   "Priority",
   "Assignee",
   "Epic Link",
+  // Jira's own issue key (e.g. PROJ-42). Carries the link AND the project (prefix). Emitting it makes
+  // export->import round-trip the Jira link; on import it populates the ticket's `jira` field.
+  "Issue key",
   "peephole-id",
 ];
 
@@ -123,6 +126,7 @@ export function ticketToRow(t) {
     Priority: PRIORITY_TO_JIRA[t.priority || DEFAULT_PRIORITY] || "Medium",
     Assignee: t.ownerName || t.assignee || "",
     "Epic Link": t.epic || "",
+    "Issue key": t.jira || "",
     "peephole-id": t.id,
   };
 }
@@ -150,6 +154,8 @@ export function rowsToTickets(rows, { slugify } = {}) {
   if (!rows.length) return { records: [], warnings: ["CSV is empty"] };
   const header = rows[0].map((h) => h.trim());
   const idx = (name) => header.findIndex((h) => h.toLowerCase() === name.toLowerCase());
+  // The Jira issue-key column travels under several header names across exports/hand-made sheets.
+  const idxAny = (names) => { for (const n of names) { const i = idx(n); if (i !== -1) return i; } return -1; };
   const col = {
     summary: idx("Summary"),
     description: idx("Description"),
@@ -160,7 +166,7 @@ export function rowsToTickets(rows, { slugify } = {}) {
     assignee: idx("Assignee"),
     epic: idx("Epic Link"),
     pid: idx("peephole-id"),
-    key: idx("Issue key"),
+    key: idxAny(["Issue key", "Issue Key", "Jira Key", "Jira Id", "Key"]),
   };
   if (col.summary === -1) warnings.push('no "Summary" column — rows without a summary will be skipped');
 
@@ -171,10 +177,10 @@ export function rowsToTickets(rows, { slugify } = {}) {
     const summary = get(col.summary);
     if (!summary) { warnings.push(`row ${r + 1}: no Summary — skipped`); continue; }
 
+    const jiraKey = get(col.key);
     let id = get(col.pid);
     if (!id) {
-      const key = get(col.key);
-      id = key ? key.toLowerCase() : (slugify ? slugify(summary) : summary.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, ""));
+      id = jiraKey ? jiraKey.toLowerCase() : (slugify ? slugify(summary) : summary.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, ""));
     }
 
     const statusRaw = get(col.status);
@@ -202,6 +208,7 @@ export function rowsToTickets(rows, { slugify } = {}) {
       type,
       epic: get(col.epic) || null,
       assignee: get(col.assignee) || null,
+      jira: jiraKey || null,
     });
   }
   return { records, warnings };

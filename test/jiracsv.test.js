@@ -138,3 +138,28 @@ test("export -> import is a stable round-trip on core fields", () => {
   assert.equal(b.title, "Beta, mkII");
   assert.match(b.intent, /do "beta"\nnow/);
 });
+
+test("import reads the Issue key into record.jira (and aliases map too)", () => {
+  const a = rowsToTickets([["Issue key", "Summary"], ["PROJ-42", "Thing"]]).records[0];
+  assert.equal(a.jira, "PROJ-42");
+  assert.equal(a.id, "proj-42"); // key still seeds the slug when no peephole-id
+  // header aliases
+  const b = rowsToTickets([["Jira Key", "Summary"], ["ABC-7", "Other"]]).records[0];
+  assert.equal(b.jira, "ABC-7");
+  const c = rowsToTickets([["Key", "Summary"], ["OPS-1", "Ops"]]).records[0];
+  assert.equal(c.jira, "OPS-1");
+  // peephole-id wins the slug; key still captured as the link
+  const d = rowsToTickets([["Issue key", "Summary", "peephole-id"], ["PROJ-9", "Named", "my-slug"]]).records[0];
+  assert.equal(d.id, "my-slug");
+  assert.equal(d.jira, "PROJ-9");
+  // no key column -> jira null
+  assert.equal(rowsToTickets([["Summary"], ["No key"]], { slugify: (s) => s.toLowerCase() }).records[0].jira, null);
+});
+
+test("export emits an Issue key column; the jira link round-trips", () => {
+  const tickets = [{ id: "a", title: "Alpha", intent: "x", state: "proposed", jira: "PROJ-42" }];
+  const csv = exportCsv(tickets);
+  assert.match(csv.split("\r\n")[0], /Issue key/);
+  const { records } = rowsToTickets(parseCsv(csv));
+  assert.equal(records[0].jira, "PROJ-42");
+});

@@ -285,6 +285,14 @@ export async function startServer(initialRepoRoot, { port = 4173, remote = "orig
         // jiraConfigured gates the push button. The secret itself never leaves the server.
         jiraBaseUrl: (() => { try { return loadJiraConfig().baseUrl || ""; } catch { return ""; } })(),
         jiraConfigured: (() => { try { return loadJiraConfig().configured; } catch { return false; } })(),
+        // The Jira project new issues from THIS ledger create under. Per-project (committed config),
+        // falling back to jira.json's global default — so switching projects in the dropdown changes it.
+        // `jiraProjectKey` is the resolved value (for display); `jiraProjectKeyConfig` is the raw
+        // committed value the config editor binds to (empty = inheriting the default), and
+        // `jiraProjectKeyDefault` is the jira.json fallback shown as the field's placeholder.
+        jiraProjectKey: (cache.config && cache.config.jiraProjectKey) || (() => { try { return loadJiraConfig().projectKey || ""; } catch { return ""; } })(),
+        jiraProjectKeyConfig: (cache.config && cache.config.jiraProjectKey) || "",
+        jiraProjectKeyDefault: (() => { try { return loadJiraConfig().projectKey || ""; } catch { return ""; } })(),
         remoteUrl,
         remote,
         stateBranch,
@@ -662,6 +670,17 @@ export async function startServer(initialRepoRoot, { port = 4173, remote = "orig
         await ctx.refresh({ doFetch: false });
         return sendJson(res, 200, { ...result, state: ctx.publicState() });
       }
+      if (req.method === "POST" && url.pathname === "/api/config/jira-project") {
+        const body = await readJsonBody(req);
+        let result;
+        try {
+          result = await writer.setJiraProjectKey(ctx.repoRoot, ctx.stateBranch, body.jiraProjectKey);
+        } catch (e) {
+          return sendJson(res, 400, { error: e.message });
+        }
+        await ctx.refresh({ doFetch: false });
+        return sendJson(res, 200, { ...result, state: ctx.publicState() });
+      }
       const jiraMatch = url.pathname.match(/^\/api\/tickets\/([^/]+)\/jira$/);
       if (req.method === "POST" && jiraMatch) {
         const body = await readJsonBody(req);
@@ -684,9 +703,13 @@ export async function startServer(initialRepoRoot, { port = 4173, remote = "orig
         const client = createJiraClient({ baseUrl: cfg.baseUrl, email: cfg.email, token: cfg.token });
         let result;
         try {
+          // The active ledger's committed Jira project key wins over jira.json's global default, so a
+          // new issue files under the project this repo belongs to (multi-project). An already-linked
+          // ticket ignores this — its issue key carries its own project.
+          const projectKey = (ctx.cache.config && ctx.cache.config.jiraProjectKey) || cfg.projectKey;
           result = await pushTicketToJira(
             ticket,
-            { projectKey: cfg.projectKey, workedMinutes: body.workedMinutes, workedStartedAt: body.workedStartedAt, extraFields: cfg.extraFields },
+            { projectKey, workedMinutes: body.workedMinutes, workedStartedAt: body.workedStartedAt, extraFields: cfg.extraFields },
             client,
           );
         } catch (e) {

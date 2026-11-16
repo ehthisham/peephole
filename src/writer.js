@@ -558,6 +558,9 @@ export async function importTickets(repoRoot, remoteBranch, records, { dryRun = 
       if (safePrio !== (t.priority || DEFAULT_PRIORITY)) changes.priority = safePrio;
       if (safeType !== (t.type || DEFAULT_TYPE)) changes.type = safeType;
       if ((rec.epic || null) !== (t.epic || null)) changes.epic = rec.epic || null;
+      // Link the Jira issue key when the CSV carries one and it differs. Never clear an existing link
+      // from a blank cell — a sheet without the column shouldn't unlink.
+      if (rec.jira && (t.jira || null) !== rec.jira) changes.jira = rec.jira;
       if (Object.keys(changes).length === 0) { skipped.push({ id: rec.id, reason: "unchanged" }); continue; }
       if (!dryRun) {
         const fromState = t.state;
@@ -574,7 +577,7 @@ export async function importTickets(repoRoot, remoteBranch, records, { dryRun = 
           id: rec.id, project: proj, title: rec.title || "", intent: rec.intent || rec.title || "",
           acceptance: rec.acceptance || "", body: "", state: safeState, risk: "reversible",
           priority: safePrio, type: safeType, blockedOn: "", control: "run", owner: null,
-          ownerName: null, assignee: rec.assignee || null, epic: rec.epic || null, selected: false,
+          ownerName: null, assignee: rec.assignee || null, epic: rec.epic || null, jira: rec.jira || null, selected: false,
           comments: [], tags: [], createdBy: null, branch: null, pr: null, estimate: null,
           createdAt: now, updatedAt: now,
           history: [{ at: now, from: null, to: safeState, by: actor, via: "jira-import" }],
@@ -812,6 +815,26 @@ export async function setJira(repoRoot, remoteBranch, ticketId, jira, actor = "p
   const sha = await git.commitAll(worktreePath, `peephole: ${ticketId} jira -> ${next || "none"}`);
   const unpushed = await git.unpushedCount(worktreePath, localBranch, remoteBranch);
   return { committed: Boolean(sha), sha, unpushed, ticket };
+}
+
+/** Sets (or clears) the ledger's Jira project key in the committed `.peephole/config.yaml` — the
+ *  project new issues from this ledger create under. Non-secret, so it lives in the committed config
+ *  (connection + token stay in ~/.peephole/jira.json). Empty string clears it (falls back to the
+ *  jira.json default). Its own commit. */
+export async function setJiraProjectKey(repoRoot, remoteBranch, value) {
+  const { worktreePath, localBranch } = await prepWorktree(repoRoot, remoteBranch);
+  const file = path.join(worktreePath, ".peephole", "config.yaml");
+  const { parseConfig } = await import("./schema.js");
+  const parsed = parseConfig(await fs.readFile(file, "utf8"));
+  if (!parsed.ok) throw new Error(`Cannot set jiraProjectKey: ${parsed.errors.join("; ")}`);
+  const config = parsed.config;
+  const next = value == null ? "" : String(value).trim();
+  if ((config.jiraProjectKey || "") === next) return { committed: false, jiraProjectKey: next };
+  config.jiraProjectKey = next;
+  await fs.writeFile(file, serializeConfig(config), "utf8");
+  const sha = await git.commitAll(worktreePath, `peephole: config jiraProjectKey -> ${next || "none"}`);
+  const unpushed = await git.unpushedCount(worktreePath, localBranch, remoteBranch);
+  return { committed: Boolean(sha), sha, unpushed, jiraProjectKey: next };
 }
 
 /** Records a successful Jira push: stamps the issue key (if new/changed) and the sync timestamp onto

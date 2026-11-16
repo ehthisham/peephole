@@ -9,6 +9,7 @@ import {
   jiraStarted,
   createJiraClient,
   pushTicketToJira,
+  projectKeyFromIssueKey,
 } from "../src/jira.js";
 
 // A fake transport: records every request and replies from a scripted handler. No network, no account.
@@ -285,4 +286,48 @@ test("pushTicketToJira: a transition Jira won't allow does not fail the push", a
   const r = await pushTicketToJira(TICKET, { projectKey: "ACME" }, client, { now: () => new Date() });
   assert.equal(r.key, "ACME-1");
   assert.equal(r.transition.moved, false);
+});
+
+// --- multi-project: project is a create-only concern ------------------------------------------
+
+test("projectKeyFromIssueKey: PROJ-42 -> PROJ; numeric/blank/prefixless -> null", () => {
+  assert.equal(projectKeyFromIssueKey("PROJ-42"), "PROJ");
+  assert.equal(projectKeyFromIssueKey("ABC-DEF-7"), "ABC-DEF"); // split on LAST hyphen
+  assert.equal(projectKeyFromIssueKey("10042"), null);
+  assert.equal(projectKeyFromIssueKey(""), null);
+  assert.equal(projectKeyFromIssueKey(null), null);
+});
+
+test("pushTicketToJira: CREATE carries fields.project, UPDATE never does", async () => {
+  // create (no key)
+  const c = pushHarness((req) => {
+    if (req.method === "POST" && /\/issue$/.test(req.url)) return { status: 201, json: { key: "ACME-9" } };
+    if (req.method === "GET") return { status: 200, json: { transitions: [] } };
+    return { status: 204 };
+  });
+  await pushTicketToJira(TICKET, { projectKey: "ACME" }, c.client, { now: () => new Date() });
+  const post = c.calls.find((x) => x.method === "POST" && /\/issue$/.test(x.url));
+  assert.deepEqual(post.parsed.fields.project, { key: "ACME" }, "create must declare the project");
+
+  // update (existing key) — must NOT send project (Jira rejects cross-project moves)
+  const u = pushHarness((req) => {
+    if (req.method === "PUT") return { status: 204 };
+    if (req.method === "GET") return { status: 200, json: { transitions: [] } };
+    return { status: 204 };
+  });
+  await pushTicketToJira({ ...TICKET, jira: "OTHER-3" }, { projectKey: "ACME" }, u.client, { now: () => new Date() });
+  const put = u.calls.find((x) => x.method === "PUT");
+  assert.equal(put.parsed.fields.project, undefined, "update must omit project");
+});
+
+test("pushTicketToJira: stored key 404s -> recreate derives project from the ticket's own key, not the default", async () => {
+  const h = pushHarness((req) => {
+    if (req.method === "PUT") return { status: 404, json: { errorMessages: ["gone"] } };
+    if (req.method === "POST" && /\/issue$/.test(req.url)) return { status: 201, json: { key: "OTHER-99" } };
+    if (req.method === "GET") return { status: 200, json: { transitions: [] } };
+    return { status: 204 };
+  });
+  await pushTicketToJira({ ...TICKET, jira: "OTHER-3" }, { projectKey: "ACME" }, h.client, { now: () => new Date() });
+  const post = h.calls.find((x) => x.method === "POST" && /\/issue$/.test(x.url));
+  assert.deepEqual(post.parsed.fields.project, { key: "OTHER" }, "recreate keeps the issue's own project (OTHER), not the config default (ACME)");
 });

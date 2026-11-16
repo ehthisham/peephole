@@ -81,3 +81,27 @@ test("imported ticket is valid and carries the mapped fields", async () => {
   assert.equal(parsed.ticket.type, "feature");
   assert.ok(parsed.ticket.history.some((h) => h.via === "jira-import"));
 });
+
+test("import persists the Jira issue key into the ticket's jira field (create + update)", async () => {
+  // create with a key
+  await importTickets(repo, "peephole-state", [
+    { id: "gamma", title: "Gamma", intent: "g", state: "proposed", priority: "normal", type: "feature", jira: "PROJ-7" },
+  ], {});
+  const f = path.join(repo, ".peephole-worktree", ".peephole", "tickets", "gamma.md");
+  assert.equal(parseTicket(fs.readFileSync(f, "utf8"), "gamma").ticket.jira, "PROJ-7");
+
+  // update links a previously-unlinked ticket (changes include jira)
+  const res = await importTickets(repo, "peephole-state", [
+    { id: "gamma", title: "Gamma", intent: "g", state: "proposed", priority: "normal", type: "feature", jira: "PROJ-8" },
+  ], {});
+  assert.deepEqual(res.updated.map((u) => u.id), ["gamma"]);
+  assert.ok(res.updated[0].changes.includes("jira"));
+  assert.equal(parseTicket(fs.readFileSync(f, "utf8"), "gamma").ticket.jira, "PROJ-8");
+
+  // a blank/absent key never clears an existing link
+  const res2 = await importTickets(repo, "peephole-state", [
+    { id: "gamma", title: "Gamma", intent: "g", state: "proposed", priority: "normal", type: "feature", jira: null },
+  ], {});
+  assert.ok(res2.skipped.some((s) => s.id === "gamma" && s.reason === "unchanged"));
+  assert.equal(parseTicket(fs.readFileSync(f, "utf8"), "gamma").ticket.jira, "PROJ-8");
+});

@@ -59,6 +59,10 @@ export function defaultConfig(project, remoteUrl, stateBranch) {
     gitHost: "bitbucket",
     stateBranch,
     remote: remoteUrl || "",
+    // The Jira project new issues from this ledger are created under (e.g. "PROJ"). Non-secret, so it
+    // lives in the committed config (connection + token stay in ~/.peephole/jira.json). Empty = fall
+    // back to jira.json's projectKey. An issue's own key (PROJ-42) overrides this on re-push.
+    jiraProjectKey: "",
     states: STATES,
     control: CONTROLS,
     risk: RISKS,
@@ -80,6 +84,10 @@ export function parseConfig(text) {
   }
   for (const f of ["project", "stateBranch"]) {
     if (!data[f]) errors.push(`config.yaml is missing required field "${f}"`);
+  }
+  // Optional per-project Jira project key; only a present-but-non-string value is an error.
+  if (data.jiraProjectKey !== undefined && data.jiraProjectKey !== null && typeof data.jiraProjectKey !== "string") {
+    errors.push(`config.yaml has invalid jiraProjectKey "${data.jiraProjectKey}" (expected a string Jira project key like PROJ)`);
   }
   return { ok: errors.length === 0, config: data, errors };
 }

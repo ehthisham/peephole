@@ -105,6 +105,15 @@ export function markdownToAdf(text) {
  *  push never drift. Status is deliberately absent — Jira only moves status through transitions, never
  *  a direct field write. Acceptance folds into the description as a labelled section (Jira has no
  *  acceptance field by default); the ticket keeps its own acceptance untouched. */
+/** The Jira project key embedded in an issue key: "PROJ-42" -> "PROJ". Jira project keys never contain
+ *  a hyphen, so split on the last one. Returns null for an empty, prefixless, or non-string value
+ *  (e.g. a bare numeric issue id carries no project). */
+export function projectKeyFromIssueKey(issueKey) {
+  const s = String(issueKey == null ? "" : issueKey).trim();
+  const i = s.lastIndexOf("-");
+  return i > 0 ? s.slice(0, i) : null;
+}
+
 export function ticketToFields(ticket, { projectKey, extraFields } = {}) {
   const row = ticketToRow(ticket);
   // Full ticket, not just intent: intent, then acceptance, then the Notes body (Problem/Evidence/
@@ -221,15 +230,22 @@ export async function pushTicketToJira(ticket, opts, client, deps = {}) {
   const statusFor = deps.statusFor || (await import("./jiracsv.js")).jiraStatusForState;
   const now = deps.now || (() => new Date());
 
-  const fields = ticketToFields(ticket, { projectKey, extraFields });
+  // Project is a CREATE-only concern. A new issue must declare its project; an UPDATE must never carry
+  // `project` — Jira rejects a cross-project move, so sending it breaks updating a ticket whose issue
+  // lives in a project other than the configured default (the whole point of multi-project support).
+  // For a create, prefer the project embedded in the ticket's own issue key (used on the 404->recreate
+  // path, where the ticket already knows its project), else the caller-resolved projectKey.
+  const createProject = projectKeyFromIssueKey(ticket.jira) || projectKey;
+  const createFields = ticketToFields(ticket, { projectKey: createProject, extraFields });
+  const updateFields = ticketToFields(ticket, { extraFields }); // no project on update
   let key = ticket.jira || null;
   let created = false;
 
   if (key) {
-    const upd = await client.updateIssue(key, fields);
-    if (upd.notFound) { key = await client.createIssue(fields); created = true; }
+    const upd = await client.updateIssue(key, updateFields);
+    if (upd.notFound) { key = await client.createIssue(createFields); created = true; }
   } else {
-    key = await client.createIssue(fields);
+    key = await client.createIssue(createFields);
     created = true;
   }
 
