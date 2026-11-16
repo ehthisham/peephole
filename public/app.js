@@ -2055,6 +2055,14 @@
   }
 
   var lastVisibleTickets = [];
+  // The Closed lane is the one that grows without bound — every finished ticket lands there forever.
+  // Rendering thousands of closed cards into the DOM is what makes the board sluggish at scale, so by
+  // default it shows only the most-recent CLOSED_CAP and offers a "Load more". An active search lifts
+  // the cap (so an old closed ticket stays findable), and the lane header always shows the true total.
+  // This is a render-only cap: the full ticket array still arrives and feeds every stat/chart, so no
+  // aggregate is undercounted. (Trimming the shipped payload itself is a separate future optimization.)
+  var CLOSED_CAP = 200;
+  var closedShowAll = false;
   function renderBoard(tickets) {
     latestTickets = tickets;
     var dir = getLaneSortDir();
@@ -2073,6 +2081,10 @@
     board.innerHTML = "";
     LANES.forEach(function (s) {
       var inLane = laneSort(visible.filter(function (t) { return s.states.indexOf(t.state) !== -1; }), dir);
+      // Closed lane only: cap the rendered cards (most-recent first, via laneSort) unless the user has
+      // searched or clicked Load more. Header count below still reports the full inLane.length.
+      var capActive = s.key === "closed" && !searchTerm && !closedShowAll && inLane.length > CLOSED_CAP;
+      var laneList = capActive ? inLane.slice(0, CLOSED_CAP) : inLane;
       var lane = document.createElement("section");
       lane.className = "lane";
       // A lane fills with tickets finished in every sense except the last click — forty verified at
@@ -2108,7 +2120,7 @@
         // Epics keep their order across lanes (alphabetical, un-filed last) so one epic's work
         // reads as a row across the board rather than shuffling per column.
         var byEpic = {};
-        inLane.forEach(function (t) {
+        laneList.forEach(function (t) {
           var key = t.epic || NO_EPIC;
           (byEpic[key] = byEpic[key] || []).push(t);
         });
@@ -2143,8 +2155,24 @@
           body.appendChild(sec);
         });
       } else {
-        inLane.forEach(function (t) { body.appendChild(cardEl(t)); });
+        laneList.forEach(function (t) { body.appendChild(cardEl(t)); });
         enableLaneDnD(body);
+      }
+      // "Load more" footer for the capped Closed lane: reveals the rest from the already-loaded
+      // array (no server round-trip — the tickets are in memory). Searching also reveals them.
+      if (capActive) {
+        var remaining = inLane.length - CLOSED_CAP;
+        var more = document.createElement("button");
+        more.type = "button";
+        more.className = "lane-more";
+        more.textContent = "Load more (" + remaining + " older)";
+        more.title = "Showing the " + CLOSED_CAP + " most recent of " + inLane.length +
+          " closed. Tip: search finds any closed ticket without loading them all.";
+        more.addEventListener("click", function () {
+          closedShowAll = true;
+          renderBoard(latestTickets);
+        });
+        body.appendChild(more);
       }
       var bulkEl = lane.querySelector("[data-bulk]");
       if (bulkEl) {

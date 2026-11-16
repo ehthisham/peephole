@@ -66,6 +66,34 @@ async function listLedgerFiles(ledgerRoot, ref, subpath) {
   }
 }
 
+// Parsed-ticket cache. `scan` runs on every refresh and, before this, re-read and YAML-parsed EVERY
+// ticket each time — O(all tickets). That is the dominant cost at scale: a ticket is immutable once
+// closed and unchanged between most refreshes, yet a 5k-ticket ledger re-parsed all 5k on every
+// cold load (tens of seconds). Memoize the parse by file identity (size + mtimeMs): an unchanged
+// file skips both the read and parseTicket, so refresh cost collapses to O(open + just-changed),
+// independent of how many closed tickets have piled up. Keyed by absolute path, so distinct ledgers
+// (one clone per tracked repo) never collide. Same shape as sessionlog's transcriptStamps cache.
+// The cached `parsed` (and its `.ticket`) is shared read-mostly; the only per-refresh mutation,
+// enrichActiveTime's `activeMs`, is derived and overwritten every refresh, so sharing is safe.
+const parseCache = new Map(); // absPath -> { size, mtimeMs, parsed }
+
+/** Returns the memoized parse for an on-disk ticket, parsing only when the file's (size, mtime)
+ *  changed. Null when the file is not on disk (bare git-show ledger mode) — caller reads via the ref. */
+async function parseTicketCached(absPath, id) {
+  let stat;
+  try {
+    stat = await fs.stat(absPath);
+  } catch {
+    return null;
+  }
+  const hit = parseCache.get(absPath);
+  if (hit && hit.size === stat.size && hit.mtimeMs === stat.mtimeMs) return hit.parsed;
+  const text = await fs.readFile(absPath, "utf8");
+  const parsed = parseTicket(text, id);
+  parseCache.set(absPath, { size: stat.size, mtimeMs: stat.mtimeMs, parsed });
+  return parsed;
+}
+
 export async function scan(ledgerRoot, ref, { repoRoot = ledgerRoot } = {}) {
   const issues = [];
   let config = null;
@@ -88,8 +116,13 @@ export async function scan(ledgerRoot, ref, { repoRoot = ledgerRoot } = {}) {
   const tickets = [];
   for (const file of ticketMdFiles) {
     const id = file.split("/").pop().replace(/\.md$/, "");
-    const text = await readLedgerFile(ledgerRoot, ref, file);
-    const parsed = parseTicket(text, id);
+    // Fast path: memoized parse keyed by (size, mtime) of the on-disk file. Falls back to the ref
+    // (git show) only in bare-ledger mode, where there is no checkout to stat.
+    let parsed = await parseTicketCached(path.join(ledgerRoot, file), id);
+    if (parsed === null) {
+      const text = await readLedgerFile(ledgerRoot, ref, file);
+      parsed = parseTicket(text, id);
+    }
     for (const e of parsed.errors) issues.push({ kind: "invalid-ticket", message: e, ticketId: id });
     if (parsed.ok) tickets.push(parsed.ticket);
   }
