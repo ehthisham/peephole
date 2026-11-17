@@ -33,7 +33,7 @@ const STATE_TO_STATUS = {
   proposed: "To Do",
   "in-progress": "In Progress",
   built: "In Progress",
-  verified: "In Review",
+  "in-review": "In Review",
   // `shipped` is intermediate (released, not yet closed); `closed` is the terminal state. Giving them
   // distinct Jira statuses keeps the round-trip stable — shipped<->Done, closed<->Closed.
   shipped: "Done",
@@ -52,7 +52,7 @@ export function jiraStatusForState(state) {
 const STATUS_TO_STATE = {
   "to do": "proposed", backlog: "proposed", open: "proposed", "selected for development": "proposed",
   "in progress": "in-progress", "in development": "in-progress",
-  "in review": "verified", "code review": "verified", review: "verified",
+  "in review": "in-review", "code review": "in-review", review: "in-review",
   done: "shipped", resolved: "shipped", complete: "shipped", completed: "shipped",
   closed: "closed", abandoned: "closed", "won't do": "closed", "cannot reproduce": "closed",
 };

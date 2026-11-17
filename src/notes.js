@@ -99,11 +99,11 @@ Before starting non-trivial work:
    when it isn't.)
 4. As the work actually progresses, advance \`state\` — never hand-edit it, use the CLI:
    \`\`\`
-   ${cli} ticket advance <id> --state <in-progress|built|verified|shipped|closed> --transcript <your transcript_path> --port ${port}
+   ${cli} ticket advance <id> --state <in-progress|built|in-review|shipped|closed> --transcript <your transcript_path> --port ${port}
    \`\`\`
-   Only ever move forward (proposed → in-progress → built → verified → shipped) or to \`closed\` —
-   never backward, never delete a ticket file. Do this at real milestones (code merged → \`built\`;
-   tests/verification done → \`verified\`; live → \`shipped\`), not speculatively.
+   Only ever move forward (proposed → in-progress → built → in-review → shipped) or to \`closed\` —
+   never backward, never delete a ticket file. Do this at real milestones (coding done → \`built\`;
+   PR raised / under review → \`in-review\`; merged to develop → \`shipped\`), not speculatively.
 5. If a ticket must be hand-edited directly, keep every frontmatter field the CLI would have set
    (id, project, intent, acceptance, state, risk, blockedOn, control, owner, branch, pr, estimate,
    createdAt, updatedAt, history) — a missing field or an invalid state/risk/control value makes

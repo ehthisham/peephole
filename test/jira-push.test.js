@@ -25,7 +25,7 @@ function recorder(handler) {
 
 const TICKET = {
   id: "crash-on-save", title: "Crash on save", intent: "NPE in save()", acceptance: "no NPE",
-  state: "verified", priority: "urgent", type: "bug", epic: "Stability",
+  state: "in-review", priority: "urgent", type: "bug", epic: "Stability",
 };
 
 // --- config ------------------------------------------------------------------------------------

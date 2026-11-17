@@ -1039,7 +1039,7 @@ export async function assignTicket(repoRoot, remoteBranch, ticketId, assignee, a
  * forward-only state, mirroring how `closed` is reachable from anywhere. Ownership is a
  * coordination lock, not a hard one: an agent can hang, crash, or misjudge, so a human (or
  * anyone) must always have an escape hatch to hand a ticket back. It's deliberately narrow —
- * only from `in-progress`, never from `built`/`verified`/`shipped` — so it can undo a claim
+ * only from `in-progress`, never from `built`/`in-review`/`shipped` — so it can undo a claim
  * before any real progress exists without ever rewinding actual work. */
 export async function unclaimTicket(repoRoot, remoteBranch, ticketId, actor = "peephole-ui") {
   const { worktreePath, localBranch } = await prepWorktree(repoRoot, remoteBranch);

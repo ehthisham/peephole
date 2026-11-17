@@ -38,7 +38,7 @@ test("exportCsv header is the fixed Jira column set", () => {
 test("ticketToRow maps peephole fields to Jira columns", () => {
   const row = ticketToRow({
     id: "t1", title: "Add login", intent: "users must sign in", acceptance: "redirects",
-    state: "verified", priority: "urgent", type: "bug", ownerName: "Ada", epic: "Auth",
+    state: "in-review", priority: "urgent", type: "bug", ownerName: "Ada", epic: "Auth",
   });
   assert.equal(row.Summary, "Add login");
   assert.equal(row["Issue Type"], "Bug");

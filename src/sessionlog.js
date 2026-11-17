@@ -89,7 +89,8 @@ async function tailLines(file, since) {
  *  minutes is deliberately forgiving — a local test or build run between tool calls still counts. */
 export const DEFAULT_IDLE_GAP_MS = 10 * 60 * 1000;
 
-const STATE_SET = new Set(["proposed", "in-progress", "built", "verified", "shipped", "closed"]);
+// `verified` kept as a legacy alias so history spans on pre-0.13.0 tickets still read as real state moves.
+const STATE_SET = new Set(["proposed", "in-progress", "built", "in-review", "verified", "shipped", "closed"]);
 
 /** The in-progress spans from a ticket's history: each claim (→ in-progress) until the NEXT real
  *  state move (when it left in-progress), or `now` if it is still in-progress. A ticket reopened
@@ -227,7 +228,7 @@ function eventFrom(entry) {
  * nothing to do with this ticket, so events are kept ONLY while the ticket was actually in-progress.
  *
  * The window must close when the ticket LEAVES in-progress — not merely when it is shipped/closed.
- * A ticket parked in `built` or `verified` is no longer being worked, so running the window to `now`
+ * A ticket parked in `built` or `in-review` is no longer being worked, so running the window to `now`
  * dumped everything the session did on later tickets into this one's log (a built ticket claimed two
  * days ago showed two days of unrelated activity). Only a ticket literally in-progress right now has
  * an open span that reaches `now`.

@@ -211,7 +211,7 @@ export function promptFor(ticket, { binPath, port }) {
   parts.push(
     "",
     "This ticket is already claimed for you (state: in-progress, owner: your session).",
-    `Advance it as you go — ${cli} ticket advance ${ticket.id} --state <built|verified|shipped> --transcript <your transcript_path> --port ${port}`,
+    `Advance it as you go — ${cli} ticket advance ${ticket.id} --state <built|in-review|shipped> --transcript <your transcript_path> --port ${port}`,
     `Before each step, check you have not been paused — ${cli} control check ${ticket.id} --port ${port}`,
     "Stop and report rather than pushing through if that check fails.",
   );
@@ -459,7 +459,16 @@ export function createQueue({ repoRoot, binPath, port, claimTicket, readTicket, 
     if (running || pending.length === 0) return;
     const sessions = await listSessions(repoRoot);
     const idle = idleSessionOf(sessions);
-    if (!idle && hasBackgroundSession(sessions)) {
+    const head = pending[0];
+    // "existing" resumes ONE specific session, so the generic idle gate (which only weighs background
+    // sessions) does not apply to it.
+    if (head.launch === "existing") {
+      // Never resume a session that is mid-turn: the CLI forks a COPY under a new id — the
+      // multi-terminal / duplicate-ticket sprawl this path exists to avoid. Hold until it frees.
+      const target = head.sessionId ? safeSessionId(head.sessionId) : null;
+      const busy = target && ((sessions.find((s) => s.sessionId === target) || {}).status === "busy");
+      if (busy) { schedulePoll(); return; }
+    } else if (!idle && hasBackgroundSession(sessions)) {
       // Workers exist but all are mid-turn: wait for one rather than starting another, and never
       // fall through to an interactive session.
       schedulePoll();
@@ -495,47 +504,24 @@ export function createQueue({ repoRoot, binPath, port, claimTicket, readTicket, 
     pending.shift();
     const prompt = promptFor(ticket, { binPath, port });
 
-    if (next.launch === "existing" && next.sessionId) {
-      // Continue a conversation that already exists, in a terminal. `--resume` keeps the session's
-      // context, which is the whole point of choosing it: the agent already knows this codebase,
-      // this ticket's neighbourhood, or the half-finished attempt you are handing it.
-      //
-      // The CLI's own caveat applies and is surfaced to the picker rather than hidden: resuming a
-      // session that is currently RUNNING starts a copy under a new id. The picker marks busy
-      // sessions for exactly that reason.
-      const sessionId = safeSessionId(next.sessionId);
-      if (!sessionId) {
+    // "existing" continues the chosen session in the BACKGROUND (attachable via the attach button or
+    // `claude attach`), NOT a terminal per ticket. A terminal window cannot be fed a second prompt,
+    // so dispatching several tickets into one session used to open one window each and, on a still-
+    // running session, fork copies under new ids. Resuming it headlessly runs them one at a time in
+    // the real session — the queue serialises them, and a mid-turn session is held above, not forked.
+    let existingResume = null;
+    if (next.launch === "existing") {
+      existingResume = next.sessionId ? safeSessionId(next.sessionId) : null;
+      if (!existingResume) {
         lastError = `${next.ticketId}: "${String(next.sessionId).slice(0, 24)}" is not a session id`;
         announce();
         return tick();
       }
-      const promptFile = path.join(os.tmpdir(), `peephole-resume-${sessionId}.txt`);
-      await fs.writeFile(promptFile, prompt, "utf8");
-      const opened = await runInTerminal(
-        repoRoot,
-        `claude --resume ${q(sessionId)} --permission-mode ${q(next.permissionMode)} "$(cat ${q(promptFile)})"; ` +
-          `rm -f ${q(promptFile)}; exec bash`,
-      );
-      if (!opened.opened) {
-        lastError = `${next.ticketId}: ${opened.reason}`;
+      if (!sessions.find((s) => s.sessionId === existingResume)) {
+        lastError = `${next.ticketId}: session ${existingResume.slice(0, 8)} is no longer live — not dispatched`;
         announce();
-        return;
+        return tick();
       }
-      try {
-        const claim = await claimTicket(next.ticketId, sessionId);
-        if (!claim || claim.claimed === false) {
-          lastError = `${next.ticketId}: resumed ${sessionId.slice(0, 8)}, but not claimed — ${(claim && claim.reason) || "unknown"}`;
-        }
-      } catch (e) {
-        lastError = `${next.ticketId}: resumed ${sessionId.slice(0, 8)}, but not claimed — ${e.message}`;
-      }
-      running = {
-        ticketId: next.ticketId, sessionId, startedAt: new Date().toISOString(),
-        launch: "terminal", terminal: opened.terminal, resumed: true,
-      };
-      announce();
-      watchRunning();
-      return;
     }
 
     if (next.launch === "terminal") {
@@ -573,8 +559,11 @@ export function createQueue({ repoRoot, binPath, port, claimTicket, readTicket, 
     // starts the interactive session that `claude agents` attaches to"). And not `--session-id`
     // either — with --bg the CLI mints the id itself and says so — which is why a new worker's id
     // is read back from its output instead of chosen here.
-    const args = idle
-      ? ["--background", "--resume", sessionId, "--permission-mode", next.permissionMode, prompt]
+    // Resume target: the session the operator picked ("existing"), else an idle worker if one was
+    // free, else none (a fresh worker is started). Only a fresh start is ours to stop on failure.
+    const resumeTarget = existingResume || (idle ? sessionId : null);
+    const args = resumeTarget
+      ? ["--background", "--resume", resumeTarget, "--permission-mode", next.permissionMode, prompt]
       : ["--background", "--permission-mode", next.permissionMode, prompt];
 
     let out = "";
@@ -604,7 +593,7 @@ export function createQueue({ repoRoot, binPath, port, claimTicket, readTicket, 
     // (the CLI says as much — it "starts a copy and says so when the session is already running"),
     // and in practice a resume produced a new background job. Believing the id we asked for left
     // the ticket owned by a session that never did the work, and the queue watching the wrong one.
-    const started = (await resolveSpawnedSession(out, repoRoot)) || (idle ? sessionId : null);
+    const started = (await resolveSpawnedSession(out, repoRoot)) || resumeTarget;
     if (!started) {
       lastError = `${next.ticketId}: started a background session but could not identify it`;
       announce();
@@ -631,10 +620,12 @@ export function createQueue({ repoRoot, binPath, port, claimTicket, readTicket, 
       // already be on it. A session WE just started is stopped again (its conversation survives,
       // `claude attach` still opens it); a session we resumed is somebody's existing worker, so the
       // turn cannot be taken back and the board says so instead of pretending it was.
-      lastError = idle
+      lastError = resumeTarget
         ? `${next.ticketId}: ${claimProblem} — a turn was already sent to ${started.slice(0, 8)}`
         : `${next.ticketId}: ${claimProblem} — the session started for it was stopped`;
-      if (!idle) {
+      if (!resumeTarget) {
+        // Only a worker WE started fresh is ours to stop; a resumed session (idle worker or the
+        // operator's "existing" pick) belongs to someone else and its turn cannot be taken back.
         await execFileP("claude", ["stop", started], { timeout: LIST_TIMEOUT_MS }).catch(() => {});
       }
       announce();
@@ -680,6 +671,7 @@ export function createQueue({ repoRoot, binPath, port, claimTicket, readTicket, 
       }
 
       const sessions = await listSessions(repoRoot);
+      if (!running) return; // cleared during the await (dispatch completed / card cleared) — nothing to watch
       const live = sessions.find((s) => s.sessionId === running.sessionId);
       if (running.launch === "terminal") {
         // A freshly started interactive session never appears in `claude agents --json`, so that
@@ -690,7 +682,9 @@ export function createQueue({ repoRoot, binPath, port, claimTicket, readTicket, 
         // Only after a grace period — a window takes a moment to appear, and a check that fires
         // first would declare every dispatch dead on arrival.
         if (Date.now() - Date.parse(running.startedAt) < TERMINAL_GRACE_MS) return watchRunning();
-        if (!(await processAlive(running.sessionId))) {
+        const alive = await processAlive(running.sessionId);
+        if (!running) return; // cleared during the processAlive await — the running record is gone, do not deref it
+        if (!alive) {
           lastError = `${running.ticketId}: its terminal was closed before the ticket finished — still claimed, pick it up again when you want`;
           running = null;
           announce();

@@ -6,8 +6,8 @@ import yaml from "js-yaml";
  * `refs/heads/peephole/...` at once. */
 export const DEFAULT_STATE_BRANCH = "peephole-state";
 
-export const STATES = ["proposed", "in-progress", "built", "verified", "shipped", "closed"];
-export const FORWARD_STATES = ["proposed", "in-progress", "built", "verified", "shipped"];
+export const STATES = ["proposed", "in-progress", "built", "in-review", "shipped", "closed"];
+export const FORWARD_STATES = ["proposed", "in-progress", "built", "in-review", "shipped"];
 export const CONTROLS = ["run", "pause", "skip", "restart"];
 export const RISKS = ["reversible", "irreversible"];
 // Ascending urgency. `normal` is the default and the value a ticket with no `priority` is read as,
@@ -69,7 +69,7 @@ export function defaultConfig(project, remoteUrl, stateBranch) {
     priority: PRIORITIES,
     type: TYPES,
     // No transition is gated by default — advance stays free until a project opts in by listing
-    // "from->to" (or a bare target state) here. e.g. gates: [verified->shipped].
+    // "from->to" (or a bare target state) here. e.g. gates: [in-review->shipped].
     gates: [],
   };
 }
@@ -107,6 +107,9 @@ export function parseTicket(raw, id) {
     return { ok: false, id, errors: [`${id}.md frontmatter does not parse as YAML: ${e.message}`] };
   }
   const body = m[2] || "";
+  // Legacy rename (0.13.0): the old `verified` state is now `in-review`. Normalise on read so every
+  // existing ledger keeps parsing; the file migrates to the new value on its next CLI write.
+  if (frontmatter && frontmatter.state === "verified") frontmatter.state = "in-review";
   const errors = validateTicket(frontmatter, id);
   return { ok: errors.length === 0, id, ticket: { ...frontmatter, id, body: body.trim() }, errors };
 }

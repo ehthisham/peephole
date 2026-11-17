@@ -291,7 +291,7 @@ async function cmdTicketAdvance(argv) {
   const args = parseArgs(argv.slice(1));
   const port = requirePort(args);
   if (!id || !args.state) {
-    console.error("usage: peephole ticket advance <id> --state <proposed|in-progress|built|verified|shipped|closed> [--mode human|auto] [--transcript <path>] [--port 4173]");
+    console.error("usage: peephole ticket advance <id> --state <proposed|in-progress|built|in-review|shipped|closed> [--mode human|auto] [--transcript <path>] [--port 4173]");
     process.exit(1);
   }
   // Provenance of this move: `human` (a person decided) unless --mode auto says an agent advanced it
@@ -462,7 +462,7 @@ async function main() {
     "  peephole ticket import --file <csv> [--repo <path>] [--project <p>] [--dry-run]  # create/update tickets from a Jira CSV\n" +
     "  peephole enable | disable [--repo <path>]   # opt this clone in/out (git config --local peephole.enabled)\n" +
     '  peephole ledger move --repo <path> [--to peephole-state] [--push]  # carry the ledger to its own branch\n' +
-    "  peephole ticket advance <id> --state <proposed|in-progress|built|verified|shipped|closed> [--mode human|auto]\n" +
+    "  peephole ticket advance <id> --state <proposed|in-progress|built|in-review|shipped|closed> [--mode human|auto]\n" +
     "  peephole ticket rename <id> --to <new-id>\n" +
     "  peephole agent heartbeat --session <id> [--ticket <id>] [--status working|idle|paused|stopped]\n" +
     "  peephole control check <id>\n",

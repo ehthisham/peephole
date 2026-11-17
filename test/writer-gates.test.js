@@ -58,9 +58,9 @@ before(async () => {
   fs.mkdirSync(tickets, { recursive: true });
   fs.writeFileSync(
     path.join(base, "config.yaml"),
-    "project: t\nstateBranch: peephole-state\ngates:\n  - verified->shipped\n",
+    "project: t\nstateBranch: peephole-state\ngates:\n  - in-review->shipped\n",
   );
-  writeTicket(tickets, "sample", "verified");
+  writeTicket(tickets, "sample", "in-review");
   writeTicket(tickets, "early", "in-progress");
   git(repo, ["add", "-A"]);
   git(repo, ["commit", "-q", "-m", "init + seed ledger"]);
@@ -73,7 +73,7 @@ after(() => {
   delete process.env.PEEPHOLE_LEDGER_HOME;
 });
 
-test("gated verified->shipped on auto records mode + gate stamp", async () => {
+test("gated in-review->shipped on auto records mode + gate stamp", async () => {
   const res = await setState(repo, "peephole-state", "sample", "shipped", "alice", null, "auto");
   const last = res.ticket.history[res.ticket.history.length - 1];
   assert.equal(last.to, "shipped");
@@ -91,7 +91,7 @@ test("ungated in-progress->built on human adds neither key (byte-compat)", async
 
 test("invalid mode is rejected", async () => {
   await assert.rejects(
-    () => setState(repo, "peephole-state", "early", "verified", "bob", null, "robot"),
+    () => setState(repo, "peephole-state", "early", "in-review", "bob", null, "robot"),
     /invalid mode "robot"/,
   );
 });

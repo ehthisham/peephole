@@ -3,7 +3,7 @@
     { key: "proposed", label: "Proposed" },
     { key: "in-progress", label: "In progress" },
     { key: "built", label: "Built" },
-    { key: "verified", label: "Verified" },
+    { key: "in-review", label: "In review" },
     { key: "shipped", label: "Shipped" },
     { key: "closed", label: "Closed" },
   ];
@@ -11,13 +11,14 @@
   // changes) with a prefixed `to:` like "title:…"; those are NOT state transitions and must be
   // ignored when timing a ticket, or a late title edit reads as the moment work ended.
   var STATE_KEY_SET = new Set(STATES.map(function (s) { return s.key; }));
+  STATE_KEY_SET.add("verified"); // legacy alias (pre-0.13.0): still counts as a real state move in history timing
   var STATE_LABEL = STATES.reduce(function (m, s) { m[s.key] = s.label; return m; }, {});
   function stateLabel(key) { return STATE_LABEL[key] || key; }
   var STATE_COLOR = {
     "proposed": "var(--proposed)",
     "in-progress": "var(--progress)",
     "built": "var(--built)",
-    "verified": "var(--verified)",
+    "in-review": "var(--verified)",
     "shipped": "var(--shipped)",
     "closed": "var(--closed)",
   };
@@ -25,31 +26,31 @@
     "proposed": "var(--proposed-bg)",
     "in-progress": "var(--progress-bg)",
     "built": "var(--built-bg)",
-    "verified": "var(--verified-bg)",
+    "in-review": "var(--verified-bg)",
     "shipped": "var(--shipped-bg)",
     "closed": "var(--closed-bg)",
   };
-  // The board shows three lanes, not six. `built`, `verified` and `closed` stay real states in the
+  // The board shows three lanes, not six. `built`, `in-review` and `closed` stay real states in the
   // schema (the CLI, writer.setState, history and the Insights breakdown all still use them) but
   // they are PHASES WITHIN a lane rather than lanes of their own: in practice ~85% of tickets go
-  // proposed → shipped without ever stopping in built/verified, so as columns they were two
+  // proposed → shipped without ever stopping in built/in-review, so as columns they were two
   // permanently-empty lanes squeezing the ones that carry the traffic. Each renders as a phase
   // badge on its card instead — same label, same palette entry, no column of its own.
   var LANES = [
     { key: "proposed", label: "Proposed", states: ["proposed"] },
     {
       // `shipped` is an intermediate status now, not a terminus: a ticket can be shipped and then
-      // closed, closed straight from verified (done but not shipped), or closed from anywhere
+      // closed, closed straight from in-review (done but not shipped), or closed from anywhere
       // (abandoned). So shipped lives in the working lane; only `closed` is terminal.
-      key: "in-progress", label: "In progress", states: ["in-progress", "built", "verified", "shipped"],
-      // Verified work is done and waiting on somebody to say so; that is the move worth batching.
-      bulk: { from: "verified", to: "shipped", label: "Ship" },
+      key: "in-progress", label: "In progress", states: ["in-progress", "built", "in-review", "shipped"],
+      // In-review work is done and waiting on a merge; that is the move worth batching.
+      bulk: { from: "in-review", to: "shipped", label: "Ship" },
     },
     { key: "closed", label: "Closed", states: ["closed"] },
   ];
   // The states that show as a badge because they are not their lane's headline state. `shipped` is a
   // phase within the working lane now; `closed` is its own lane headline, so it drops off this list.
-  var PHASE_STATES = new Set(["built", "verified", "shipped"]);
+  var PHASE_STATES = new Set(["built", "in-review", "shipped"]);
 
   // No `restart`: it cleared `owner` in the same write that set the blocking value, so the deny
   // could never reach the session it was aimed at, and it left a stale control that denied the
@@ -344,7 +345,7 @@
    *    latency: nothing is being spent, the ticket is just sitting there.
    *  - `cycleMs`  — total time the ticket spent in the `in-progress` state, summed across every
    *    in-progress span (a ticket can be reopened). Ends the moment it LEAVES in-progress; parked
-   *    time (built/verified/shipped) and the admin close never count. This is throughput/time-to-ship
+   *    time (built/in-review/shipped) and the admin close never count. This is throughput/time-to-ship
    *    — but it still counts the overnight a ticket sits claimed but untouched.
    *  - `activeMs` — actual WORKED time: the server reads the session transcript(s) and sums only the
    *    minutes showing real activity inside the in-progress span(s), idle gaps (> ~10m) removed. This
@@ -377,7 +378,7 @@
     var waitMs = createdAt ? (claimedAt ? Date.parse(claimedAt) : now) - Date.parse(createdAt) : null;
     // CYCLE time = total time spent IN the in-progress state. Each in-progress move opens a span that
     // ends at the next state move (when it left in-progress); an open span runs to now. Parked time
-    // (built/verified/shipped) and the admin close never count; reopens add their own span. This is
+    // (built/in-review/shipped) and the admin close never count; reopens add their own span. This is
     // the throughput metric — but it still counts the overnight a ticket sits claimed but untouched.
     var cycleMs = null;
     if (claimedAt) {
@@ -977,7 +978,7 @@
     // Ownership is a coordination lock, not a hard one — an agent can hang, crash, or misjudge,
     // so a human always needs a way to hand a claimed ticket back. This is the one bounded
     // exception to forward-only state (writer.unclaimTicket): reachable only from in-progress,
-    // never from built/verified/shipped, so it can undo a claim but never rewind real work.
+    // never from built/in-review/shipped, so it can undo a claim but never rewind real work.
     // On every other non-terminal state the button still renders, disabled, so the pair reads as
     // one back/forward control and the absence of a back move is explained instead of invisible.
     var unclaim = prev
@@ -1010,8 +1011,8 @@
     // A linked Jira issue shows its key on the card face so the cross-system link is visible at a
     // glance; the editable field and the "open ↗" link live in the modal.
     var jiraBadge = t.jira ? '<span class="badge jira-badge" title="Jira ' + esc(t.jira) + '">' + esc(t.jira) + "</span>" : "";
-    // A phase badge for the intermediate working states (built/verified/shipped). The in-progress
-    // lane bundles all four working states, so without this a built or verified card is
+    // A phase badge for the intermediate working states (built/in-review/shipped). The in-progress
+    // lane bundles all four working states, so without this a built or in-review card is
     // indistinguishable from one still in progress — it reads only as "In progress". `in-progress`
     // itself is the lane's headline, so it stays quiet (no badge), same "default is quiet" rule as
     // priority and type.
@@ -2110,7 +2111,7 @@
       var laneList = capActive ? inLane.slice(0, CLOSED_CAP) : inLane;
       var lane = document.createElement("section");
       lane.className = "lane";
-      // A lane fills with tickets finished in every sense except the last click — forty verified at
+      // A lane fills with tickets finished in every sense except the last click — forty in-review at
       // once here. The header offers the move for whichever state is one step from the lane's end,
       // so clearing them is one action rather than forty.
       var ready = inLane.filter(function (t) {
@@ -2121,9 +2122,9 @@
           '" title="Move ' + ready.length + " ticket" + (ready.length === 1 ? "" : "s") + " from " +
           esc(s.bulk.from) + " to " + esc(s.bulk.to) + '" type="button">' + esc(s.bulk.label) + " " + ready.length + "</button>"
         : "";
-      // A lane that bundles several states (In progress = in-progress + built + verified + shipped)
+      // A lane that bundles several states (In progress = in-progress + built + in-review + shipped)
       // gets a disclosure toggle: collapsed it is one flat list, expanded it splits into a sub-list
-      // per phase so you can see at a glance which cards are built vs verified vs shipped.
+      // per phase so you can see at a glance which cards are built vs in-review vs shipped.
       var phaseOpen = s.states.length > 1 && isLanePhaseExpanded(s.key);
       var phaseToggle = s.states.length > 1
         ? '<button class="phase-toggle" data-phase-lane="' + esc(s.key) + '" type="button" aria-expanded="' +
