@@ -112,6 +112,20 @@ export async function refExists(repoRoot, ref) {
 }
 
 /** Files under `subpath` at `ref`, or [] if the ref/path doesn't exist. */
+/** Files a branch changed since it diverged from `base` (three-dot diff), as [{status, path}].
+ *  Status is git's letter — A added, M modified, D deleted, R renamed. Empty when nothing differs. */
+export async function changedFiles(repoRoot, base, branch) {
+  const stdout = await run(repoRoot, ["diff", "--name-status", `${base}...${branch}`]);
+  return stdout
+    .split("\n")
+    .map((l) => l.trim())
+    .filter(Boolean)
+    .map((l) => {
+      const parts = l.split("\t");
+      return { status: parts[0], path: parts[parts.length - 1] };
+    });
+}
+
 export async function lsTreeFiles(repoRoot, ref, subpath) {
   try {
     const out = await run(repoRoot, ["ls-tree", "-r", "--name-only", ref, "--", subpath]);

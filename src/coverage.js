@@ -109,8 +109,109 @@ async function istanbulCoverage(repoRoot) {
   }
 }
 
-/** First coverage source found, checked in this order. Returns null if neither exists —
- *  absence is normal (no test run yet, or a project this doesn't apply to), not an error. */
+// Standard places a coverage artifact lives, beyond the repo root: single-service subdirs, and one
+// level under the usual monorepo containers. Non-existent candidates cost only a failed stat.
+const COMMON_SUBDIRS = ["server", "client", "backend", "frontend", "api", "web", "app", "src", "lib", "test", "tests"];
+const MONOREPO_CONTAINERS = ["packages", "apps", "services", "modules", "libs"];
+
+async function childDirs(repoRoot, rel) {
+  try {
+    const ents = await fs.readdir(path.join(repoRoot, rel), { withFileTypes: true });
+    return ents
+      .filter((e) => e.isDirectory() && !e.name.startsWith(".") && e.name !== "node_modules")
+      .map((e) => `${rel}/${e.name}`);
+  } catch {
+    return [];
+  }
+}
+
+/** Repo-relative base directories a coverage artifact might sit in — the root, common service dirs,
+ *  and the immediate children of monorepo containers (packages/*, apps/*, …). */
+async function candidateBases(repoRoot) {
+  const bases = ["."];
+  for (const d of COMMON_SUBDIRS) bases.push(d);
+  for (const c of MONOREPO_CONTAINERS) {
+    for (const child of await childDirs(repoRoot, c)) bases.push(child);
+  }
+  return bases;
+}
+
+/** The two coverage files a base could hold, repo-relative, in detection order. */
+function baseFiles(base) {
+  const dir = base === "." ? "" : base + "/";
+  return [`${dir}coverage.out`, `${dir}coverage/coverage-summary.json`];
+}
+
+function withPrefix(result, prefix) {
+  if (!prefix) return result;
+  return {
+    ...result,
+    file: prefix + result.file,
+    modules: (result.modules || []).map((m) => ({ ...m, pkg: prefix + m.pkg })),
+  };
+}
+
+/** Fold several coverage sources (e.g. server/ + client/ in a monorepo) into one figure: modules are
+ *  unioned (already prefixed by their base), and the headline % is recomputed over all of them so it
+ *  is a true weighted total rather than one source's number. */
+function mergeSources(sources) {
+  let covered = 0;
+  let total = 0;
+  const modules = [];
+  const tools = new Set();
+  for (const s of sources) {
+    tools.add(s.tool);
+    for (const m of s.modules || []) {
+      modules.push(m);
+      covered += m.covered;
+      total += m.total;
+    }
+  }
+  modules.sort((a, b) => a.pct - b.pct); // worst-covered first — the actionable view
+  return {
+    tool: tools.size === 1 ? [...tools][0] : "mixed",
+    pct: total ? (covered / total) * 100 : null,
+    file: sources.map((s) => s.file).join(", "),
+    modules,
+    sources: sources.map((s) => ({ tool: s.tool, file: s.file, pct: s.pct })),
+  };
+}
+
+/**
+ * Coverage for a repo, found wherever a test run normally drops it — the root for a single-package
+ * project, or `server/`, `client/`, `packages/*` … for a monorepo — and merged across every source
+ * found. Returns null when none exists (normal: no test run yet, or coverage not configured).
+ */
 export async function detectCoverage(repoRoot) {
-  return (await goCoverage(repoRoot)) || (await istanbulCoverage(repoRoot));
+  const bases = await candidateBases(repoRoot);
+  const sources = [];
+  for (const base of bases) {
+    const dir = path.join(repoRoot, base);
+    const prefix = base === "." ? "" : base + "/";
+    const go = await goCoverage(dir);
+    if (go && go.modules && go.modules.length) sources.push(withPrefix(go, prefix));
+    const ist = await istanbulCoverage(dir);
+    if (ist && ist.modules && ist.modules.length) sources.push(withPrefix(ist, prefix));
+  }
+  if (!sources.length) return null;
+  return sources.length === 1 ? sources[0] : mergeSources(sources);
+}
+
+/** Cheap size+mtime stamp across every candidate coverage file, so the board re-parses only when one
+ *  actually changed (a test run rewrites the profile without touching git). Null when none exist —
+ *  itself a change worth noticing, since a deleted profile clears the figure. */
+export async function coverageStamp(repoRoot) {
+  const bases = await candidateBases(repoRoot);
+  const parts = [];
+  for (const base of bases) {
+    for (const rel of baseFiles(base)) {
+      try {
+        const st = await fs.stat(path.join(repoRoot, rel));
+        parts.push(`${rel}=${st.size}:${st.mtimeMs}`);
+      } catch {
+        /* not present */
+      }
+    }
+  }
+  return parts.length ? parts.join("|") : null;
 }

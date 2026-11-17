@@ -277,6 +277,11 @@
   .queue-bar .q-item{display:inline-flex; align-items:center; gap:4px; font-size:11.5px; border:1px solid var(--border); border-radius:5px; padding:1px 3px 1px 6px;}
   .queue-bar .q-cancel{border:none; background:none; color:var(--ink-dim); font-size:14px; line-height:1; cursor:pointer; padding:0 3px; border-radius:4px;}
   .queue-bar .q-cancel:hover{color:var(--accent); background:var(--accent-wash);}
+  .changed-head{margin:2px 0 6px; font-size:11.5px;}
+  .changed-files{list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:3px; max-height:220px; overflow:auto;}
+  .changed-files li{display:flex; align-items:center; gap:8px; font-size:12px;}
+  .cf-status{flex:none; width:16px; text-align:center; font-weight:700; font-size:10px; border-radius:4px; padding:1px 0; color:var(--bg);}
+  .cf-A{background:var(--built);} .cf-M{background:var(--proposed);} .cf-D{background:var(--accent);} .cf-R{background:var(--verified);}
   .perm-opt{display:flex; align-items:flex-start; gap:9px; padding:9px 10px; border:1px solid var(--border); border-radius:7px; margin-bottom:7px; cursor:pointer;}
   .perm-opt:hover{border-color:var(--ink-dim);}
   .perm-opt input{margin-top:2px;}

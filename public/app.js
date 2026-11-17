@@ -1567,11 +1567,46 @@
       '<div class="comment-add"><textarea id="commentText" rows="2" placeholder="Add a comment — why this is blocked, skipped, or what you decided"></textarea>' +
       '<button class="ghost" id="commentAdd" type="button" data-id="' + esc(t.id) + '">Comment</button></div>' +
       "<h3>Activity</h3>" + historyHtml +
+      (t.branch
+        ? '<h3>Changed files</h3><div id="changedFiles"><button class="ghost" id="loadChanged" type="button" data-id="' + esc(t.id) +
+          '">Show files changed on ' + esc(t.branch) + "</button>" +
+          '<p class="empty-note">Diffed against the repo’s default branch.</p></div>'
+        : "") +
       '<h3>Claude log</h3>' +
       '<div id="ticketLog"><button class="ghost" id="loadLog" type="button" data-id="' + esc(t.id) +
       '">Load what Claude did</button>' +
       '<p class="empty-note">Read from the session transcripts, for the window this ticket was claimed.</p></div>';
     wireDesc(t);
+    var loadChanged = ticketModalBody.querySelector("#loadChanged");
+    if (loadChanged) {
+      loadChanged.addEventListener("click", async function () {
+        loadChanged.disabled = true;
+        loadChanged.textContent = "Loading…";
+        var box = ticketModalBody.querySelector("#changedFiles");
+        try {
+          var data = await fetch(withProject("/api/tickets/" + encodeURIComponent(loadChanged.dataset.id) + "/changed-files"))
+            .then(function (r) { return r.json(); });
+          if (data.error || data.reason) {
+            box.innerHTML = '<p class="empty-note">' + esc(data.reason || data.error) + "</p>";
+            return;
+          }
+          if (!data.files || !data.files.length) {
+            box.innerHTML = '<p class="empty-note">No changed files against ' + esc(data.base || "base") + ".</p>";
+            return;
+          }
+          box.innerHTML =
+            '<p class="changed-head dim">' + data.files.length + " file" + (data.files.length === 1 ? "" : "s") +
+            " · " + esc(data.branch) + " vs " + esc(data.base) + "</p>" +
+            '<ul class="changed-files">' + data.files.map(function (f) {
+              var s = (f.status || "?").charAt(0);
+              return '<li><span class="cf-status cf-' + esc(s) + '" title="' + esc(f.status || "") + '">' + esc(s) +
+                '</span><span class="mono">' + esc(f.path) + "</span></li>";
+            }).join("") + "</ul>";
+        } catch (e) {
+          box.innerHTML = '<p class="empty-note">Could not load changed files.</p>';
+        }
+      });
+    }
     var riskSelect = ticketModalBody.querySelector(".risk-select");
     if (riskSelect) {
       riskSelect.addEventListener("change", async function () {

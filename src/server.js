@@ -15,7 +15,7 @@ import { exportCsv, parseCsv, rowsToTickets } from "./jiracsv.js";
 import { loadJiraConfig, createJiraClient, pushTicketToJira } from "./jira.js";
 import { readFileSync } from "node:fs";
 import { listProjects, rememberProject, forgetProject, validateRepo } from "./projects.js";
-import { detectCoverage } from "./coverage.js";
+import { detectCoverage, coverageStamp } from "./coverage.js";
 import { ownershipMap } from "./ownership.js";
 import { ticketLog, ticketActiveMs } from "./sessionlog.js";
 import { readStandard, STANDARD_CANDIDATES } from "./standards.js";
@@ -311,17 +311,6 @@ export async function startServer(initialRepoRoot, { port = 4173, remote = "orig
         permissionModes: PERMISSION_MODES,
         ...cache,
       };
-    }
-
-    /** Cheap change-detector for the coverage profile: size + mtime, no parsing. Null when no
-     *  profile exists, which is itself a change worth noticing (a deleted profile clears coverage). */
-    async function coverageStamp(root) {
-      try {
-        const st = await fs.stat(path.join(root, "coverage.out"));
-        return `${st.size}:${st.mtimeMs}`;
-      } catch {
-        return null;
-      }
     }
 
     async function refresh({ doFetch }) {
@@ -894,6 +883,32 @@ export async function startServer(initialRepoRoot, { port = 4173, remote = "orig
       if (req.method === "POST" && dequeueMatch) {
         ctx.queueState = ctx.queue.cancel(dequeueMatch[1]);
         return sendJson(res, 200, { queue: ctx.queueState, state: ctx.publicState() });
+      }
+      // The files a ticket's branch changed, diffed against the repo's default branch. Computed on
+      // demand (for the detail view), not in the scan — a git diff per ticket is too much per refresh.
+      const changedMatch = url.pathname.match(/^\/api\/tickets\/([^/]+)\/changed-files$/);
+      if (req.method === "GET" && changedMatch) {
+        const ticket = (ctx.cache.tickets || []).find((t) => t.id === changedMatch[1]);
+        if (!ticket) return sendJson(res, 404, { error: "ticket not found" });
+        if (!ticket.branch) return sendJson(res, 200, { files: [], reason: "no branch recorded on this ticket" });
+        const root = ctx.repoRoot;
+        let branchRef = null;
+        for (const ref of [ticket.branch, `${remote}/${ticket.branch}`]) {
+          if (await git.refExists(root, ref)) { branchRef = ref; break; }
+        }
+        if (!branchRef) return sendJson(res, 200, { files: [], branch: ticket.branch, reason: `branch "${ticket.branch}" not found in this checkout` });
+        const def = await git.defaultRemoteBranch(root, remote).catch(() => null);
+        let baseRef = null;
+        for (const ref of def ? [`${remote}/${def}`, def] : []) {
+          if (await git.refExists(root, ref)) { baseRef = ref; break; }
+        }
+        if (!baseRef) return sendJson(res, 200, { files: [], branch: branchRef, reason: "could not resolve a base branch to diff against" });
+        try {
+          const files = await git.changedFiles(root, baseRef, branchRef);
+          return sendJson(res, 200, { files, base: baseRef, branch: branchRef, count: files.length });
+        } catch (e) {
+          return sendJson(res, 200, { files: [], base: baseRef, branch: branchRef, error: e.message });
+        }
       }
       if (req.method === "POST" && url.pathname === "/api/execute/continue") {
         const body = await readJsonBody(req);
