@@ -2863,7 +2863,7 @@
         '<input id="sessionManual" placeholder="…or paste a session id" autocomplete="off" spellcheck="false">' +
         '<div class="dispatch-mode">' +
         [["parallel", "Parallel", "one terminal per ticket, all at once"],
-         ["serial", "Serial", "one terminal, tickets one by one (chained)"]].map(function (d) {
+         ["serial", "Serial (headless)", "one terminal, tickets one by one (chained)"]].map(function (d) {
           return '<label class="perm-opt mini"><input type="radio" name="dmode" value="' + d[0] + '"' +
             (d[0] === lastDmode ? " checked" : "") + "><span><b>" + esc(d[1]) + "</b><small>" + esc(d[2]) + "</small></span></label>";
         }).join("") +
