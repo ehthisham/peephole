@@ -774,6 +774,19 @@ export async function startServer(initialRepoRoot, { port = 4173, remote = "orig
             error: body.sessionId ? "that is not a session id" : "pick a session, or paste a session id",
           });
         }
+        if (launch === "existing") {
+          const dispatchMode = body.mode === "serial" ? "serial" : "parallel";
+          const result = await ctx.queue.dispatchExisting({ ticketIds: [executeMatch[1]], permissionMode: mode, sessionId, mode: dispatchMode });
+          if (result.error) return sendJson(res, 400, { error: result.error });
+          ctx.queueState = ctx.queue.state();
+          return sendJson(res, 200, { ...result, queue: ctx.queueState, state: ctx.publicState() });
+        }
+        // A second execute of an already-queued ticket used to no-op silently (enqueue dedups by id);
+        // say so instead, so the UI can offer to cancel it rather than looking broken.
+        const already = ctx.queue.has(executeMatch[1]);
+        if (already) {
+          return sendJson(res, 200, { queued: false, already, ticketId: executeMatch[1], queue: ctx.queue.state(), state: ctx.publicState() });
+        }
         ctx.queueState = ctx.queue.enqueue(executeMatch[1], mode, launch, sessionId);
         return sendJson(res, 200, { queued: true, queue: ctx.queueState, state: ctx.publicState() });
       }
@@ -787,6 +800,13 @@ export async function startServer(initialRepoRoot, { port = 4173, remote = "orig
         const batchSession = body.sessionId ? safeSessionId(body.sessionId) : null;
         if (batchLaunch === "existing" && !batchSession) {
           return sendJson(res, 400, { error: "pick a session, or paste a valid session id" });
+        }
+        if (batchLaunch === "existing") {
+          const dispatchMode = body.mode === "serial" ? "serial" : "parallel";
+          const result = await ctx.queue.dispatchExisting({ ticketIds: ids, permissionMode: mode, sessionId: batchSession, mode: dispatchMode });
+          if (result.error) return sendJson(res, 400, { error: result.error });
+          ctx.queueState = ctx.queue.state();
+          return sendJson(res, 200, { ...result, queue: ctx.queueState, state: ctx.publicState() });
         }
         ids.forEach((id) => { ctx.queueState = ctx.queue.enqueue(String(id), mode, batchLaunch, batchSession); });
         return sendJson(res, 200, { queued: ids.length, queue: ctx.queueState, state: ctx.publicState() });

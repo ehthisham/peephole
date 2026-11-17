@@ -755,5 +755,90 @@ export function createQueue({ repoRoot, binPath, port, claimTicket, readTicket, 
     return state();
   }
 
-  return { enqueue, cancel, stop, state, tick, startChat, startWorker, refreshWorkers, setAutoContinue };
+  /** Whether a ticket is already in the background queue, so a second execute can offer to cancel it
+   *  rather than silently doing nothing (enqueue dedups by id and used to no-op without a word). */
+  function has(ticketId) {
+    if (running && running.ticketId === ticketId) return "running";
+    if (pending.some((p) => p.ticketId === ticketId)) return "pending";
+    return null;
+  }
+
+  /**
+   * Dispatch selected tickets into an EXISTING session, outside the one-at-a-time background queue.
+   *   parallel — one interactive terminal per ticket, each resuming the session id (a fork that
+   *              carries the session's context); they run concurrently.
+   *   serial   — ONE terminal that runs the tickets headlessly, one after another, chained so each
+   *              sees the previous one's work (`-p --resume S` for the first turn, `-p --continue`
+   *              after — `--continue` picks up the most recent conversation in this repo).
+   * Neither waits for the session to be idle: an interactive session never "finishes", so holding on
+   * busy meant nothing ever started. Resuming a live session forks a copy — that is inherent to the
+   * CLI and is exactly the "same session, in a fresh window" the operator asked for. A terminal
+   * dispatch is independent of the queue, so a ticket already queued is removed from it first.
+   */
+  async function dispatchExisting({ ticketIds, permissionMode = "acceptEdits", sessionId: rawSessionId, mode = "parallel" }) {
+    const sessionId = safeSessionId(rawSessionId);
+    if (!sessionId) return { error: `"${String(rawSessionId).slice(0, 24)}" is not a session id` };
+    const ids = Array.isArray(ticketIds) ? ticketIds.map(String) : [];
+    const picked = [];
+    const skipped = [];
+    for (const id of ids) {
+      const t = await readTicket(id);
+      if (!t) { skipped.push({ id, reason: "not found" }); continue; }
+      if (t.control && t.control !== "run") { skipped.push({ id, reason: t.control }); continue; }
+      if (t.owner && t.owner !== sessionId) {
+        skipped.push({ id, reason: `claimed by ${t.ownerName || String(t.owner).slice(0, 8)}` });
+        continue;
+      }
+      picked.push(t);
+    }
+    if (!picked.length) return { dispatched: 0, skipped, mode };
+
+    // A terminal dispatch supersedes any queued background run of the same ticket.
+    picked.forEach((t) => { if (has(t.id)) cancel(t.id); });
+
+    const claimAll = async () => {
+      const claimed = [];
+      for (const t of picked) {
+        try {
+          const c = await claimTicket(t.id, sessionId);
+          if (c && c.claimed !== false) claimed.push(t.id);
+        } catch { /* a claim failure surfaces on the board, it does not abort the dispatch */ }
+      }
+      return claimed;
+    };
+
+    if (mode === "serial") {
+      const files = [];
+      for (let i = 0; i < picked.length; i++) {
+        const f = path.join(os.tmpdir(), `peephole-serial-${sessionId}-${i}-${Date.now()}.txt`);
+        await fs.writeFile(f, promptFor(picked[i], { binPath, port }), "utf8");
+        files.push(f);
+      }
+      const steps = files.map((f, i) =>
+        `${i === 0 ? `claude -p --resume ${q(sessionId)}` : "claude -p --continue"} --permission-mode ${q(permissionMode)} "$(cat ${q(f)})"`,
+      );
+      const line = steps.join(" && ") + `; rm -f ${files.map(q).join(" ")}; exec bash`;
+      const opened = await runInTerminal(repoRoot, line);
+      if (!opened.opened) return { error: opened.reason, mode };
+      const claimed = await claimAll();
+      announce();
+      return { mode, dispatched: claimed.length, tickets: claimed, skipped, terminal: opened.terminal };
+    }
+
+    // parallel: one interactive window per ticket
+    const results = [];
+    for (const t of picked) {
+      const f = path.join(os.tmpdir(), `peephole-par-${sessionId}-${t.id}-${Date.now()}.txt`);
+      await fs.writeFile(f, promptFor(t, { binPath, port }), "utf8");
+      const line = `claude --resume ${q(sessionId)} --permission-mode ${q(permissionMode)} "$(cat ${q(f)})"; rm -f ${q(f)}; exec bash`;
+      const opened = await runInTerminal(repoRoot, line);
+      if (!opened.opened) { results.push({ id: t.id, opened: false, reason: opened.reason }); continue; }
+      try { await claimTicket(t.id, sessionId); } catch { /* surfaced on the board */ }
+      results.push({ id: t.id, opened: true, terminal: opened.terminal });
+    }
+    announce();
+    return { mode, dispatched: results.filter((r) => r.opened).length, results, skipped };
+  }
+
+  return { enqueue, cancel, stop, state, tick, has, dispatchExisting, startChat, startWorker, refreshWorkers, setAutoContinue };
 }

@@ -1130,7 +1130,14 @@
         if (!choice) return;
         execBtn.disabled = true;
         try {
-          await apiPost("/api/tickets/" + encodeURIComponent(execBtn.dataset.execute) + "/execute", choice);
+          var id = execBtn.dataset.execute;
+          var res = await apiPost("/api/tickets/" + encodeURIComponent(id) + "/execute", choice);
+          if (res && res.error) { window.alert(res.error); return; }
+          if (res && res.queued === false && res.already) {
+            if (window.confirm('"' + id + '" is already ' + res.already + ' in the queue. Cancel the queued run?')) {
+              await apiPost("/api/tickets/" + encodeURIComponent(id) + "/dequeue", {});
+            }
+          }
         } finally {
           execBtn.disabled = false;
         }
@@ -2840,10 +2847,13 @@
       var LAUNCH_KEY = "peephole.launchMode";
       var lastLaunch = "terminal";
       try { lastLaunch = localStorage.getItem(LAUNCH_KEY) || lastLaunch; } catch (e) {}
+      var DMODE_KEY = "peephole.dispatchMode";
+      var lastDmode = "parallel";
+      try { lastDmode = localStorage.getItem(DMODE_KEY) || lastDmode; } catch (e) {}
       var launchHtml =
         '<div class="launch-row">' +
         [["terminal", "In a new terminal", "a fresh session you sit with and can interrupt"],
-         ["existing", "In an existing session", "continue a conversation that already has context"],
+         ["existing", "In an existing session", "run it now in a terminal — parallel or serial"],
          ["background", "In the background", "unattended; join later with claude attach"]].map(function (l) {
           return '<label class="perm-opt"><input type="radio" name="launch" value="' + l[0] + '"' +
             (l[0] === lastLaunch ? " checked" : "") + "><span><b>" + esc(l[1]) + "</b><small>" + esc(l[2]) + "</small></span></label>";
@@ -2851,6 +2861,13 @@
         '<div class="session-pick" id="sessionPick" hidden>' +
         '<select id="sessionSelect"><option value="">Loading sessions…</option></select>' +
         '<input id="sessionManual" placeholder="…or paste a session id" autocomplete="off" spellcheck="false">' +
+        '<div class="dispatch-mode">' +
+        [["parallel", "Parallel", "one terminal per ticket, all at once"],
+         ["serial", "Serial", "one terminal, tickets one by one (chained)"]].map(function (d) {
+          return '<label class="perm-opt mini"><input type="radio" name="dmode" value="' + d[0] + '"' +
+            (d[0] === lastDmode ? " checked" : "") + "><span><b>" + esc(d[1]) + "</b><small>" + esc(d[2]) + "</small></span></label>";
+        }).join("") +
+        '</div>' +
         '<p class="perm-note" id="sessionNote"></p></div>' +
         "</div>";
       execModes.innerHTML = launchHtml + '<div class="perm-head">Permissions</div>' + offered.map(function (m) {
@@ -2903,7 +2920,7 @@
         var opt = select.options[select.selectedIndex];
         // The CLI's own behaviour, said out loud rather than discovered afterwards.
         noteEl.textContent = opt && opt.dataset && opt.dataset.status === "busy"
-          ? "That session is mid-turn. Resuming a running session starts a copy under a new id — wait for it to go idle if you meant to continue this one."
+          ? "That session is mid-turn — resuming it starts a fresh copy that carries its context. Expected here; the dispatch starts now rather than waiting."
           : "";
       }
       Array.prototype.forEach.call(execModes.querySelectorAll('input[name="launch"]'), function (r) {
@@ -2938,13 +2955,16 @@
             return;
           }
         }
+        var dmodePick = execModes.querySelector('input[name="dmode"]:checked');
+        var dispatchMode = dmodePick ? dmodePick.value : "parallel";
         try {
           localStorage.setItem(PERM_KEY, mode);
           localStorage.setItem(LAUNCH_KEY, launch);
+          localStorage.setItem(DMODE_KEY, dispatchMode);
         } catch (e) {}
         cleanup();
         execGo.disabled = false;
-        resolve({ permissionMode: mode, launch: launch, sessionId: sessionId });
+        resolve({ permissionMode: mode, launch: launch, sessionId: sessionId, mode: dispatchMode });
       }
       function cancel() { cleanup(); execGo.disabled = false; resolve(null); }
       function backdropClick(ev) { if (ev.target === execBackdrop) cancel(); }
@@ -3146,6 +3166,11 @@
     if (pending.length) {
       bits.push('<span class="q-wait">' + pending.length + " queued" +
         (running ? "" : " — waiting for a free session") + "</span>");
+      pending.forEach(function (p) {
+        bits.push('<span class="q-item"><span class="mono">' + esc(p.ticketId) + "</span>" +
+          '<button class="q-cancel" type="button" data-dequeue="' + esc(p.ticketId) +
+          '" title="Remove from queue" aria-label="Remove from queue">×</button></span>');
+      });
     }
     (q.chats || []).forEach(function (c) {
       bits.push('<span class="q-chat">💬 discussing <b>' + esc(c.ticketId) + "</b>" +
@@ -3163,6 +3188,11 @@
         : "") +
       (running ? '<button class="ghost q-stop" id="queueStop" type="button">Stop</button>' : "") +
       "</span>";
+    Array.prototype.forEach.call(queueBar.querySelectorAll("[data-dequeue]"), function (btn) {
+      btn.addEventListener("click", function () {
+        apiPost("/api/tickets/" + encodeURIComponent(btn.dataset.dequeue) + "/dequeue", {});
+      });
+    });
     var stopBtn = document.getElementById("queueStop");
     if (stopBtn) stopBtn.addEventListener("click", function () { apiPost("/api/execute/stop", {}); });
     var autoBtn = document.getElementById("queueAuto");
@@ -3474,7 +3504,7 @@
     execSelectedBtn.disabled = true;
     try {
       await apiPost("/api/execute", {
-        ticketIds: ids, permissionMode: choice.permissionMode, launch: choice.launch, sessionId: choice.sessionId,
+        ticketIds: ids, permissionMode: choice.permissionMode, launch: choice.launch, sessionId: choice.sessionId, mode: choice.mode,
       });
     } finally {
       renderExecSelected();
