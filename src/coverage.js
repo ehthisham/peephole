@@ -77,7 +77,9 @@ async function istanbulCoverage(repoRoot) {
     const modules = Object.entries(data)
       .filter(([key]) => key !== "total")
       .map(([filePath, s]) => ({
-        pkg: path.dirname(filePath),
+        // istanbul writes ABSOLUTE file paths; make them relative to the package dir so the label is
+        // "models", not "/home/.../server/models" (the base-dir prefix is added back by the caller).
+        pkg: path.dirname(path.isAbsolute(filePath) ? path.relative(repoRoot, filePath) : filePath),
         pct: s.lines?.pct ?? 0,
         covered: s.lines?.covered ?? 0,
         total: s.lines?.total ?? 0,
