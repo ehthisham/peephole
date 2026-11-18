@@ -22,6 +22,17 @@
         ]
       }
     ],
+    "PostToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "PEEPHOLE_PORT=${PEEPHOLE_PORT:-4173} node \"${CLAUDE_PLUGIN_ROOT}/hooks/post-tool-use.js\""
+          }
+        ]
+      }
+    ],
     "SessionEnd": [
       {
         "matcher": "*",

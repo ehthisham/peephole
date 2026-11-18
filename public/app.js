@@ -1283,6 +1283,21 @@
     );
   }
 
+  /** PR link control: an editable URL field plus an "open ↗" link when one is set. Filled by hand, or
+   *  stamped automatically by the PostToolUse hook when an agent raises the PR. */
+  function prControl(t) {
+    var url = t.pr || "";
+    // Only render a clickable link for an http(s) URL — never a javascript:/data: scheme (esc()
+    // escapes HTML but not the href scheme, so an unvalidated href is a clickable-XSS vector).
+    var link = /^https?:\/\//i.test(url)
+      ? ' <a class="jira-link" href="' + esc(url) + '" target="_blank" rel="noopener">open ↗</a>'
+      : "";
+    return (
+      '<input class="pr-input mono" data-id="' + esc(t.id) + '" value="' + esc(url) +
+      '" placeholder="https://.../pull/42" aria-label="Pull-request URL for this ticket">' + link
+    );
+  }
+
   /** The one-way Jira push control: an optional worked-minutes input and a Push button, plus when it
    *  last synced. Shown only when the server has Jira credentials; otherwise a hint. Creating or
    *  updating the issue, moving its status (best-effort) and logging the minutes all happen server-side
@@ -1506,7 +1521,7 @@
       ["Session", t.owner ? '<span class="mono">' + esc(t.owner) + "</span>" : "—"],
       ["Created by", t.createdBy ? esc(t.createdBy) : "—"],
       ["Branch", t.branch ? '<span class="mono">' + esc(t.branch) + "</span>" : "—"],
-      ["PR", t.pr ? esc(t.pr) : "—"],
+      ["PR", prControl(t)],
       ["Estimate", t.estimate ? esc(t.estimate) : "—"],
       ["Blocked on", t.blockedOn ? esc(t.blockedOn) : "—"],
       ["Created", cost.createdAt ? esc(fmtDateTime(cost.createdAt)) + ' <span class="dim">(' + relTime(cost.createdAt) + ")</span>" : "—"],
@@ -1744,6 +1759,27 @@
           }
         } finally {
           jiraInput.disabled = false;
+        }
+      });
+    }
+    var prInput = ticketModalBody.querySelector(".pr-input");
+    if (prInput) {
+      // On change (blur/Enter), not per keystroke — each write is a commit.
+      prInput.addEventListener("change", async function () {
+        var value = prInput.value.trim();
+        prInput.disabled = true;
+        try {
+          var res = await apiPost("/api/tickets/" + encodeURIComponent(prInput.dataset.id) + "/pr", {
+            pr: value, actor: "peephole-ui",
+          });
+          if (res && res.error) { window.alert(res.error); prInput.value = t.pr || ""; }
+          else {
+            t.pr = value || null;
+            // Re-open so the "open ↗" link appears/updates.
+            openTicketModal(t);
+          }
+        } finally {
+          prInput.disabled = false;
         }
       });
     }

@@ -144,6 +144,13 @@ export function validateTicket(t, id) {
   if (t.jira !== undefined && t.jira !== null && typeof t.jira !== "string") {
     errors.push(`${id}.md has invalid jira "${t.jira}" (expected a string issue key like PROJ-42)`);
   }
+  // Optional pull-request URL (e.g. https://github.com/org/repo/pull/42). Free-form string so any
+  // git host is accepted; only a present-but-non-string value is an error. Absent/null reads as "no
+  // PR linked" — pre-existing tickets keep parsing unchanged. Set by hand from the board/CLI, or
+  // stamped automatically by the PostToolUse hook when an agent raises the PR.
+  if (t.pr !== undefined && t.pr !== null && typeof t.pr !== "string") {
+    errors.push(`${id}.md has invalid pr "${t.pr}" (expected a pull-request URL string)`);
+  }
   // Optional ISO timestamp of the last successful Jira push; only a present-but-non-string value is an
   // error. Absent/null reads as "never synced".
   if (t.jiraSyncedAt !== undefined && t.jiraSyncedAt !== null && typeof t.jiraSyncedAt !== "string") {

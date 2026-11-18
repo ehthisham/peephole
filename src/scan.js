@@ -27,7 +27,10 @@ async function readWorkingFile(repoRoot, name) {
 async function hasHookSetup(repoRoot) {
   try {
     const raw = await fs.readFile(path.join(repoRoot, ".claude", "settings.local.json"), "utf8");
-    return raw.includes("peephole/hooks/");
+    // Require the newest hook (post-tool-use, added for PR auto-capture), not just any peephole hook:
+    // a repo wired before it existed otherwise reports "hooks installed" and never gets re-wired.
+    // setupHooksLocal is per-event idempotent, so a re-run adds only the missing PostToolUse entry.
+    return raw.includes("peephole/hooks/") && raw.includes("post-tool-use.js");
   } catch {
     return false;
   }

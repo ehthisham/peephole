@@ -104,6 +104,9 @@ Before starting non-trivial work:
    Only ever move forward (proposed → in-progress → built → in-review → shipped) or to \`closed\` —
    never backward, never delete a ticket file. Do this at real milestones (coding done → \`built\`;
    PR raised / under review → \`in-review\`; merged to develop → \`shipped\`), not speculatively.
+   When you raise the PR, its URL is captured onto the ticket automatically (the PostToolUse hook
+   sees it in the \`gh pr create\` / git-host output); link one by hand with
+   \`${cli} ticket pr <id> --url <pr-url> --port ${port}\` if needed.
 5. If a ticket must be hand-edited directly, keep every frontmatter field the CLI would have set
    (id, project, intent, acceptance, state, risk, blockedOn, control, owner, branch, pr, estimate,
    createdAt, updatedAt, history) — a missing field or an invalid state/risk/control value makes

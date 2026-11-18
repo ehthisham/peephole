@@ -95,6 +95,7 @@ export async function setupHooksLocal(repoRoot, { port }) {
   const plan = [
     ["SessionStart", "startup|resume", path.join(hooksDir, "session-start.js")],
     ["PreToolUse", "*", path.join(hooksDir, "pre-tool-use.js")],
+    ["PostToolUse", "*", path.join(hooksDir, "post-tool-use.js")],
     ["SessionEnd", "*", path.join(hooksDir, "session-end.js")],
   ];
 
@@ -813,6 +814,46 @@ export async function setJira(repoRoot, remoteBranch, ticketId, jira, actor = "p
 
   await fs.writeFile(file, serializeTicket(ticket), "utf8");
   const sha = await git.commitAll(worktreePath, `peephole: ${ticketId} jira -> ${next || "none"}`);
+  const unpushed = await git.unpushedCount(worktreePath, localBranch, remoteBranch);
+  return { committed: Boolean(sha), sha, unpushed, ticket };
+}
+
+/** Sets (or clears) a ticket's linked pull-request URL. Optional free-form string; empty string
+ * clears the link (field becomes null). Its own commit, recorded in history. This is both the field
+ * a human fills by hand (board/CLI) and what the PostToolUse hook stamps automatically when an agent
+ * raises the PR. `onlyIfEmpty` is the auto path's guard: a hook that sees a PR URL every tool call
+ * must never overwrite a link a human already set, nor churn a commit when the same URL is seen
+ * again — so with it set, a ticket that already has a `pr` is left untouched. */
+export async function setPr(repoRoot, remoteBranch, ticketId, pr, actor = "peephole-ui", { onlyIfEmpty = false } = {}) {
+  const { worktreePath, localBranch } = await prepWorktree(repoRoot, remoteBranch);
+  const file = path.join(worktreePath, ".peephole", "tickets", `${ticketId}.md`);
+  if (!(await fileExists(file))) throw new Error(`ticket "${ticketId}" not found`);
+
+  const { parseTicket } = await import("./schema.js");
+  const parsed = parseTicket(await fs.readFile(file, "utf8"), ticketId);
+  if (!parsed.ok) throw new Error(`Cannot set pr on ${ticketId}: ${parsed.errors.join("; ")}`);
+  const ticket = parsed.ticket;
+
+  const next = pr == null ? "" : String(pr).trim();
+  // A PR link ends up in an href on the board; reject any non-http(s) value (javascript:/data:/…)
+  // at the write boundary so a bad scheme can never be stored, whichever route called in.
+  if (next) {
+    let scheme;
+    try { scheme = new URL(next).protocol; } catch { scheme = null; }
+    if (scheme !== "http:" && scheme !== "https:") {
+      throw new Error(`invalid pr URL "${next}" (must be an http(s) URL)`);
+    }
+  }
+  const from = ticket.pr || "";
+  if (onlyIfEmpty && from) return { committed: false, ticket, skipped: "already set" };
+  if (from === next) return { committed: false, ticket };
+  ticket.pr = next || null;
+  ticket.updatedAt = new Date().toISOString();
+  ticket.history = Array.isArray(ticket.history) ? ticket.history : [];
+  ticket.history.push({ at: ticket.updatedAt, from: `pr:${from || "none"}`, to: `pr:${next || "none"}`, by: actor });
+
+  await fs.writeFile(file, serializeTicket(ticket), "utf8");
+  const sha = await git.commitAll(worktreePath, `peephole: ${ticketId} pr -> ${next || "none"}`);
   const unpushed = await git.unpushedCount(worktreePath, localBranch, remoteBranch);
   return { committed: Boolean(sha), sha, unpushed, ticket };
 }

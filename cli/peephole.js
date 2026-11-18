@@ -246,6 +246,21 @@ async function cmdTicketJira(argv) {
   console.log(`"${id}" jira -> ${result.ticket.jira || "(none)"}`);
 }
 
+async function cmdTicketPr(argv) {
+  const id = argv[0];
+  const args = parseArgs(argv.slice(1));
+  const port = requirePort(args);
+  const clearing = args.clear === true;
+  if (!id || (!args.url && !clearing)) {
+    console.error("usage: peephole ticket pr <id> --url <https://.../pull/42> | --clear [--port 4173]");
+    process.exit(1);
+  }
+  const result = await apiCall(port, "POST", `/api/tickets/${encodeURIComponent(id)}/pr`, {
+    pr: clearing ? "" : String(args.url), actor: args.actor,
+  });
+  console.log(`"${id}" pr -> ${result.ticket.pr || "(none)"}`);
+}
+
 async function cmdTicketEdit(argv) {
   const id = argv[0];
   const args = parseArgs(argv.slice(1));
@@ -431,6 +446,7 @@ async function main() {
   if (cmd === "ticket" && argv[1] === "type") return cmdTicketType(argv.slice(2));
   if (cmd === "ticket" && argv[1] === "title") return cmdTicketTitle(argv.slice(2));
   if (cmd === "ticket" && argv[1] === "jira") return cmdTicketJira(argv.slice(2));
+  if (cmd === "ticket" && argv[1] === "pr") return cmdTicketPr(argv.slice(2));
   if (cmd === "ticket" && argv[1] === "edit") return cmdTicketEdit(argv.slice(2));
   if (cmd === "ticket" && argv[1] === "comment") return cmdTicketComment(argv.slice(2));
   if (cmd === "ticket" && argv[1] === "export") return cmdTicketExport(argv.slice(2));
@@ -456,6 +472,7 @@ async function main() {
     "  peephole ticket type <id> --to <feature|bug|chore>\n" +
     '  peephole ticket title <id> --to "<title>" | --clear  # short headline, falls back to intent\n' +
     "  peephole ticket jira <id> --to <PROJ-42> | --clear  # link (or unlink) a Jira issue key\n" +
+    "  peephole ticket pr <id> --url <https://.../pull/42> | --clear  # link (or unlink) a PR (auto-stamped when an agent raises it)\n" +
     '  peephole ticket edit <id> [--intent "<text>"] [--acceptance "<text>"] [--notes "<text>"]  # edit description fields after creation\n' +
     '  peephole ticket comment <id> --text "<comment>"\n' +
     "  peephole ticket export [--repo <path>] [--out <file.csv>] [--branch <b>]   # Jira-import-ready CSV (stdout if no --out)\n" +

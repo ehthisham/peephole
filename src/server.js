@@ -680,6 +680,16 @@ export async function startServer(initialRepoRoot, { port = 4173, remote = "orig
         await ctx.refresh({ doFetch: false });
         return sendJson(res, 200, { ...result, state: ctx.publicState() });
       }
+      const prMatch = url.pathname.match(/^\/api\/tickets\/([^/]+)\/pr$/);
+      if (req.method === "POST" && prMatch) {
+        const body = await readJsonBody(req);
+        const result = await writer.setPr(
+          ctx.repoRoot, ctx.stateBranch, prMatch[1], body.pr,
+          body.actor || (ctx.gitUser && ctx.gitUser.name) || "peephole-ui",
+        );
+        await ctx.refresh({ doFetch: false });
+        return sendJson(res, 200, { ...result, state: ctx.publicState() });
+      }
       const jiraSyncMatch = url.pathname.match(/^\/api\/tickets\/([^/]+)\/jira-sync$/);
       if (req.method === "POST" && jiraSyncMatch) {
         const body = await readJsonBody(req);
@@ -1086,6 +1096,23 @@ export async function startServer(initialRepoRoot, { port = 4173, remote = "orig
         });
         await ctx.refresh({ doFetch: false });
         return sendJson(res, 200, { ...result, state: ctx.publicState() });
+      }
+      // Auto PR capture: the PostToolUse hook POSTs here when it sees a PR URL in a tool's output.
+      // We map the session to the ticket it owns and stamp the URL — but only when the ticket has no
+      // PR yet (onlyIfEmpty), so a hook firing on every later tool call never clobbers a human's link
+      // or churns a commit. Fails soft: no owned ticket just means nothing to stamp.
+      const sessionPrMatch = url.pathname.match(/^\/api\/sessions\/([^/]+)\/pr$/);
+      if (req.method === "POST" && sessionPrMatch) {
+        const sessionId = sessionPrMatch[1];
+        const body = await readJsonBody(req);
+        const pr = typeof body.pr === "string" ? body.pr.trim() : "";
+        if (!pr) return sendJson(res, 200, { stamped: false, reason: "no pr url" });
+        const owned = (ctx.cache.tickets || []).filter((t) => t.owner === sessionId && t.state !== "closed");
+        const target = owned.find((t) => !t.pr) || null;
+        if (!target) return sendJson(res, 200, { stamped: false, reason: owned.length ? "already linked" : "no owned ticket" });
+        const result = await writer.setPr(ctx.repoRoot, ctx.stateBranch, target.id, pr, "peephole-hook", { onlyIfEmpty: true });
+        await ctx.refresh({ doFetch: false });
+        return sendJson(res, 200, { stamped: Boolean(result.committed), ticketId: target.id, pr, state: ctx.publicState() });
       }
       // The hook's one hot-path call: cheap (in-memory) gate check on every tool call, with an
       // actual git-committed heartbeat throttled to once a minute so PreToolUse stays fast.
