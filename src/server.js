@@ -17,7 +17,7 @@ import { readFileSync } from "node:fs";
 import { listProjects, rememberProject, forgetProject, validateRepo } from "./projects.js";
 import { detectCoverage, coverageStamp } from "./coverage.js";
 import { ownershipMap } from "./ownership.js";
-import { ticketLog, ticketActiveMs, ticketSessionIds, claimTimes } from "./sessionlog.js";
+import { ticketLog, ticketActiveMs, ticketSessionIds, claimTimes, ticketWorkedFiles } from "./sessionlog.js";
 import { readStandard, STANDARD_CANDIDATES } from "./standards.js";
 import { selfStats } from "./selfstats.js";
 
@@ -854,6 +854,16 @@ export async function startServer(initialRepoRoot, { port = 4173, remote = "orig
         // matters when somebody asks what happened on one ticket.
         try {
           return sendJson(res, 200, await ticketLog(ticket));
+        } catch (e) {
+          return sendJson(res, 500, { error: e.message });
+        }
+      }
+      const workedMatch = url.pathname.match(/^\/api\/tickets\/([^/]+)\/worked-files$/);
+      if (req.method === "GET" && workedMatch) {
+        const ticket = (ctx.cache.tickets || []).find((t) => t.id === workedMatch[1]);
+        if (!ticket) return sendJson(res, 404, { error: "ticket not found" });
+        try {
+          return sendJson(res, 200, await ticketWorkedFiles(ticket));
         } catch (e) {
           return sendJson(res, 500, { error: e.message });
         }

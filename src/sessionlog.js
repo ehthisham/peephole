@@ -225,6 +225,70 @@ export async function ticketActiveMs(ticket, { idleGapMs = DEFAULT_IDLE_GAP_MS, 
   return { activeMs: active, spans: spans.length, hadTranscript: true };
 }
 
+// The tools that actually write to a file, mapped to the input key that names the file. Reads,
+// searches and shell commands are excluded — "worked files" is what the agent edited, not looked at.
+const EDIT_TOOLS = { Write: "file_path", Edit: "file_path", MultiEdit: "file_path", NotebookEdit: "notebook_path" };
+
+/**
+ * The files the agent actually edited while this ticket was in-progress, read from the session
+ * transcript(s). Distinct from "changed files" (a git diff against the base branch): worked files
+ * come from the transcript, so they are available with no branch, scoped to this ticket's claim
+ * window, and reflect effort (a file edited then reverted still shows) rather than net result.
+ *
+ * Returns { files: [{ path, edits }] (most-edited first), hadTranscript }. `files` is empty with
+ * hadTranscript:false when no transcript is on this machine (unknown), empty with hadTranscript:true
+ * when a transcript exists but no edit happened in the window.
+ */
+export async function ticketWorkedFiles(ticket) {
+  const sessions = Array.isArray(ticket.sessions) ? ticket.sessions : [];
+  const spans = inProgressSpans(ticket);
+  if (!spans.length) return { files: [], hadTranscript: false }; // never claimed → unknown
+  const GRACE = 60000;
+  const inWindow = (ts) => spans.some((s) => ts >= s.from - GRACE && ts <= s.to + GRACE);
+  const from = Math.min(...spans.map((s) => s.from));
+
+  const ids = ticketSessionIds(ticket);
+  const counts = new Map(); // file path -> number of edits
+  const seenFiles = new Set(); // resolved transcripts already parsed (two ids can share one file)
+  let hadTranscript = false;
+  for (const sessionId of ids) {
+    const recorded = (sessions.find((s) => s.sessionId === sessionId) || {}).transcriptPath || null;
+    const file = await findTranscript(sessionId, recorded);
+    if (!file || seenFiles.has(file)) continue;
+    seenFiles.add(file);
+    hadTranscript = true;
+    try {
+      const lines = await tailLines(file, from);
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        let entry;
+        try {
+          entry = JSON.parse(line);
+        } catch {
+          continue; // a partial line at a chunk boundary
+        }
+        const ts = entry.timestamp ? Date.parse(entry.timestamp) : null;
+        if (ts == null || !inWindow(ts)) continue;
+        if (entry.type !== "assistant") continue;
+        const blocks = Array.isArray(entry.message && entry.message.content) ? entry.message.content : [];
+        for (const b of blocks) {
+          if (b.type !== "tool_use") continue;
+          const key = EDIT_TOOLS[b.name];
+          if (!key) continue;
+          const p = b.input && b.input[key];
+          if (typeof p === "string" && p.trim()) counts.set(p, (counts.get(p) || 0) + 1);
+        }
+      }
+    } catch {
+      /* skip an unreadable transcript, keep what the others gave */
+    }
+  }
+  const files = [...counts.entries()]
+    .map(([path, edits]) => ({ path, edits }))
+    .sort((a, b) => b.edits - a.edits || a.path.localeCompare(b.path));
+  return { files, hadTranscript };
+}
+
 /** One readable event per transcript entry that carries something a person would want to see. */
 function eventFrom(entry) {
   const at = entry.timestamp || null;

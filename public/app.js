@@ -1610,6 +1610,10 @@
           '">Show files changed on ' + esc(t.branch) + "</button>" +
           '<p class="empty-note">Diffed against the repo’s default branch.</p></div>'
         : "") +
+      '<h3>Worked files</h3>' +
+      '<div id="workedFiles"><button class="ghost" id="loadWorked" type="button" data-id="' + esc(t.id) +
+      '">Show files Claude edited</button>' +
+      '<p class="empty-note">Files the agent edited while this ticket was claimed, read from the session transcript.</p></div>' +
       '<h3>Claude log</h3>' +
       '<div id="ticketLog"><button class="ghost" id="loadLog" type="button" data-id="' + esc(t.id) +
       '">Load what Claude did</button>' +
@@ -1642,6 +1646,39 @@
             }).join("") + "</ul>";
         } catch (e) {
           box.innerHTML = '<p class="empty-note">Could not load changed files.</p>';
+        }
+      });
+    }
+    var loadWorked = ticketModalBody.querySelector("#loadWorked");
+    if (loadWorked) {
+      loadWorked.addEventListener("click", async function () {
+        loadWorked.disabled = true;
+        loadWorked.textContent = "Loading…";
+        var box = ticketModalBody.querySelector("#workedFiles");
+        try {
+          var data = await fetch(withProject("/api/tickets/" + encodeURIComponent(loadWorked.dataset.id) + "/worked-files"))
+            .then(function (r) { return r.json(); });
+          if (data.error) {
+            box.innerHTML = '<p class="empty-note">' + esc(data.error) + "</p>";
+            return;
+          }
+          if (!data.files || !data.files.length) {
+            box.innerHTML = '<p class="empty-note">' +
+              (data.hadTranscript
+                ? "No file edits recorded while this ticket was claimed."
+                : "No session transcript on this machine to read worked files.") + "</p>";
+            return;
+          }
+          box.innerHTML =
+            '<p class="changed-head dim">' + data.files.length + " file" + (data.files.length === 1 ? "" : "s") +
+            " edited</p>" +
+            '<ul class="worked-files">' + data.files.map(function (f) {
+              return '<li><span class="name" title="' + esc(f.path) + '">' + esc(f.path) + "</span>" +
+                '<span class="wf-edits dim" title="' + f.edits + ' edit' + (f.edits === 1 ? "" : "s") +
+                ' in this window">' + f.edits + "×</span></li>";
+            }).join("") + "</ul>";
+        } catch (e) {
+          box.innerHTML = '<p class="empty-note">Could not load worked files.</p>';
         }
       });
     }

@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { inProgressSpans, ticketActiveMs, ticketLog, ticketSessionIds, claimTimes, DEFAULT_IDLE_GAP_MS } from "../src/sessionlog.js";
+import { inProgressSpans, ticketActiveMs, ticketLog, ticketSessionIds, claimTimes, ticketWorkedFiles, DEFAULT_IDLE_GAP_MS } from "../src/sessionlog.js";
 
 // --- inProgressSpans: only real state moves bound a span, reopens add their own ----------------
 
@@ -140,6 +140,49 @@ test("ticketActiveMs: a boundary at/after the claim with no later work → 0, no
   const r = await ticketActiveMs(ticket(), { boundaries: [boundary] });
   // The span is clipped to 10:00:00–10:00:30; the 10:00:00 stamp is the only one inside → 0 elapsed.
   assert.equal(r.activeMs, 0);
+});
+
+// --- ticketWorkedFiles: edited files scoped to the claim window, counted, deduped --------------
+
+test("ticketWorkedFiles: lists edited files in the window, most-edited first, excludes reads/out-of-window", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "peephole-worked-"));
+  const file = path.join(dir, "s.jsonl");
+  const tool = (ts, name, input) => JSON.stringify({
+    type: "assistant", timestamp: ts, message: { content: [{ type: "tool_use", name, input }] },
+  });
+  // Claim 10:00 → built 11:00. Edit a.js twice + b.js once inside; a Read (not an edit) inside;
+  // and an Edit AFTER built (another ticket) that must not count.
+  fs.writeFileSync(file, [
+    tool("2026-01-01T10:10:00.000Z", "Edit", { file_path: "src/a.js" }),
+    tool("2026-01-01T10:15:00.000Z", "Read", { file_path: "src/ignore-me.js" }),
+    tool("2026-01-01T10:20:00.000Z", "Write", { file_path: "src/a.js" }),
+    tool("2026-01-01T10:30:00.000Z", "Edit", { file_path: "src/b.js" }),
+    tool("2026-01-01T15:00:00.000Z", "Edit", { file_path: "src/later.js" }),
+  ].join("\n") + "\n");
+  const t = {
+    id: "t-wf", state: "built",
+    sessions: [{ sessionId: "bbbbbbbb-0000-0000-0000-000000000000", transcriptPath: file }],
+    history: [
+      { at: "2026-01-01T10:00:00.000Z", to: "in-progress" },
+      { at: "2026-01-01T11:00:00.000Z", to: "built" },
+    ],
+  };
+  try {
+    const r = await ticketWorkedFiles(t);
+    assert.equal(r.hadTranscript, true);
+    assert.deepEqual(r.files, [
+      { path: "src/a.js", edits: 2 },
+      { path: "src/b.js", edits: 1 },
+    ]);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("ticketWorkedFiles: never claimed → empty, hadTranscript false (unknown)", async () => {
+  const r = await ticketWorkedFiles({ id: "t-none", state: "proposed", history: [{ at: "2026-01-01T10:00:00.000Z", to: "proposed" }] });
+  assert.deepEqual(r.files, []);
+  assert.equal(r.hadTranscript, false);
 });
 
 // --- ticketLog: events scoped to the in-progress span, not to `now` ----------------------------
