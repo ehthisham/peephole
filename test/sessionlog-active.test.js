@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { inProgressSpans, ticketActiveMs, ticketLog, DEFAULT_IDLE_GAP_MS } from "../src/sessionlog.js";
+import { inProgressSpans, ticketActiveMs, ticketLog, ticketSessionIds, claimTimes, DEFAULT_IDLE_GAP_MS } from "../src/sessionlog.js";
 
 // --- inProgressSpans: only real state moves bound a span, reopens add their own ----------------
 
@@ -108,6 +108,38 @@ test("ticketActiveMs: claimed but no transcript on this machine → null, not ze
 
 test("DEFAULT_IDLE_GAP_MS is 10 minutes", () => {
   assert.equal(DEFAULT_IDLE_GAP_MS, 10 * 60 * 1000);
+});
+
+// --- boundaries: a sibling claim in the same session clips this ticket's worked window ----------
+
+test("ticketSessionIds / claimTimes expose the session + claim moments", () => {
+  const t = {
+    owner: "89a6d3ff-e5c1-4667-b47c-9bfb4a52576a",
+    sessions: [{ sessionId: "89a6d3ff-e5c1-4667-b47c-9bfb4a52576a" }, { sessionId: "other" }],
+    history: [
+      { at: "2026-01-01T10:00:00.000Z", to: "in-progress" },
+      { at: "2026-01-01T10:30:00.000Z", to: "built" },
+      { at: "2026-01-01T11:00:00.000Z", to: "in-progress" },
+    ],
+  };
+  assert.deepEqual([...ticketSessionIds(t)].sort(), ["89a6d3ff-e5c1-4667-b47c-9bfb4a52576a", "other"]);
+  assert.deepEqual(claimTimes(t), [Date.parse("2026-01-01T10:00:00.000Z"), Date.parse("2026-01-01T11:00:00.000Z")]);
+});
+
+test("ticketActiveMs: a boundary (sibling claim) clips the span so shared-session time is not double-counted", async () => {
+  // Same transcript as the suite's fixture: clusters at 10:00-10:02 and 10:40-10:42, window 10:00→11:00.
+  // Without a boundary both clusters count (4m). A sibling ticket claimed at 10:30 means this ticket's
+  // worked window ends at 10:30 — so cluster B (10:40+) belongs to the sibling, not here.
+  const boundary = Date.parse("2026-01-01T10:30:00.000Z");
+  const r = await ticketActiveMs(ticket(), { boundaries: [boundary] });
+  assert.equal(r.activeMs, 2 * 60 * 1000, "only cluster A (before the sibling claim) counts");
+});
+
+test("ticketActiveMs: a boundary at/after the claim with no later work → 0, not null (claimed, just handed off)", async () => {
+  const boundary = Date.parse("2026-01-01T10:00:30.000Z"); // 30s after claim, before any real cluster
+  const r = await ticketActiveMs(ticket(), { boundaries: [boundary] });
+  // The span is clipped to 10:00:00–10:00:30; the 10:00:00 stamp is the only one inside → 0 elapsed.
+  assert.equal(r.activeMs, 0);
 });
 
 // --- ticketLog: events scoped to the in-progress span, not to `now` ----------------------------

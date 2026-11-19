@@ -17,7 +17,7 @@ import { readFileSync } from "node:fs";
 import { listProjects, rememberProject, forgetProject, validateRepo } from "./projects.js";
 import { detectCoverage, coverageStamp } from "./coverage.js";
 import { ownershipMap } from "./ownership.js";
-import { ticketLog, ticketActiveMs } from "./sessionlog.js";
+import { ticketLog, ticketActiveMs, ticketSessionIds, claimTimes } from "./sessionlog.js";
 import { readStandard, STANDARD_CANDIDATES } from "./standards.js";
 import { selfStats } from "./selfstats.js";
 
@@ -163,14 +163,38 @@ export async function startServer(initialRepoRoot, { port = 4173, remote = "orig
      *  never propagate — a bad transcript must not take the board down. */
     async function enrichActiveTime(tickets) {
       const list = Array.isArray(tickets) ? tickets : [];
+      // Each session works one ticket at a time, so a claim on ticket B ends the worked window on
+      // ticket A for that session. Map every session to the claim times across ALL its tickets, then
+      // give each ticket the claims of its OTHER tickets as span boundaries — this is what stops one
+      // session's time being counted on several tickets at once.
+      const claimsBySession = new Map(); // sessionId -> [{ ms, ticketId }]
+      for (const t of list) {
+        const cts = claimTimes(t);
+        if (!cts.length) continue;
+        for (const id of ticketSessionIds(t)) {
+          const arr = claimsBySession.get(id) || [];
+          for (const ms of cts) arr.push({ ms, ticketId: t.id });
+          claimsBySession.set(id, arr);
+        }
+      }
+      const boundariesFor = (t) => {
+        const set = new Set();
+        for (const id of ticketSessionIds(t)) {
+          for (const c of claimsBySession.get(id) || []) if (c.ticketId !== t.id) set.add(c.ms);
+        }
+        return [...set].sort((a, b) => a - b);
+      };
       await Promise.all(list.map(async (t) => {
         const history = Array.isArray(t.history) ? t.history : [];
         if (!history.some((h) => h.to === "in-progress")) { t.activeMs = null; return; }
-        const sig = `${t.updatedAt || ""}:${t.state}:${history.length}`;
+        const boundaries = boundariesFor(t);
+        // Boundaries fold into the cache signature: a later claim on a sibling ticket changes this
+        // ticket's worked window even though this ticket's own history did not.
+        const sig = `${t.updatedAt || ""}:${t.state}:${history.length}:${boundaries.length}:${boundaries[boundaries.length - 1] || 0}`;
         const cached = activeTimeCache.get(t.id);
         if (t.state !== "in-progress" && cached && cached.sig === sig) { t.activeMs = cached.activeMs; return; }
         try {
-          const { activeMs } = await ticketActiveMs(t);
+          const { activeMs } = await ticketActiveMs(t, { boundaries });
           t.activeMs = activeMs;
           if (t.state !== "in-progress") activeTimeCache.set(t.id, { sig, activeMs });
         } catch {

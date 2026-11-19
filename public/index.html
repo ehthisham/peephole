@@ -322,6 +322,12 @@
   .project-tag{font-size:10.5px; font-weight:600; color:var(--ink-dim); background:var(--bg); border:1px solid var(--border); border-radius:5px; padding:2px 6px;}
   .badge{font-size:10.5px; font-weight:600; border-radius:5px; padding:2px 6px; white-space:nowrap;}
   .badge.risk{color:var(--accent); background:var(--accent-wash);}
+  /* "live" chip: a session is actively working this ticket. The dot pulses so an in-flight card is
+     obvious at a glance across the board. */
+  .badge.live{color:var(--built); background:var(--built-bg); display:inline-flex; align-items:center; gap:4px;}
+  .badge.live .live-dot{width:7px; height:7px; border-radius:50%; background:var(--built); box-shadow:0 0 0 0 color-mix(in srgb, var(--built) 60%, transparent); animation:livePulse 1.4s ease-out infinite;}
+  @keyframes livePulse{0%{box-shadow:0 0 0 0 color-mix(in srgb, var(--built) 55%, transparent);}70%{box-shadow:0 0 0 6px color-mix(in srgb, var(--built) 0%, transparent);}100%{box-shadow:0 0 0 0 color-mix(in srgb, var(--built) 0%, transparent);}}
+  @media (prefers-reduced-motion: reduce){ .badge.live .live-dot{animation:none;} }
   /* The one badge whose content is not short by nature: a ticket id, or a list of them. It gets the
      full card width and truncates, instead of pushing past the card edge. */
   .badge.blocked{color:var(--closed); background:var(--closed-bg); display:block; max-width:100%;
@@ -344,6 +350,8 @@
   .badge.ttype-chore{color:var(--ink-dim); background:var(--surface-2); border:1px solid var(--border); font-weight:600;}
   .type-select{font:inherit; font-size:12px; padding:2px 5px; border:1px solid var(--border); border-radius:5px; background:var(--bg); color:var(--ink);}
   .type-select:disabled{opacity:0.6;}
+  .state-select{font:inherit; font-size:12px; padding:2px 5px; border:1px solid var(--border); border-radius:5px; background:var(--bg); color:var(--ink);}
+  .state-select:disabled{opacity:0.6;}
   .epic-tag{font-size:10.5px; font-weight:700; color:var(--verified); background:var(--verified-bg); border-radius:5px; padding:2px 6px; max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
   .lane-group{display:flex; flex-direction:column; gap:8px; margin-bottom:12px;}
   .lane-group:last-child{margin-bottom:0;}

@@ -109,6 +109,38 @@ export function inProgressSpans(ticket, now = Date.now()) {
   return spans;
 }
 
+/** The session ids that touched a ticket: its recorded `sessions[]` plus the owner when the owner is
+ *  itself a session uuid. The set used to resolve which transcript(s) to read for this ticket. */
+export function ticketSessionIds(ticket) {
+  const sessions = Array.isArray(ticket.sessions) ? ticket.sessions : [];
+  const ids = new Set(sessions.map((s) => s.sessionId).filter(Boolean));
+  if (ticket.owner && /^[0-9a-f]{8}-/i.test(ticket.owner)) ids.add(ticket.owner);
+  return ids;
+}
+
+/** The timestamps (ms) at which a ticket was moved INTO in-progress — one per claim/reopen. */
+export function claimTimes(ticket) {
+  const history = Array.isArray(ticket.history) ? ticket.history : [];
+  return history.filter((h) => h.to === "in-progress").map((h) => Date.parse(h.at)).filter(Number.isFinite);
+}
+
+/** Clip each span's end down to the earliest `boundary` that falls strictly inside it. The boundaries
+ *  are the claim times of OTHER tickets worked by the same session: when a session claims a different
+ *  ticket, it has stopped working this one (ownership is exclusive — one ticket at a time), so this
+ *  ticket's worked window ends there. Without the clip, a ticket left in-progress while the session
+ *  moved on to another ticket absorbs the other ticket's transcript activity, and the shared stamps
+ *  are counted on both tickets — the "duration adds up across tickets in one session" bug. */
+function clipSpans(spans, boundaries) {
+  if (!boundaries || !boundaries.length) return spans;
+  return spans
+    .map((s) => {
+      let to = s.to;
+      for (const b of boundaries) if (b > s.from && b < to) to = b;
+      return { from: s.from, to };
+    })
+    .filter((s) => s.to > s.from);
+}
+
 // A transcript is append-only and shared across many tickets, so parse each file's timestamps once
 // per (size, mtime) version and reuse them for every ticket that reads it. Keyed by path.
 const stampCache = new Map();
@@ -150,17 +182,22 @@ async function transcriptStamps(file) {
  *
  * Timestamps from every transcript that touched the ticket are UNIONED (not summed per file) before
  * clustering, so two agents working the same ticket in parallel yield wall-clock active time rather
- * than double-counted effort. Returns { activeMs, spans, hadTranscript }: activeMs is null when no
- * transcript is on this machine (unknown, not zero) and 0 when a transcript exists but shows no
- * activity in the window.
+ * than double-counted effort. `boundaries` are claim times of OTHER tickets handled by the same
+ * session(s); each in-progress span is clipped to end at the next such claim, so time a shared session
+ * spent on a different ticket is never counted here too (see clipSpans). Returns { activeMs, spans,
+ * hadTranscript }: activeMs is null when no transcript is on this machine (unknown, not zero) and 0
+ * when a transcript exists but shows no activity in the window.
  */
-export async function ticketActiveMs(ticket, { idleGapMs = DEFAULT_IDLE_GAP_MS, now = Date.now() } = {}) {
-  const spans = inProgressSpans(ticket, now);
-  if (!spans.length) return { activeMs: null, spans: 0, hadTranscript: false };
+export async function ticketActiveMs(ticket, { idleGapMs = DEFAULT_IDLE_GAP_MS, now = Date.now(), boundaries = [] } = {}) {
+  const rawSpans = inProgressSpans(ticket, now);
+  if (!rawSpans.length) return { activeMs: null, spans: 0, hadTranscript: false }; // never claimed → unknown
+  const spans = clipSpans(rawSpans, boundaries);
+  // Claimed, but every moment was reassigned to another ticket of the same session → zero worked here,
+  // not "unknown". (A genuinely never-claimed ticket already returned null above.)
+  if (!spans.length) return { activeMs: 0, spans: 0, hadTranscript: false };
 
   const sessions = Array.isArray(ticket.sessions) ? ticket.sessions : [];
-  const ids = new Set(sessions.map((s) => s.sessionId).filter(Boolean));
-  if (ticket.owner && /^[0-9a-f]{8}-/i.test(ticket.owner)) ids.add(ticket.owner);
+  const ids = ticketSessionIds(ticket);
 
   const files = new Set();
   for (const sessionId of ids) {

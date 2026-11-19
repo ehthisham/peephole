@@ -835,6 +835,9 @@
   // hook posts the machine's global git identity). Lets a ticket whose `owner` predates
   // `ownerName` still show a human name, as long as that session is still in the heartbeat set.
   var authorBySession = {};
+  // ticketId -> true when a non-stale session is actively working it (set in render() from the agent
+  // heartbeats). Drives the live/pulsing indicator on the card.
+  var liveTicketIds = {};
 
   /** The human behind a ticket: the name recorded on the ticket at claim time, else the live
    *  heartbeat's author, else null — in which case the caller falls back to the raw session id. */
@@ -1019,8 +1022,13 @@
     var phaseBadge = PHASE_STATES.has(t.state)
       ? '<span class="badge phase phase-' + esc(t.state) + '" title="phase: ' + esc(t.state) + '">' + esc(stateLabel(t.state)) + "</span>"
       : "";
-    var statusStrip = phaseBadge || typeBadge || prioBadge || gateBadge || jiraBadge || queueTag || controlTag
-      ? '<div class="card-top">' + phaseBadge + typeBadge + prioBadge + gateBadge + jiraBadge + queueTag + controlTag + "</div>"
+    // A pulsing "live" chip when a session is actively working this ticket right now (set from the
+    // agent heartbeats in render). Goes first in the strip so the eye catches it.
+    var liveBadge = liveTicketIds[t.id]
+      ? '<span class="badge live" title="a session is actively working this now"><span class="live-dot"></span>live</span>'
+      : "";
+    var statusStrip = liveBadge || phaseBadge || typeBadge || prioBadge || gateBadge || jiraBadge || queueTag || controlTag
+      ? '<div class="card-top">' + liveBadge + phaseBadge + typeBadge + prioBadge + gateBadge + jiraBadge + queueTag + controlTag + "</div>"
       : "";
     // The headline is the ticket's title, falling back to its intent when it has none (every ticket
     // written before the title field existed). It is the only text on the card face and clamps to two
@@ -1499,13 +1507,28 @@
     });
   }
 
+  /** State changer for the detail modal: a dropdown of the legal moves from the current state. The
+   *  ledger only ever moves forward or to `closed`, so only later states (plus `closed`) are offered;
+   *  the server enforces the same rule. A ticket already `closed` has nowhere to go, so it reads as
+   *  plain text. */
+  function stateControl(t) {
+    var cur = t.state || "proposed";
+    var curIdx = STATES.findIndex(function (s) { return s.key === cur; });
+    var opts = STATES.filter(function (s, i) { return s.key !== cur && (i > curIdx || s.key === "closed"); });
+    if (!opts.length) return esc(STATE_LABEL[cur] || cur);
+    var html = '<select class="state-select" data-id="' + esc(t.id) + '" aria-label="Change state">';
+    html += '<option value="">' + esc(STATE_LABEL[cur] || cur) + " — change…</option>";
+    opts.forEach(function (s) { html += '<option value="' + esc(s.key) + '">→ ' + esc(s.label) + "</option>"; });
+    return html + "</select>";
+  }
+
   function openTicketModal(t) {
     ticketModalTitle.textContent = (t.title && t.title.trim()) || t.intent || ("#" + t.id);
     var cost = ticketCost(t);
     var rows = [
       ["Title", titleControl(t)],
       ["ID", '<span class="mono">' + esc(t.id) + "</span>"],
-      ["State", esc(t.state || "—")],
+      ["State", stateControl(t)],
       ["Type", typeControl(t)],
       ["Priority", priorityControl(t)],
       ["Risk", riskControl(t)],
@@ -1552,7 +1575,7 @@
       ? '<ul class="modal-history">' + events.map(function (e) {
           if (e.kind === "comment") {
             return (
-              '<li class="ev-comment"><span class="ev-when">' + relTime(e.at) + "</span>" +
+              '<li class="ev-comment"><span class="ev-when" title="' + esc(fmtDateTime(e.at)) + '">' + relTime(e.at) + "</span>" +
               '<span class="ev-body">' + (e.control ? '<b>' + esc(e.control) + "</b> — " : "") +
               esc(e.text) + '</span><span class="by">' + esc(e.by || "") + "</span></li>"
             );
@@ -1568,7 +1591,7 @@
             ? '<span class="ev-gate" title="gated transition — review stamped (' + esc(mode) + ")\">🔒 stamped</span>"
             : "";
           return (
-            '<li class="' + (e.gate ? "ev-gated" : "") + '"><span class="ev-when">' + relTime(e.at) +
+            '<li class="' + (e.gate ? "ev-gated" : "") + '"><span class="ev-when" title="' + esc(fmtDateTime(e.at)) + '">' + relTime(e.at) +
             '</span><span class="ev-body">' + dot + " " +
             esc(e.from || "—") + " → " + esc(e.to || "—") + stamp +
             '</span><span class="by">' + esc(e.by || "") + "</span></li>"
@@ -1762,6 +1785,24 @@
         }
       });
     }
+    var stateSel = ticketModalBody.querySelector(".state-select");
+    if (stateSel) {
+      stateSel.addEventListener("change", async function () {
+        var val = stateSel.value;
+        if (!val) return;
+        stateSel.disabled = true;
+        try {
+          var res = await apiPost("/api/tickets/" + encodeURIComponent(stateSel.dataset.id) + "/state", {
+            state: val, actor: "peephole-ui",
+          });
+          if (res && res.error) { window.alert(res.error); stateSel.value = ""; stateSel.disabled = false; return; }
+          t.state = val;
+          closeTicketModal(); // board re-renders from the push; no stale modal left open
+        } catch (e) {
+          stateSel.disabled = false;
+        }
+      });
+    }
     var prInput = ticketModalBody.querySelector(".pr-input");
     if (prInput) {
       // On change (blur/Enter), not per keystroke — each write is a commit.
@@ -1936,12 +1977,22 @@
     }
   });
 
-  // One shared sort direction across every lane (not per-lane — a ticket's rank should mean the
-  // same thing wherever it's looked at). "desc" (default) = latest-modified-first, the useful
-  // default since it surfaces whatever just changed; "asc" = oldest-modified-first.
-  var LANE_SORT_KEY = "peephole.laneSortDir";
-  function getLaneSortDir() {
-    try { return localStorage.getItem(LANE_SORT_KEY) === "asc" ? "asc" : "desc"; } catch (e) { return "desc"; }
+  // One shared sort across every lane (not per-lane — a ticket's rank should mean the same thing
+  // wherever it's looked at). Three modes, cycled by the lane-header button:
+  //   "arranged"  — as arranged: your drag order (rank) first, then by creation (stable). The DEFAULT,
+  //                 so a card never jumps on its own when something merely touches its updatedAt
+  //                 (a heartbeat, a token write, a state change elsewhere). Drag to reorder; it sticks.
+  //   "mod-desc"  — latest modified first (the old default), surfaces whatever just changed.
+  //   "mod-asc"   — oldest modified first.
+  // A NEW key name, so any old "asc"/"desc" value is ignored and everyone starts on "arranged".
+  var LANE_SORT_KEY = "peephole.laneSortMode";
+  var LANE_SORT_MODES = ["arranged", "mod-desc", "mod-asc"];
+  function getLaneSort() {
+    try { var v = localStorage.getItem(LANE_SORT_KEY); return LANE_SORT_MODES.indexOf(v) !== -1 ? v : "arranged"; } catch (e) { return "arranged"; }
+  }
+  function nextLaneSort(cur) {
+    var i = LANE_SORT_MODES.indexOf(cur);
+    return LANE_SORT_MODES[(i + 1) % LANE_SORT_MODES.length];
   }
 
   // Per-viewer preference: which multi-state lanes are expanded to show their phase breakdown
@@ -1965,6 +2016,13 @@
       return dir === "asc" ? -diff : diff;
     });
   }
+  /** Stable creation order (newest first) — the base for "arranged" mode, so editing a ticket never
+   *  reshuffles the lane (createdAt is immutable, unlike updatedAt). */
+  function sortByCreated(list) {
+    return list.slice().sort(function (a, b) {
+      return Date.parse(b.createdAt || 0) - Date.parse(a.createdAt || 0);
+    });
+  }
 
   /** Priority is the primary order within a lane: urgent floats to the top, low sinks. Applied on
    *  top of the modified sort, which stays as the tiebreak — Array.sort is stable, so two tickets of
@@ -1979,11 +2037,14 @@
    *  dragged in the usual priority→recency order. So an untouched board looks exactly as before, and
    *  each card you drag "sticks" above the automatic pile — the Pivotal-Tracker ordered backlog,
    *  opt-in per card. */
-  function laneSort(list, dir) {
+  function laneSort(list, mode) {
     var ranked = list.filter(function (t) { return typeof t.rank === "number"; })
       .sort(function (a, b) { return a.rank - b.rank; });
-    var rest = sortByPriority(sortByModified(list.filter(function (t) { return typeof t.rank !== "number"; }), dir));
-    return ranked.concat(rest);
+    var unranked = list.filter(function (t) { return typeof t.rank !== "number"; });
+    // "arranged" keeps the stable creation order under the hand-ranked pile, so nothing jumps on edit;
+    // the modified modes keep the old recency behaviour.
+    var base = mode === "arranged" ? sortByCreated(unranked) : sortByModified(unranked, mode === "mod-asc" ? "asc" : "desc");
+    return ranked.concat(sortByPriority(base));
   }
 
   // Grouping is a view preference, not ticket data — same treatment as the sort direction.
@@ -2167,7 +2228,7 @@
   var closedShowAll = false;
   function renderBoard(tickets) {
     latestTickets = tickets;
-    var dir = getLaneSortDir();
+    var sortMode = getLaneSort();
     var grouped = getGroupByEpic();
     var selected = getMemberFilter();
     var selMode = getSelectionFilter();
@@ -2182,7 +2243,7 @@
     lastVisibleTickets = visible;
     board.innerHTML = "";
     LANES.forEach(function (s) {
-      var inLane = laneSort(visible.filter(function (t) { return s.states.indexOf(t.state) !== -1; }), dir);
+      var inLane = laneSort(visible.filter(function (t) { return s.states.indexOf(t.state) !== -1; }), sortMode);
       // Closed lane only: cap the rendered cards (most-recent first, via laneSort) unless the user has
       // searched or clicked Load more. Header count below still reports the full inLane.length.
       var capActive = s.key === "closed" && !searchTerm && !closedShowAll && inLane.length > CLOSED_CAP;
@@ -2212,8 +2273,10 @@
       lane.innerHTML =
         "<header><h2>" + s.label + "</h2>" + phaseToggle + '<span class="count mono">' + inLane.length + "</span>" + bulkBtn +
         '<button class="sort-btn" data-lane-sort type="button" title="Sort: ' +
-        (dir === "desc" ? "latest modified first" : "oldest modified first") + '" aria-pressed="' + (dir === "asc") + '">' +
-        (dir === "desc" ? "↓" : "↑") + "</button></header>" +
+        (sortMode === "arranged" ? "as arranged (drag to reorder; stays put when edited)"
+          : sortMode === "mod-desc" ? "latest modified first" : "oldest modified first") +
+        ' — click to change" aria-pressed="' + (sortMode !== "arranged") + '">' +
+        (sortMode === "arranged" ? "⇅" : sortMode === "mod-desc" ? "↓" : "↑") + "</button></header>" +
         '<div class="lane-body"></div>';
       var body = lane.querySelector(".lane-body");
       if (inLane.length === 0) {
@@ -2295,8 +2358,7 @@
         });
       }
       lane.querySelector("[data-lane-sort]").addEventListener("click", function () {
-        var next = getLaneSortDir() === "desc" ? "asc" : "desc";
-        try { localStorage.setItem(LANE_SORT_KEY, next); } catch (e) {}
+        try { localStorage.setItem(LANE_SORT_KEY, nextLaneSort(getLaneSort())); } catch (e) {}
         renderBoard(latestTickets);
       });
       var phaseBtn = lane.querySelector("[data-phase-lane]");
@@ -2778,8 +2840,14 @@
     (q.chats || []).forEach(function (c) { chatSessions[c.ticketId] = c.sessionId; });
     renderQueueBar(q);
     authorBySession = {};
+    liveTicketIds = {};
     (state.agents || []).forEach(function (a) {
       if (a.sessionId && a.author && a.author.name) authorBySession[a.sessionId] = a.author.name;
+      // A ticket is "live" when a non-stale session is actively on it — drives the pulsing dot on the
+      // card. `stale` means the heartbeat went quiet, so a crashed/closed session stops pulsing.
+      if (a.activeTicket && !a.stale && (a.status === "working" || a.status === "busy" || !a.status)) {
+        liveTicketIds[a.activeTicket] = true;
+      }
     });
     projectName.textContent = state.project || "—";
     projectBtn.title = "Switch project — " + (state.repoRoot || "");
@@ -3437,13 +3505,13 @@
   /** Selected tickets in the order the board reads them — lane order, then the lane's own sort —
    *  so "execute all selected" runs them in the order you see, not the order you clicked. */
   function selectedInBoardOrder() {
-    var dir = getLaneSortDir();
+    var mode = getLaneSort();
     var visible = forThisProject(latestTickets || []);
     var ids = [];
     LANES.forEach(function (lane) {
-      sortByModified(visible.filter(function (t) {
+      laneSort(visible.filter(function (t) {
         return lane.states.indexOf(t.state) !== -1 && t.selected && t.state === "proposed";
-      }), dir).forEach(function (t) { ids.push(t.id); });
+      }), mode).forEach(function (t) { ids.push(t.id); });
     });
     return ids;
   }
